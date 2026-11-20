@@ -38,6 +38,7 @@ def chunk_origin(cx, cy):
 
 # ---------------- buildings ----------------
 polys, hs, style, fab = B['polys'], B['hs'], B['style'], B['fabric']
+POL = [B[k] for k in ('polT', 'face', 'face2', 'rr0', 'rr1', 'rise')]
 floors = np.clip(np.round((hs - 0.5) / 3.1), 1, 60).astype(np.uint8)
 # industrial-looking sheds inside the walled city get the old-city palette instead
 _c = shapely.centroid(polys); _x, _y = shapely.get_x(_c), shapely.get_y(_c)
@@ -56,6 +57,7 @@ for i in range(len(polys)):
 def enc_buildings(idx, cx, cy):
     ox, oz = chunk_origin(cx, cy)
     fl, stv, kd, rc, rl, co = [], [], [], [], [], []
+    px = [[] for _ in POL]
     for i in idx:
         P = polys[i]
         rings = [np.asarray(P.exterior.coords)[:-1]] + [np.asarray(r.coords)[:-1] for r in P.interiors]
@@ -63,6 +65,8 @@ def enc_buildings(idx, cx, cy):
         if not rings:
             continue
         fl.append(floors[i]); stv.append(style[i]); kd.append(1 if fab[i] == 1 else 0); rc.append(len(rings))
+        for a_, src_ in zip(px, POL):
+            a_.append(src_[i])
         for r in rings:
             X = np.round((r[:, 0] - ox) * 10).astype(np.int64)
             Z = np.round((-r[:, 1] - oz) * 10).astype(np.int64)
@@ -73,6 +77,8 @@ def enc_buildings(idx, cx, cy):
     co = np.concatenate(co).astype(np.int16) if co else np.zeros(0, np.int16)
     b.u32(len(fl), len(rl), len(co) // 2)
     b.arr(np.array(fl, np.uint8)); b.arr(np.array(stv, np.uint8)); b.arr(np.array(kd, np.uint8)); b.arr(np.array(rc, np.uint8))
+    for a_ in px:   # pol houses: roof type, facade edge, 2nd facade edge, ridge vertices, ridge rise (dm)
+        b.arr(np.array(a_, np.uint8))
     b.arr(np.array(rl, np.uint16), 2); b.arr(co, 2); b.pad(4)
     return bytes(b.b)
 
@@ -257,6 +263,7 @@ for w in G['wards']:
 
 rl = [[nidx[n], round(x, 1), round(-y, 1), round(-a, 3)] for n, x, y, a in G['road_labels']]
 sr = [[nidx[n], round(x, 1), round(-y, 1), round(L)] for n, x, y, L in G['search_roads']]
+AF = airfield()
 x0, y0, x1, y1 = bbox_m()
 meta = dict(
     version=1, chunk=CHUNK, origin=dict(lon=LON0, lat=LAT0, kx=KX, ky=KY),
@@ -265,6 +272,11 @@ meta = dict(
     wards=wards, stations=stations, landmarks=lms,
     piers=[[round(x, 1), round(-y, 1), round(ux, 3), round(-uy, 3), round(h, 1), round(hc, 1), ch] for x, y, ux, uy, h, hc, ch in G['piers']],
     deckChain=G['deck_chain'],
+    gates=[[round(x, 1), round(-y, 1), round(math.cos(a), 3), round(-math.sin(a), 3), round(w, 1)] for x, y, a, w in B['gates']],
+    chabutros=[[round(x, 1), round(-y, 1)] for x, y in B['chab']],
+    airport=dict(rwy=[*m2three(AF['x0'], AF['y0']), *m2three(AF['x1'], AF['y1']), AF['w']],
+                 twy=[dict(w=t['w'], p=[list(m2three(*q)) for q in t['xy']]) for t in AF['twy']],
+                 apron=[list(m2three(*q)) for q in AF['apron']]),
     atal=dict(x0=round(G['atal']['x0'], 1), z0=round(-G['atal']['y0'], 1), x1=round(G['atal']['x1'], 1), z1=round(-G['atal']['y1'], 1), w=G['atal']['w'], deck=G['atal']['deck'], ws0=round(G['atal']['ws0'], 1), ws1=round(G['atal']['ws1'], 1)),
     counts=dict(buildings=int((fab != 2).sum()), blocks=int((fab == 1).sum()), cells=int((fab == 2).sum()),
                 props=int(len(props)), trees=int(len(tp)), roads=len(roads), water=len(G['water']), parks=len(G['parks'])),

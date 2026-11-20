@@ -70,13 +70,36 @@ roads = [r for r, k in zip(roads, keep) if k]
 lines = lines[keep]
 lines = shapely.intersection(lines, BOX)
 lines = shapely.simplify(lines, 0.4)
+def smooth(c, maxcut, iters=3):
+    """Chaikin corner cutting with a capped cut length: bends become arcs, straight runs and real
+    geometry stay put (cuts never exceed maxcut metres from a vertex). Endpoints are fixed."""
+    c = np.asarray(c, float)
+    for _ in range(iters):
+        if len(c) < 3:
+            break
+        d = np.diff(c, axis=0); L = np.hypot(d[:, 0], d[:, 1]) + 1e-9
+        u = d / L[:, None]
+        turn = np.abs(np.arctan2(u[:-1, 0] * u[1:, 1] - u[:-1, 1] * u[1:, 0], (u[:-1] * u[1:]).sum(1)))
+        out = [c[0]]
+        for i in range(1, len(c) - 1):
+            if turn[i - 1] < math.radians(3):
+                out.append(c[i]); continue
+            ca = min(0.25 * L[i - 1], maxcut); cb = min(0.25 * L[i], maxcut)
+            out.append(c[i] - u[i - 1] * ca); out.append(c[i] + u[i] * cb)
+        out.append(c[-1])
+        c = np.array(out); maxcut *= 0.5
+    return c
+
+
 R2 = []
 for r, ln in zip(roads, lines):
     for p in shapely.get_parts(ln):
         if shapely.get_type_id(p) != 1 or p.length < 0.5:
             continue
-        c = np.asarray(p.coords)
         hw = HW[r['cls']]
+        c = smooth(np.asarray(p.coords), 8.0 + 2.5 * hw)
+        if len(c) > 2:   # drop the near-collinear points the smoothing left on straight runs
+            c = np.asarray(shapely.simplify(shapely.LineString(c), 0.12).coords)
         if r['oneway'] and r['cls'] >= 5:
             hw *= 0.62
         mx, my = c[len(c) // 2]

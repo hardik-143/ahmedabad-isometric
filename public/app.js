@@ -155,24 +155,26 @@ function hook(mat, { vHead = '', vBody = '', fHead = '', fColor = '', fEmissive 
 
 // --- buildings
 const bldMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
-  vHead: 'attribute vec2 aInfo; varying vec2 vInfo; varying vec3 vWN;',
+  vHead: 'attribute vec4 aInfo; varying vec4 vInfo; varying vec3 vWN;',
   vBody: 'vInfo = aInfo; vWN = normal;',
-  fHead: 'varying vec2 vInfo; varying vec3 vWN;',
+  fHead: 'varying vec4 vInfo; varying vec3 vWN;',
   fColor: `
-  float ws = vInfo.x; float fl = vInfo.y;
+  float ws = vInfo.x; float fl = vInfo.y; int W = int(ws + 0.5);
   vec3 wn = normalize(vWN);
   float isWall = 1.0 - step(0.6, abs(wn.y));
   float topH = fl*3.1 + 0.5;
-  // contact darkening at the base of walls, parapet band at the top
-  diffuseColor.rgb *= mix(1.0, mix(0.70, 1.0, smoothstep(0.0, 4.5, vWPos.y)), isWall);
-  diffuseColor.rgb *= mix(1.0, 1.0 - 0.10*step(topH-0.55, vWPos.y), isWall);
-  // roof grain
-  diffuseColor.rgb *= mix(1.0, 0.94 + 0.10*vnoise(mod(vWPos.xz*0.9, 1024.0)), 1.0-isWall);
-  if (isWall > 0.5 && ws > 0.5) {
+  float litW = 0.0, glowW = 0.0;
+  if (W != 8) {
+    // contact darkening at the base of walls, parapet band at the top
+    diffuseColor.rgb *= mix(1.0, mix(0.70, 1.0, smoothstep(0.0, 4.5, vWPos.y)), isWall);
+    if (W < 4) diffuseColor.rgb *= mix(1.0, 1.0 - 0.10*step(topH-0.55, vWPos.y), isWall);
+    if (W != 6) diffuseColor.rgb *= mix(1.0, 0.94 + 0.10*vnoise(mod(vWPos.xz*0.9, 1024.0)), 1.0-isWall);
+  }
+  if (isWall > 0.5 && W >= 1 && W <= 3) {
     vec2 t = normalize(vec2(-wn.z, wn.x));
     float u = dot(vWPos.xz, t);
-    bool glassT = ws > 1.5 && ws < 2.5;
-    float cw = glassT ? 1.55 : (ws > 2.5 ? 2.6 : 3.1);
+    bool glassT = W == 2;
+    float cw = glassT ? 1.55 : (W == 3 ? 2.6 : 3.1);
     float fu = u / cw; float col = floor(fu); float xu = fract(fu);
     float fy = vWPos.y / 3.1; float row = floor(fy); float yv = fract(fy);
     float px = fwidth(u);
@@ -182,22 +184,122 @@ const bldMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
     else { wx = smoothstep(0.24, 0.24+aa, xu)*(1.0-smoothstep(0.76-aa, 0.76, xu)); wy = smoothstep(0.30, 0.30+aa*1.5, yv)*(1.0-smoothstep(0.80-aa*1.5, 0.80, yv)); }
     float wallId = floor(dot(vWPos.xz, wn.xz)*0.5 + 0.5);
     float rnd = h21(vec2(col*1.37 + wallId*7.13, row*2.11 + fl*3.7));
-    if (ws > 2.5) wx *= step(0.45, h21(vec2(col, wallId)));
+    if (W == 3) wx *= step(0.45, h21(vec2(col, wallId)));
     float inFacade = step(0.6, vWPos.y) * (1.0 - step(topH - 0.8, vWPos.y));
     float win = wx * wy * inFacade;
     float detail = 1.0 - smoothstep(0.3, 0.85, px);
     vec3 glass = glassT ? vec3(0.30, 0.42, 0.52) + 0.08*h21(vec2(col,row)) : vec3(0.22, 0.25, 0.29) + 0.07*h21(vec2(col,row));
     glass = pow(glass, vec3(2.2));
     diffuseColor.rgb = mix(diffuseColor.rgb, glass, win * 0.85 * detail);
-    // night: lit windows (exact when close, averaged glow when far)
     float on = step(rnd, 0.40);
-    float exact = win * on;
-    float avgG = 0.40 * (glassT ? 0.6 : 0.2) * inFacade * (0.55 + 0.5*h21(vec2(floor(vWPos.y/3.1), wallId)));
-    float g = mix(avgG, exact, detail);
-    vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.85, 0.92, 1.0), step(0.82, h21(vec2(rnd, col))));
-    xEm = g * warm * 1.55 * uNight;
-  }`,
+    litW = win * on * detail;
+    glowW = 0.40 * (glassT ? 0.6 : 0.2) * inFacade * (0.55 + 0.5*h21(vec2(floor(vWPos.y/3.1), wallId))) * (1.0 - detail);
+  } else if (W == 6) {
+    // Mangalore-tile roof: courses down the slope, staggered rolls across, grime, darker ridge cap
+    vec2 sd = normalize(wn.xz + vec2(1e-5, 0.0));
+    vec2 td = vec2(-sd.y, sd.x);
+    float s = dot(vWPos.xz, sd), tt = dot(vWPos.xz, td);
+    float course = s / 0.33; float ci = floor(course); float cf = fract(course);
+    float tcol = tt / 0.24 + 0.5*mod(ci, 2.0); float ti = floor(tcol); float tf = fract(tcol);
+    float det = 1.0 - smoothstep(0.22, 0.55, max(fwidth(course), fwidth(tcol)));
+    float roll = 0.80 + 0.26*sin(tf*6.2832);
+    float lip = 1.0 - 0.38*smoothstep(0.80, 1.0, cf);
+    float tv = 0.86 + 0.28*h21(vec2(ti, ci));
+    vec3 c = diffuseColor.rgb * mix(0.95, roll*lip*tv, det);
+    c *= 0.74 + 0.34*fbm(mod(vWPos.xz*0.45, 512.0));
+    float ridgeY = topH + vInfo.z*0.1;
+    c = mix(c, c*0.62, step(ridgeY - 0.14, vWPos.y));
+    // the odd house has patched the tiles with a tin sheet
+    float hs = h21(floor(vWPos.xz / 4.0) + 0.5);
+    float tin = step(0.93, hs) * step(0.3, fract(tt*0.11 + hs*5.0));
+    c = mix(c, pow(vec3(0.55,0.58,0.60), vec3(2.2)) * (0.85 + 0.15*step(0.5, fract(tt/0.12))), tin);
+    diffuseColor.rgb = c;
+  } else if (isWall > 0.5 && (W == 4 || W == 5 || W == 7 || W == 9)) {
+    // ---------------- pol house walls
+    vec2 t = normalize(vec2(-wn.z, wn.x));
+    float L = vInfo.w * 0.1; float uL = vInfo.z * 0.1;
+    float uW = dot(vWPos.xz, t);
+    if (L < 0.05) { L = 4.0; uL = mod(uW, 4.0); }
+    float y = vWPos.y;
+    float seed = h21(floor((vWPos.xz + t*uL) * 2.0) + vec2(0.37, 0.71));
+    float seed2 = fract(seed * 13.7), seed3 = fract(seed * 71.3);
+    float pxu = fwidth(uL) + 1e-4;
+    float det = 1.0 - smoothstep(0.05, 0.16, pxu);
+    vec3 base = diffuseColor.rgb;
+    vec3 wood = pow(vec3(0.38, 0.24, 0.13), vec3(2.2));
+    vec3 woodD = pow(vec3(0.20, 0.12, 0.07), vec3(2.2));
+    bool teak = seed < 0.30;
+    vec3 c = base;
+    // lime-wash weathering: soft vertical rain streaks, greyer near the ground
+    c *= 0.84 + 0.16*smoothstep(0.15, 0.85, fbm(mod(vec2(uW*1.4, y*0.22), 512.0)));
+    c *= mix(0.82, 1.0, smoothstep(0.2, 1.4, y));
+    if (W == 4) {
+      float nb = max(1.0, floor(L / 1.9 + 0.5)); float bw = L / nb;
+      float bx = fract(uL / bw); float bi = floor(uL / bw);
+      float fy = (y - 3.1) / 3.1; float row = floor(fy); float yv = fract(fy) * 3.1;
+      if (teak) c = wood * (0.78 + 0.34*vnoise(mod(vec2(uL*5.0, y*14.0), 1024.0)));
+      // carved floor beam with dentils, pilasters between bays
+      float beam = step(yv, 0.34);
+      float dent = step(0.5, fract(uL / 0.21)) * step(yv, 0.15);
+      c = mix(c, mix(wood, woodD, dent), beam * det + beam * (1.0 - det) * 0.6);
+      float pil = 1.0 - smoothstep(0.06, 0.09, min(bx, 1.0 - bx) * bw);
+      c = mix(c, teak ? woodD : c * 0.86, pil * (1.0 - beam) * det);
+      // window per bay: carved frame, arched head on some houses, louvred shutters in the house colour
+      float dxm = abs(bx * bw - bw * 0.5);
+      float ww = min(1.05, bw * 0.56);
+      bool arch = seed3 < 0.45;
+      float r1 = ww * 0.5, r2 = ww * 0.5 + 0.09;
+      float topIn = arch ? 1.95 + sqrt(max(0.0, r1*r1 - dxm*dxm)) : 2.3;
+      float topFr = arch ? 1.95 + sqrt(max(0.0, r2*r2 - dxm*dxm)) : 2.39;
+      float inW = step(dxm, r1) * step(0.64, yv) * step(yv, topIn);
+      float frame = step(dxm, r2) * step(0.55, yv) * step(yv, topFr) * (1.0 - inW);
+      vec3 sh = seed2 < 0.25 ? vec3(0.12,0.40,0.38) : seed2 < 0.45 ? vec3(0.15,0.29,0.52) : seed2 < 0.62 ? vec3(0.20,0.43,0.22) : seed2 < 0.82 ? vec3(0.40,0.25,0.13) : vec3(0.46,0.14,0.12);
+      sh = pow(sh, vec3(2.2));
+      float open = step(h21(vec2(bi * 3.1 + seed * 91.0, row * 1.7 + fl)), 0.38);
+      vec3 shut = sh * (0.80 + 0.20*step(0.5, fract(yv * 7.5))) * (1.0 - 0.45*(1.0 - smoothstep(0.015, 0.035, dxm)));
+      vec3 dark = pow(vec3(0.08, 0.07, 0.07), vec3(2.2));
+      vec3 win = mix(shut, dark, open);
+      c = mix(c, wood, frame * det);
+      c = mix(c, win, inW * det);
+      // little sunshade (chhajja) shadow over each window
+      c *= 1.0 - 0.25 * step(topFr, yv) * step(yv, topFr + 0.12) * step(dxm, r2 + 0.1) * det;
+      // dark fascia board under the eaves
+      c = mix(c, woodD, step(topH - 0.30, y));
+      c = mix(c, c * 0.78, (1.0 - det) * 0.55);
+      litW = inW * open * step(h21(vec2(bi + seed * 17.0, row)), 0.65) * det;
+      glowW = 0.07 * (1.0 - det) * step(3.1, y) * step(y, topH - 0.4);
+    } else if (W == 7) {
+      // recessed ground floor behind the otla: carved door in the middle, barred windows either side
+      float mid = abs(uL - L * 0.5);
+      float door = step(mid, 0.56) * step(y, 2.25);
+      float dfr = step(mid, 0.72) * step(y, 2.42) * (1.0 - door);
+      vec3 dc = wood * (0.80 + 0.30*step(0.5, fract(y * 2.4))) * (0.85 + 0.25*step(0.06, abs(uL - L * 0.5)));
+      dc = mix(dc, pow(vec3(0.72, 0.58, 0.30), vec3(2.2)), step(0.82, fract(y * 4.0)) * step(0.82, fract(uL * 4.0)));
+      float wdx = abs(mid - 1.45);
+      float sw = step(3.4, L) * step(wdx, 0.40) * step(0.9, y) * step(y, 2.0);
+      float bars = step(0.5, fract(uL / 0.12));
+      c = mix(c, woodD, dfr * det);
+      c = mix(c, dc, door * det);
+      c = mix(c, mix(pow(vec3(0.07), vec3(2.2)), wood, bars), sw * det);
+      c *= mix(0.86, 1.0, step(0.55, y));
+      litW = sw * (1.0 - bars) * step(seed2, 0.6) * det;
+    } else if (W == 9) {
+      // jharokha railing: carved balusters between two rails (cut through)
+      float ry = y - 3.2;
+      float rail = step(ry, 0.12) + step(0.82, ry);
+      if (rail < 0.5 && fract(uL / 0.15) > 0.55 && det > 0.5) discard;
+      c = wood * (0.8 + 0.3*vnoise(mod(vec2(uL * 9.0, y * 9.0), 1024.0)));
+    } else {
+      // party / rear wall: plain lime plaster, coping line at the top
+      c = mix(c, c * 0.84, step(topH - 0.22, y) * step(y, topH + 0.02));
+    }
+    diffuseColor.rgb = c;
+  }
+  if (W == 8) diffuseColor.rgb *= 0.9 + 0.12*vnoise(mod(vWPos.xz*4.0 + vWPos.y*3.0, 1024.0));
+  vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.85, 0.92, 1.0), step(0.85, h21(floor(vWPos.xz*0.7) + floor(vWPos.y/3.1))));
+  xEm = (litW + glowW) * warm * 1.55 * uNight;`,
 });
+
 
 // --- ground layers (vec2 positions)
 function groundMat(fColor, fEmissive = '', extra = {}) {
@@ -333,6 +435,8 @@ function decodeBld(buf, off) {
   const r = new Reader(buf, off);
   const n = r.u32(), nR = r.u32(), nP = r.u32();
   const floors = r.arr(Uint8Array, n), style = r.arr(Uint8Array, n), kind = r.arr(Uint8Array, n), rc = r.arr(Uint8Array, n);
+  const polT = r.arr(Uint8Array, n), face = r.arr(Uint8Array, n), face2 = r.arr(Uint8Array, n);
+  const rA = r.arr(Uint8Array, n), rB = r.arr(Uint8Array, n), rise = r.arr(Uint8Array, n);
   const rl = r.arr(Uint16Array, nR); const co = r.arr(Int16Array, nP * 2);
   // absolute coords per ring
   const abs = new Int16Array(nP * 2);
@@ -341,75 +445,221 @@ function decodeBld(buf, off) {
     let x = 0, z = 0;
     for (let j = 0; j < rl[k]; j++, p++) { x += co[p * 2]; z += co[p * 2 + 1]; abs[p * 2] = x; abs[p * 2 + 1] = z; }
   }
-  return { n, nR, nP, floors, style, kind, rc, rl, abs };
+  return { n, nR, nP, floors, style, kind, rc, rl, abs, polT, face, face2, rA, rB, rise };
 }
 
 const flat = new Float64Array(2 * 70000);
+const yScratch = new Float64Array(4096), dScratch = new Float64Array(4096);
 const STATS = { v: 0, t: 0 };
 let farLod = null;
 function setFarLod(on) {
   if (on === farLod) return; farLod = on;
   for (const ch of chunks) for (const m of ch.reg.concat(ch.blk)) m.geometry.setDrawRange(0, on ? m.userData.far : m.userData.all);
 }
+// colours for the wooden / stone parts of pol houses (sRGB 0-255)
+const TEAK = [96, 62, 36], TEAK_D = [64, 40, 24], OTLA = [[206, 196, 178], [168, 84, 60], [190, 186, 176], [214, 205, 186]];
+
 function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx) {
-  const { n, floors, style, kind, rc, rl, abs } = S;
-  // per-building ring/point starts
+  const { n, floors, style, kind, rc, rl, abs, polT, face, face2, rA, rB, rise } = S;
   const ringStart = new Uint32Array(n + 1), ptStart = new Uint32Array(n + 1);
   let rr = 0, pp = 0;
   for (let i = 0; i < n; i++) { ringStart[i] = rr; ptStart[i] = pp; for (let k = 0; k < rc[i]; k++) pp += rl[rr++]; }
   ringStart[n] = rr; ptStart[n] = pp;
+  const est = (j) => {
+    const np = ptStart[j + 1] - ptStart[j];
+    return polT[j] ? [6 * np + 420, 12 * np + 760] : [5 * np, 6 * np + 3 * (np + 2 * (rc[j] - 1))];
+  };
   let i = 0;
   while (i < n) {
     let vc = 0, ic = 0, j = i;
     for (; j < n; j++) {
       if (!filter(kind[j])) continue;
-      const np = ptStart[j + 1] - ptStart[j];
-      const nv = 5 * np, ni = 6 * np + 3 * (np + 2 * (rc[j] - 1));
+      const [nv, ni] = est(j);
       if (vc + nv > 65000 && vc > 0) break;
       vc += nv; ic += ni;
     }
     if (vc === 0) { i = j; continue; }
-    const pos = new Int16Array(vc * 3), nor = new Int8Array(vc * 3), col = new Uint8ClampedArray(vc * 3), info = new Uint8Array(vc * 2);
+    const pos = new Int16Array(vc * 3), nor = new Int8Array(vc * 3), col = new Uint8ClampedArray(vc * 3), info = new Uint8Array(vc * 4);
     const idxR = new Uint16Array(ic), idxT = new Uint16Array(ic), idxS = new Uint16Array(ic);
     let v = 0, qr = 0, qt = 0, qs = 0;
+    const V = (x, y, z, nx, ny, nz, c, i0, i1, i2, i3) => {
+      pos[v * 3] = x; pos[v * 3 + 1] = y; pos[v * 3 + 2] = z;
+      nor[v * 3] = nx; nor[v * 3 + 1] = ny; nor[v * 3 + 2] = nz;
+      col[v * 3] = c[0]; col[v * 3 + 1] = c[1]; col[v * 3 + 2] = c[2];
+      info[v * 4] = i0; info[v * 4 + 1] = i1; info[v * 4 + 2] = i2; info[v * 4 + 3] = i3;
+      return v++;
+    };
+    // quad into the small-building wall list; corners in order around the face, normal given (Int8 units)
+    const Q = (ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, nx, ny, nz, c, ws, fl, ua, ub, L) => {
+      const vb = v;
+      V(ax, ay, az, nx, ny, nz, c, ws, fl, ua, L); V(bx, by, bz, nx, ny, nz, c, ws, fl, ub, L);
+      V(cx, cy, cz, nx, ny, nz, c, ws, fl, ub, L); V(dx, dy, dz, nx, ny, nz, c, ws, fl, ua, L);
+      // winding: make the geometric normal agree with the given one
+      const e1x = bx - ax, e1y = by - ay, e1z = bz - az, e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+      const gx = e1y * e2z - e1z * e2y, gy = e1z * e2x - e1x * e2z, gz = e1x * e2y - e1y * e2x;
+      if (gx * nx + gy * ny + gz * nz >= 0) { idxS[qs++] = vb; idxS[qs++] = vb + 1; idxS[qs++] = vb + 2; idxS[qs++] = vb; idxS[qs++] = vb + 2; idxS[qs++] = vb + 3; }
+      else { idxS[qs++] = vb; idxS[qs++] = vb + 2; idxS[qs++] = vb + 1; idxS[qs++] = vb; idxS[qs++] = vb + 3; idxS[qs++] = vb + 2; }
+    };
+    const vbox = (cx, cz, ux, uz, ha, hc, y0, y1, c) => {   // vertical box (sides only)
+      const vx = -uz, vz = ux, P = (sa, sc) => [cx + ux * ha * sa + vx * hc * sc, cz + uz * ha * sa + vz * hc * sc];
+      const s = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+      for (let k = 0; k < 4; k++) {
+        const [a1, c1] = s[k], [a2, c2] = s[(k + 1) % 4];
+        const p = P(a1, c1), q = P(a2, c2);
+        const mx = (a1 + a2) / 2, mc = (c1 + c2) / 2;
+        const nx = Math.round((ux * mx + vx * mc) * 127), nz = Math.round((uz * mx + vz * mc) * 127);
+        Q(p[0], y0, p[1], q[0], y0, q[1], q[0], y1, q[1], p[0], y1, p[1], nx, 0, nz, c, 8, 1, 0, 0, 0);
+      }
+    };
     for (let b = i; b < j; b++) {
       if (!filter(kind[b])) continue;
-      const H = floors[b] * 31 + 5;
+      const fl = floors[b];
+      const H = fl * 31 + 5;
       const pal = PAL[style[b]];
       const jit = 0.93 + 0.12 * hash1(b * 7919 + ox);
-      const wr = Math.min(255, pal.w[0] * jit), wg = Math.min(255, pal.w[1] * jit), wb = Math.min(255, pal.w[2] * jit);
-      const ws = noWindows ? 0 : pal.ws;
-      const fl = floors[b];
+      const wc = [pal.w[0] * jit, pal.w[1] * jit, pal.w[2] * jit];
       const r0 = ringStart[b], r1 = ringStart[b + 1];
-      let pt = ptStart[b];
+      const p0 = ptStart[b], np = ptStart[b + 1] - p0;
+      if (polT[b]) {
+        // ------------------------------------------------ pol house
+        const T = polT[b], m = rl[r0];
+        const gable = T === 2 && r1 - r0 === 1;
+        const f = face[b] < m ? face[b] : -1, f2 = face2[b] < m ? face2[b] : -1;
+        const X = (k) => abs[(p0 + k) * 2], Z = (k) => abs[(p0 + k) * 2 + 1];
+        const RISE = rise[b];
+        let ia = 0, ib = 0, nrx = 0, nrz = 0, dA = 1, dB = 1, front = 0;
+        if (gable) {
+          ia = rA[b]; ib = rB[b];
+          const wx = X(ib) - X(ia), wz = Z(ib) - Z(ia), wl = Math.hypot(wx, wz) || 1;
+          nrx = -wz / wl; nrz = wx / wl;
+          dA = 1e-3; dB = 1e-3;
+          for (let k = 0; k < m; k++) {
+            const d = (X(k) - X(ia)) * nrx + (Z(k) - Z(ia)) * nrz; dScratch[k] = d;
+            if (d > 0) dA = Math.max(dA, d); else dB = Math.max(dB, -d);
+          }
+          for (let k = 0; k < m; k++) { const d = dScratch[k]; yScratch[k] = H + RISE * (1 - Math.abs(d) / (d > 0 ? dA : dB)); }
+          if (f >= 0) { const fm = ((X(f) + X((f + 1) % m)) / 2 - X(ia)) * nrx + ((Z(f) + Z((f + 1) % m)) / 2 - Z(ia)) * nrz; front = fm > 0 ? 1 : -1; }
+        } else for (let k = 0; k < m; k++) yScratch[k] = H;
+        // walls (all rings; only the outer ring has a gable profile / facade)
+        let pt = p0;
+        for (let k = r0; k < r1; k++) {
+          const mm = rl[k], outer = k === r0;
+          for (let e = 0; e < mm; e++) {
+            const a = (pt + e) * 2, c2 = (pt + ((e + 1) % mm)) * 2;
+            const ax = abs[a], az = abs[a + 1], bx = abs[c2], bz = abs[c2 + 1];
+            const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz) || 1;
+            const onx = -dz / L, onz = dx / L, nx = Math.round(onx * 127), nz = Math.round(onz * 127);
+            const ya = outer ? yScratch[e] : H, yb = outer ? yScratch[(e + 1) % mm] : H;
+            const Lq = L <= 255 ? Math.round(L) : 0;
+            if (outer && e === f) {
+              // street facade: recessed ground floor behind an otla, upper floors carried on wooden posts
+              let depth = 0;
+              for (let k2 = 0; k2 < mm; k2++) depth = Math.max(depth, -((abs[(pt + k2) * 2] - ax) * onx + (abs[(pt + k2) * 2 + 1] - az) * onz));
+              const G = 31;
+              if (fl >= 2 && depth >= 45 && L >= 22) {
+                const D = Math.max(7, Math.min(11, depth * 0.22));
+                const ix = -onx * D, iz = -onz * D;
+                Q(ax, G, az, bx, G, bz, bx, yb, bz, ax, ya, az, nx, 0, nz, wc, 4, fl, 0, Lq, Lq);                       // upper facade
+                Q(ax + ix, 0, az + iz, bx + ix, 0, bz + iz, bx + ix, G, bz + iz, ax + ix, G, az + iz, nx, 0, nz, wc, 7, fl, 0, Lq, Lq); // recessed ground wall
+                Q(ax, G, az, bx, G, bz, bx + ix, G, bz + iz, ax + ix, G, az + iz, 0, -127, 0, TEAK_D, 8, fl, 0, 0, 0);        // soffit
+                const oc = OTLA[(b * 13 + 5) % OTLA.length], OT = 5, ox2 = onx * 2, oz2 = onz * 2;
+                Q(ax + ix, OT, az + iz, bx + ix, OT, bz + iz, bx + ox2, OT, bz + oz2, ax + ox2, OT, az + oz2, 0, 127, 0, oc, 8, fl, 0, 0, 0); // otla top
+                Q(ax + ox2, 0, az + oz2, bx + ox2, 0, bz + oz2, bx + ox2, OT, bz + oz2, ax + ox2, OT, az + oz2, nx, 0, nz, [oc[0] * 0.8, oc[1] * 0.8, oc[2] * 0.8], 8, fl, 0, 0, 0);
+                const ncol = Math.max(2, Math.min(7, Math.round(L / 24) + 1)), ux = dx / L, uz = dz / L;
+                for (let c = 0; c < ncol; c++) {
+                  const t = 0.07 + 0.86 * c / (ncol - 1);
+                  const px = ax + dx * t - onx * 1.6, pz = az + dz * t - onz * 1.6;
+                  vbox(px, pz, ux, uz, 1.1, 1.1, OT, G - 3, TEAK);
+                  vbox(px, pz, ux, uz, 1.7, 1.7, G - 3, G, TEAK_D);   // carved capital / bracket block
+                }
+                if (hash1(b * 31 + 7) < 0.4 && L >= 30) {   // jharokha: projecting wooden balcony on the first floor
+                  const bw = Math.min(40, Math.max(16, L * 0.45)) / 2, t0 = 0.5 - bw / L, t1 = 0.5 + bw / L, BD = 6, y0 = G + 1, y1 = G + 11;
+                  const qa = [ax + dx * t0, az + dz * t0], qb = [ax + dx * t1, az + dz * t1];
+                  const fa = [qa[0] + onx * BD, qa[1] + onz * BD], fb = [qb[0] + onx * BD, qb[1] + onz * BD];
+                  const bl = Math.round(bw * 2);
+                  Q(fa[0], y0, fa[1], fb[0], y0, fb[1], fb[0], y1, fb[1], fa[0], y1, fa[1], nx, 0, nz, TEAK, 9, fl, 0, bl, bl);
+                  const sx = Math.round(dx / L * 127), sz = Math.round(dz / L * 127);
+                  Q(qb[0], y0, qb[1], fb[0], y0, fb[1], fb[0], y1, fb[1], qb[0], y1, qb[1], sx, 0, sz, TEAK, 9, fl, 0, BD, BD);
+                  Q(fa[0], y0, fa[1], qa[0], y0, qa[1], qa[0], y1, qa[1], fa[0], y1, fa[1], -sx, 0, -sz, TEAK, 9, fl, 0, BD, BD);
+                  Q(qa[0], y0, qa[1], qb[0], y0, qb[1], fb[0], y0, fb[1], fa[0], y0, fa[1], 0, -127, 0, TEAK_D, 8, fl, 0, 0, 0);
+                  Q(qa[0], y0 + 1, qa[1], qb[0], y0 + 1, qb[1], fb[0], y0 + 1, fb[1], fa[0], y0 + 1, fa[1], 0, 127, 0, TEAK_D, 8, fl, 0, 0, 0);
+                }
+                continue;
+              }
+              Q(ax, 0, az, bx, 0, bz, bx, yb, bz, ax, ya, az, nx, 0, nz, wc, fl >= 2 ? 4 : 7, fl, 0, Lq, Lq);
+              continue;
+            }
+            Q(ax, 0, az, bx, 0, bz, bx, yb, bz, ax, ya, az, nx, 0, nz, wc, outer && e === f2 ? 3 : 5, fl, 0, Lq, Lq);
+          }
+          pt += mm;
+        }
+        // roof
+        const rcol = [pal.r[0] * jit, pal.r[1] * jit, pal.r[2] * jit];
+        if (gable) {
+          for (const side of [1, -1]) {
+            // vertices of this half: from one ridge vertex round to the other
+            const s0 = side === 1 ? (dScratch[(ia + 1) % m] > 0 ? ia : ib) : (dScratch[(ia + 1) % m] > 0 ? ib : ia);
+            const s1 = s0 === ia ? ib : ia;
+            const idx = []; for (let k = s0; ; k = (k + 1) % m) { idx.push(k); if (k === s1) break; if (idx.length > m) break; }
+            const dmax = side === 1 ? dA : dB, ov = side === front ? 5 : 0;
+            const sl = RISE / dmax, nl = Math.hypot(sl, 1);
+            const rnx = Math.round(side * sl * nrx / nl * 127), rny = Math.round(127 / nl), rnz = Math.round(side * sl * nrz / nl * 127);
+            const fv = flat.subarray(0, idx.length * 2);
+            const vb = v;
+            idx.forEach((k, t) => {
+              const ad = Math.abs(dScratch[k]), g = ov * ad / dmax;
+              const x = X(k) + nrx * side * g, z = Z(k) + nrz * side * g, y = H + RISE * (1 - (ad + g) / dmax);
+              fv[t * 2] = x; fv[t * 2 + 1] = z;
+              V(Math.round(x), Math.round(y), Math.round(z), rnx, rny, rnz, rcol, 6, fl, RISE, 0);
+            });
+            const tri = earcut(fv, null, 2);
+            for (let t = 0; t < tri.length; t += 3) {
+              const A = tri[t], B = tri[t + 1], C = tri[t + 2];
+              const cr = (fv[B * 2] - fv[A * 2]) * (fv[C * 2 + 1] - fv[A * 2 + 1]) - (fv[B * 2 + 1] - fv[A * 2 + 1]) * (fv[C * 2] - fv[A * 2]);
+              if (cr > 0) { idxR[qr++] = vb + A; idxR[qr++] = vb + C; idxR[qr++] = vb + B; }
+              else { idxR[qr++] = vb + A; idxR[qr++] = vb + B; idxR[qr++] = vb + C; }
+            }
+          }
+        } else {
+          const agasi = [(pal.w[0] * 0.5 + 196 * 0.5) * jit, (pal.w[1] * 0.5 + 180 * 0.5) * jit, (pal.w[2] * 0.5 + 160 * 0.5) * jit];
+          const holes = []; let acc = 0;
+          for (let k = r0; k < r1; k++) { if (k > r0) holes.push(acc); acc += rl[k]; }
+          const fv = flat.subarray(0, np * 2);
+          for (let t = 0; t < np * 2; t++) fv[t] = abs[p0 * 2 + t];
+          const tri = earcut(fv, holes.length ? holes : null, 2);
+          const vb = v;
+          for (let t = 0; t < np; t++) V(fv[t * 2], H, fv[t * 2 + 1], 0, 127, 0, agasi, 0, fl, 0, 0);
+          for (let t = 0; t < tri.length; t += 3) {
+            const A = tri[t], B = tri[t + 1], C = tri[t + 2];
+            const cr = (fv[B * 2] - fv[A * 2]) * (fv[C * 2 + 1] - fv[A * 2 + 1]) - (fv[B * 2 + 1] - fv[A * 2 + 1]) * (fv[C * 2] - fv[A * 2]);
+            if (cr > 0) { idxR[qr++] = vb + A; idxR[qr++] = vb + C; idxR[qr++] = vb + B; }
+            else { idxR[qr++] = vb + A; idxR[qr++] = vb + B; idxR[qr++] = vb + C; }
+          }
+        }
+        if (canvasCtx) drawFootprint(canvasCtx, abs, r0, r1, rl, p0, ox, oz);
+        continue;
+      }
+      // ------------------------------------------------ ordinary building
+      const ws = noWindows ? 0 : pal.ws;
+      let pt = p0;
       const tall = fl >= 5;
       const W = tall ? idxT : idxS;
       let q = tall ? qt : qs;
-      // walls
       for (let k = r0; k < r1; k++) {
         const m = rl[k];
         for (let e = 0; e < m; e++) {
           const a = (pt + e) * 2, c = (pt + ((e + 1) % m)) * 2;
           const ax = abs[a], az = abs[a + 1], bx = abs[c], bz = abs[c + 1];
-          let dx = bx - ax, dz = bz - az; const L = Math.hypot(dx, dz) || 1;
+          const dx = bx - ax, dz = bz - az; const L = Math.hypot(dx, dz) || 1;
           const nx = Math.round((-dz / L) * 127), nz = Math.round((dx / L) * 127);
           const vb = v;
-          pos[v * 3] = ax; pos[v * 3 + 1] = 0; pos[v * 3 + 2] = az; v++;
-          pos[v * 3] = bx; pos[v * 3 + 1] = 0; pos[v * 3 + 2] = bz; v++;
-          pos[v * 3] = bx; pos[v * 3 + 1] = H; pos[v * 3 + 2] = bz; v++;
-          pos[v * 3] = ax; pos[v * 3 + 1] = H; pos[v * 3 + 2] = az; v++;
-          for (let t = vb; t < v; t++) {
-            nor[t * 3] = nx; nor[t * 3 + 1] = 0; nor[t * 3 + 2] = nz;
-            col[t * 3] = wr; col[t * 3 + 1] = wg; col[t * 3 + 2] = wb;
-            info[t * 2] = ws; info[t * 2 + 1] = fl;
-          }
+          V(ax, 0, az, nx, 0, nz, wc, ws, fl, 0, 0); V(bx, 0, bz, nx, 0, nz, wc, ws, fl, 0, 0);
+          V(bx, H, bz, nx, 0, nz, wc, ws, fl, 0, 0); V(ax, H, az, nx, 0, nz, wc, ws, fl, 0, 0);
           W[q++] = vb; W[q++] = vb + 1; W[q++] = vb + 2; W[q++] = vb; W[q++] = vb + 2; W[q++] = vb + 3;
         }
         pt += m;
       }
       if (tall) qt = q; else qs = q;
-      // roof
-      const p0 = ptStart[b], np = ptStart[b + 1] - p0;
       const holes = [];
       let acc = 0;
       for (let k = r0; k < r1; k++) { if (k > r0) holes.push(acc); acc += rl[k]; }
@@ -417,12 +667,8 @@ function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx) {
       for (let t = 0; t < np * 2; t++) fv[t] = abs[p0 * 2 + t];
       const tri = earcut(fv, holes.length ? holes : null, 2);
       const vb = v;
-      for (let t = 0; t < np; t++) {
-        pos[v * 3] = abs[(p0 + t) * 2]; pos[v * 3 + 1] = H; pos[v * 3 + 2] = abs[(p0 + t) * 2 + 1];
-        nor[v * 3] = 0; nor[v * 3 + 1] = 127; nor[v * 3 + 2] = 0;
-        col[v * 3] = pal.r[0] * jit; col[v * 3 + 1] = pal.r[1] * jit; col[v * 3 + 2] = pal.r[2] * jit;
-        info[v * 2] = 0; info[v * 2 + 1] = fl; v++;
-      }
+      const rcol = [pal.r[0] * jit, pal.r[1] * jit, pal.r[2] * jit];
+      for (let t = 0; t < np; t++) V(abs[(p0 + t) * 2], H, abs[(p0 + t) * 2 + 1], 0, 127, 0, rcol, 0, fl, 0, 0);
       for (let t = 0; t < tri.length; t += 3) {
         const A = tri[t], B = tri[t + 1], C = tri[t + 2];
         const cr = (fv[B * 2] - fv[A * 2]) * (fv[C * 2 + 1] - fv[A * 2 + 1]) - (fv[B * 2 + 1] - fv[A * 2 + 1]) * (fv[C * 2] - fv[A * 2]);
@@ -435,7 +681,7 @@ function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx) {
     g.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, v * 3), 3));
     g.setAttribute('normal', new THREE.BufferAttribute(nor.subarray(0, v * 3), 3, true));
     g.setAttribute('color', new THREE.BufferAttribute(col.subarray(0, v * 3), 3, true));
-    g.setAttribute('aInfo', new THREE.BufferAttribute(info.subarray(0, v * 2), 2));
+    g.setAttribute('aInfo', new THREE.BufferAttribute(info.subarray(0, v * 4), 4));
     const idx = new Uint16Array(qr + qt + qs);
     idx.set(idxR.subarray(0, qr), 0); idx.set(idxT.subarray(0, qt), qr); idx.set(idxS.subarray(0, qs), qr + qt);
     g.setIndex(new THREE.BufferAttribute(idx, 1));
@@ -478,6 +724,11 @@ function drawFootprint(ctx, abs, r0, r1, rl, p0, ox, oz) {
 }
 
 // ---------------------------------------------------------------- ground builders
+function triMeshes(V, I, mat, order) {
+  const pos = new Float32Array(V.length);
+  for (let i = 0; i < V.length; i++) pos[i] = V[i] * 0.5;
+  return flatTiles(pos, {}, I, [[mat, order]]);
+}
 function triMesh(V, I, mat, order) {
   const pos = new Float32Array(V.length);
   for (let i = 0; i < V.length; i++) pos[i] = V[i] * 0.5;
@@ -499,7 +750,7 @@ function buildGround() {
   for (const [mat, order, color] of [[WATER, 2, '#2c5f87'], [PARK, 1, '#3f5a3a']]) {
     const nv = r.u32(), ni = r.u32();
     const V = r.arr(Int16Array, nv * 2); const I = r.arr(Uint32Array, ni);
-    out.push(triMesh(V, I, mat, order));
+    out.push(...triMeshes(V, I, mat, order));
     // map canvas
     mapCtx.fillStyle = color; mapCtx.beginPath();
     for (let t = 0; t < ni; t += 3) {
@@ -536,15 +787,12 @@ function buildGround() {
     if (r.p >= BUF.ground.byteLength) break;
     const fv = r.u32(), fi = r.u32(); if (!fv) continue;
     const V = r.arr(Int16Array, fv * 2); const I = r.arr(Uint32Array, fi);
-    out.push(triMesh(V, I, mat, order));
+    out.push(...triMeshes(V, I, mat, order));
     mapCtx.fillStyle = color; mapCtx.beginPath();
     for (let t = 0; t < fi; t += 3) { for (let k = 0; k < 3; k++) { const [x, z] = mapXY(V[I[t + k] * 2] * 0.5, V[I[t + k] * 2 + 1] * 0.5); k ? mapCtx.lineTo(x, z) : mapCtx.moveTo(x, z); } mapCtx.closePath(); }
     mapCtx.fill();
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 2)); g.setAttribute('aR', new THREE.BufferAttribute(aR, 2));
-  g.setIndex(new THREE.BufferAttribute(idx, 1)); g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
-  const rm = new THREE.Mesh(g, RAIL); rm.renderOrder = 3; rm.receiveShadow = true; rm.frustumCulled = false; out.push(rm);
+  out.push(...flatTiles(pos, { aR: new THREE.BufferAttribute(aR, 2) }, idx, [[RAIL, 3]]));
   for (const m of out) group.ground.add(m);
 }
 
@@ -626,6 +874,280 @@ class Geo {
   }
 }
 
+// ---------------------------------------------------------------- tiles: split big ground meshes so off-screen parts are culled
+const TILE = 1500;
+function tileSplit(attrs, index, X, Z, yr, make) {
+  const B = new Map();
+  for (let t = 0; t < index.length; t += 3) {
+    const a = index[t], b = index[t + 1], c = index[t + 2];
+    const cx = (X(a) + X(b) + X(c)) / 3, cz = (Z(a) + Z(b) + Z(c)) / 3;
+    const k = (Math.floor(cx / TILE) + 2048) * 4096 + (Math.floor(cz / TILE) + 2048);
+    let e = B.get(k);
+    if (!e) B.set(k, (e = { i: [], x0: 1e9, x1: -1e9, z0: 1e9, z1: -1e9, mx: 0 }));
+    e.i.push(a, b, c);
+    for (const q of [a, b, c]) { const x = X(q), z = Z(q); if (x < e.x0) e.x0 = x; if (x > e.x1) e.x1 = x; if (z < e.z0) e.z0 = z; if (z > e.z1) e.z1 = z; if (q > e.mx) e.mx = q; }
+  }
+  const outM = [];
+  for (const e of B.values()) {
+    const g = new THREE.BufferGeometry();
+    for (const [n, a] of Object.entries(attrs)) g.setAttribute(n, a);
+    g.setIndex(new THREE.BufferAttribute(e.mx > 65535 ? new Uint32Array(e.i) : new Uint16Array(e.i), 1));
+    const cx = (e.x0 + e.x1) / 2, cz = (e.z0 + e.z1) / 2;
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, (yr[0] + yr[1]) / 2, cz), Math.hypot(e.x1 - e.x0, e.z1 - e.z0, yr[1] - yr[0]) / 2 + 1);
+    g.boundingBox = new THREE.Box3(new THREE.Vector3(e.x0, yr[0], e.z0), new THREE.Vector3(e.x1, yr[1], e.z1));
+    outM.push(...make(g));
+  }
+  return outM;
+}
+// flat ground layer (vec2 positions) split into culled tiles
+function flatTiles(pos2, extra, index, mats) {
+  const attrs = { position: new THREE.BufferAttribute(pos2, 2), ...extra };
+  return tileSplit(attrs, index, (i) => pos2[i * 2], (i) => pos2[i * 2 + 1], [0, 0], (g) => mats.map(([mat, ord]) => {
+    const m = new THREE.Mesh(g, mat); m.renderOrder = ord; m.receiveShadow = true; m.matrixAutoUpdate = false; return m;
+  }));
+}
+
+// ---------------------------------------------------------------- walled city: pol gates and chabutros
+const POLX = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
+  fColor: 'diffuseColor.rgb *= 0.9 + 0.12*vnoise(mod(vWPos.xz*3.0 + vWPos.y*2.0, 1024.0));',
+});
+function cbox(G, cx, cz, ux, uz, ha, hc, y0, y1, col, top = true) {
+  const vx = -uz, vz = ux, P = (sa, sc, y) => [cx + ux * ha * sa + vx * hc * sc, y, cz + uz * ha * sa + vz * hc * sc];
+  G.quad(P(-1, -1, y0), P(1, -1, y0), P(1, -1, y1), P(-1, -1, y1), [-vx, 0, -vz], col);
+  G.quad(P(1, 1, y0), P(-1, 1, y0), P(-1, 1, y1), P(1, 1, y1), [vx, 0, vz], col);
+  G.quad(P(1, -1, y0), P(1, 1, y0), P(1, 1, y1), P(1, -1, y1), [ux, 0, uz], col);
+  G.quad(P(-1, 1, y0), P(-1, -1, y0), P(-1, -1, y1), P(-1, 1, y1), [-ux, 0, -uz], col);
+  if (top) G.quad(P(-1, -1, y1), P(1, -1, y1), P(1, 1, y1), P(-1, 1, y1), [0, 1, 0], col);
+}
+function pyramid(G, cx, cz, ux, uz, h, y0, y1, col) {
+  const vx = -uz, vz = ux, A = [cx, y1, cz];
+  const P = (sa, sc) => [cx + (ux * sa + vx * sc) * h, y0, cz + (uz * sa + vz * sc) * h];
+  const c = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  for (let k = 0; k < 4; k++) {
+    const p = P(...c[k]), q = P(...c[(k + 1) % 4]);
+    const mx = (p[0] + q[0]) / 2 - cx, mz = (p[2] + q[2]) / 2 - cz, ml = Math.hypot(mx, mz) || 1, s = h / (y1 - y0);
+    const n = [mx / ml, s, mz / ml]; const nl = Math.hypot(...n);
+    G.quad(p, q, A, A, n.map((x) => x / nl), col);
+  }
+}
+const C255 = (r, g, b) => [srgbToLin(r), srgbToLin(g), srgbToLin(b)];
+function buildPolExtras() {
+  const G = new Geo(false);
+  const lime = C255(236, 229, 212), teak = C255(96, 62, 36), dark = C255(40, 30, 24), tile = C255(165, 82, 47);
+  const pastel = [C255(233, 217, 166), C255(184, 207, 227), C255(207, 224, 207), C255(235, 195, 174), C255(241, 232, 214)];
+  for (const [x, z, ux, uz, w] of META.gates || []) {
+    const vx = -uz, vz = ux, k = Math.abs(Math.round(x * 7 + z * 13)) % pastel.length, col = pastel[k];
+    const half = w + 0.9;
+    for (const sg of [1, -1]) cbox(G, x + vx * (w + 0.45) * sg, z + vz * (w + 0.45) * sg, ux, uz, 1.6, 0.45, 0, 3.6, lime, false);
+    cbox(G, x, z, ux, uz, 1.7, half, 3.6, 6.6, col);                       // guard room over the gateway (chowki)
+    cbox(G, x, z, ux, uz, 1.75, half + 0.05, 3.35, 3.6, teak);              // carved wooden lintel beam
+    G.quad([x - vx * w + ux * 1.6, 3.35, z - vz * w + uz * 1.6], [x + vx * w + ux * 1.6, 3.35, z + vz * w + uz * 1.6],
+      [x + vx * w - ux * 1.6, 3.35, z + vz * w - uz * 1.6], [x - vx * w - ux * 1.6, 3.35, z - vz * w - uz * 1.6], [0, -1, 0], dark);
+    for (const sg of [1, -1]) for (const o of [-0.45, 0.45]) {   // little windows of the guard room, both street faces
+      const cx = x + ux * 1.72 * sg + vx * o * half, cz = z + uz * 1.72 * sg + vz * o * half, hw = 0.38;
+      G.quad([cx - vx * hw, 4.4, cz - vz * hw], [cx + vx * hw, 4.4, cz + vz * hw], [cx + vx * hw, 5.6, cz + vz * hw], [cx - vx * hw, 5.6, cz - vz * hw], [ux * sg, 0, uz * sg], teak);
+    }
+    // tiled gable roof, ridge across the lane
+    const RO = 0.35, ER = 6.6, RR = 7.7;
+    for (const sg of [1, -1]) {
+      const e0 = [x + ux * (1.7 + RO) * sg - vx * (half + RO), ER - 0.15, z + uz * (1.7 + RO) * sg - vz * (half + RO)];
+      const e1 = [x + ux * (1.7 + RO) * sg + vx * (half + RO), ER - 0.15, z + uz * (1.7 + RO) * sg + vz * (half + RO)];
+      const r1 = [x + vx * (half + RO), RR, z + vz * (half + RO)], r0 = [x - vx * (half + RO), RR, z - vz * (half + RO)];
+      const s = (RR - ER) / 1.7, nl = Math.hypot(s, 1);
+      G.quad(e0, e1, r1, r0, [ux * sg * s / nl, 1 / nl, uz * sg * s / nl], tile);
+    }
+    for (const sg of [1, -1]) {   // gable triangles
+      const a = [x + vx * half * sg + ux * 1.7, 6.6, z + vz * half * sg + uz * 1.7], b = [x + vx * half * sg - ux * 1.7, 6.6, z + vz * half * sg - uz * 1.7], t = [x + vx * half * sg, 7.6, z + vz * half * sg];
+      G.quad(a, b, t, t, [vx * sg, 0, vz * sg], col);
+    }
+  }
+  const birds = [C255(86, 168, 92), C255(92, 150, 205), C255(238, 236, 226), C255(232, 190, 82), C255(222, 132, 150), C255(70, 160, 160)];
+  for (const [x, z] of META.chabutros || []) {
+    const k = Math.abs(Math.round(x * 3 + z * 5)), col = birds[k % birds.length], trim = birds[(k + 3) % birds.length];
+    const a = (k % 90) * Math.PI / 180, ux = Math.cos(a), uz = Math.sin(a);
+    cbox(G, x, z, ux, uz, 1.1, 1.1, 0, 0.5, C255(205, 196, 178));             // stone plinth
+    cbox(G, x, z, ux, uz, 0.75, 0.75, 0.5, 0.85, C255(190, 180, 160));
+    cbox(G, x, z, ux, uz, 0.2, 0.2, 0.85, 4.4, col, false);                    // pillar
+    cbox(G, x, z, ux, uz, 0.32, 0.32, 3.9, 4.4, trim, false);
+    cbox(G, x, z, ux, uz, 1.05, 1.05, 4.4, 4.6, trim);                         // feeding platform
+    for (const [sa, sc] of [[-0.85, -0.85], [0.85, -0.85], [0.85, 0.85], [-0.85, 0.85]])
+      cbox(G, x + (ux * sa - uz * sc), z + (uz * sa + ux * sc), ux, uz, 0.07, 0.07, 4.6, 5.6, col, false);
+    cbox(G, x, z, ux, uz, 0.55, 0.55, 4.6, 5.5, col);                          // the little bird house
+    cbox(G, x, z, ux, uz, 1.15, 1.15, 5.6, 5.75, trim);
+    pyramid(G, x, z, ux, uz, 1.15, 5.75, 6.7, col);                            // canopy
+    cbox(G, x, z, ux, uz, 0.07, 0.07, 6.7, 7.1, trim);                         // finial
+  }
+  if (!G.p.length) return;
+  const m = G.mesh(POLX); m.renderOrder = 10; group.ground.add(m); POLMESH = m;
+}
+let POLMESH = null;
+
+// ---------------------------------------------------------------- SVPI airport: runway 05/23, taxiways, apron, parked aircraft
+const AIRFIELD = (() => {
+  const m = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  m.depthWrite = false; m.depthTest = false; m.side = THREE.DoubleSide;
+  return hook(m, {
+    flatGround: true,
+    vHead: 'attribute vec4 aR; varying vec4 vR;', vBody: 'vR = aR;',
+    fHead: `varying vec4 vR;
+    float seg7(int d, vec2 q) {
+      if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0) return 0.0;
+      float t = 0.19;
+      float A = step(1.0 - t, q.y), D = step(q.y, t), Gm = step(abs(q.y - 0.5), t * 0.5);
+      float Lf = step(q.x, t), Rt = step(1.0 - t, q.x), up = step(0.5, q.y), lo = 1.0 - up;
+      float a = A, b = Rt * up, c = Rt * lo, dd = D, e = Lf * lo, f = Lf * up, g = Gm;
+      if (d == 0) return max(max(max(a, b), max(c, dd)), max(e, f));
+      if (d == 2) return max(max(max(a, b), max(g, e)), dd);
+      if (d == 3) return max(max(max(a, b), max(g, c)), dd);
+      if (d == 5) return max(max(max(a, f), max(g, c)), dd);
+      return 0.0;
+    }`,
+    fColor: `
+    float a = vR.x, s = vR.y; int ty = int(vR.z + 0.5); float P = vR.w;
+    vec2 p = vWPos.xz;
+    float pxs = length(fwidth(p)); float det = 1.0 - smoothstep(2.5, 6.0, pxs);
+    float lw = max(0.0, pxs * 0.35 - 0.3);   // thin lines widen a little when zoomed out instead of vanishing
+    float aa = abs(a);
+    vec3 c; float white = 0.0, yel = 0.0;
+    if (ty == 0) {
+      float hw = 22.5; float se = min(s, P - s);
+      float conc = clamp(step(s, 330.0) + step(P - 330.0, s), 0.0, 1.0);
+      c = mix(vec3(0.29, 0.29, 0.30), vec3(0.60, 0.59, 0.56), conc) * (0.93 + 0.1*vnoise(mod(p*0.5, 1024.0)));
+      float tdz = smoothstep(260.0, 420.0, se) * (1.0 - smoothstep(650.0, 1000.0, se));
+      c *= 1.0 - 0.45*tdz*(1.0 - smoothstep(2.0, 7.5, abs(aa - 4.5)))*vnoise(mod(vec2(s*0.04, a*1.5), 1024.0));
+      if (aa > hw) c = vec3(0.50, 0.48, 0.44) * (0.9 + 0.1*vnoise(mod(p*0.7, 1024.0)));
+      if (s < 0.0 || s > P) {
+        float sd = s < 0.0 ? -s : s - P;
+        c = vec3(0.33, 0.33, 0.33);
+        yel += step(fract((sd + aa * 0.7) / 14.0), 0.22) * step(aa, hw);
+      } else {
+        white += step(6.0, se) * step(se, 36.0) * step(1.5, aa) * step(aa, hw - 2.0) * step(fract((aa - 1.5) / 3.6), 0.5);
+        white += step(aa, 0.45 + lw) * step(80.0, se) * step(fract(s / 50.0), 0.6);
+        white += step(abs(aa - (hw - 0.6)), 0.45 + lw);
+        white += step(abs(se - 422.0), 22.5) * step(abs(aa - 10.5), 3.0);
+        for (int k = 0; k < 5; k++) {
+          float st = k == 0 ? 150.0 : k == 1 ? 300.0 : k == 2 ? 600.0 : k == 3 ? 750.0 : 900.0;
+          float nb = k < 2 ? 3.0 : k < 4 ? 2.0 : 1.0;
+          white += step(abs(se - st - 11.25), 11.25) * step(3.0, aa) * step(aa, 3.0 + nb * 2.4) * step(fract((aa - 3.0) / 2.4), 0.62);
+        }
+        // runway designators: "05" read by aircraft landing towards 23, "23" by those landing towards 05
+        float dy0 = (s - 46.0) / 9.0, dy1 = ((P - s) - 46.0) / 9.0;
+        white += seg7(0, vec2((3.9 - a) / 3.0, dy0)) + seg7(5, vec2((-0.9 - a) / 3.0, dy0));
+        white += seg7(2, vec2((a + 3.9) / 3.0, dy1)) + seg7(3, vec2((a - 0.9) / 3.0, dy1));
+      }
+    } else if (ty == 1) {
+      c = vec3(0.34, 0.34, 0.35) * (0.93 + 0.1*vnoise(mod(p*0.6, 1024.0)));
+      if (aa > P) c = vec3(0.50, 0.48, 0.44) * (0.9 + 0.1*vnoise(mod(p*0.7, 1024.0)));
+      yel += step(aa, 0.3 + lw) + step(abs(aa - (P - 0.4)), 0.12 + lw * 0.5) + step(abs(aa - (P - 0.85)), 0.12 + lw * 0.5);
+    } else {
+      c = vec3(0.62, 0.61, 0.58) * (0.9 + 0.12*vnoise(mod(p*0.25, 1024.0)) + 0.05*vnoise(mod(p*3.0, 1024.0)));
+      vec2 j = abs(fract(p / 7.5) - 0.5);
+      c *= 1.0 - 0.10 * (1.0 - smoothstep(0.47, 0.49, max(j.x, j.y))) * det;
+      c *= 1.0 - 0.18 * smoothstep(0.55, 0.9, fbm(mod(p * 0.05, 512.0)));
+    }
+    c = mix(c, vec3(0.93), clamp(white, 0.0, 1.0) * det);
+    c = mix(c, vec3(0.90, 0.72, 0.16), clamp(yel, 0.0, 1.0) * det);
+    diffuseColor.rgb = pow(c, vec3(2.2));`,
+    fEmissive: `
+    if (ty == 0) {
+      float edge = step(abs(aa - 22.0), 0.6) * step(fract(s / 60.0), 0.06);
+      float cl = step(aa, 0.4) * step(fract(s / 15.0), 0.12);
+      xEm += (vec3(1.0, 0.95, 0.8) * edge + vec3(0.9, 0.95, 1.0) * cl * 0.7) * 2.0 * uNight;
+    } else if (ty == 1) {
+      xEm += vec3(0.2, 0.9, 0.3) * step(aa, 0.35) * step(fract(s / 15.0), 0.15) * 1.6 * uNight
+           + vec3(0.25, 0.45, 1.0) * step(abs(aa - P - 0.5), 0.5) * step(fract(s / 30.0), 0.1) * 1.6 * uNight;
+    } else {
+      xEm += vec3(1.0, 0.75, 0.45) * 0.10 * uNight;
+    }`,
+  });
+})();
+function buildAirport() {
+  const A = META.airport; if (!A) return;
+  const P = [], R = [], I = [];
+  const quad = (pts, rs) => { const b = P.length / 2; for (let k = 0; k < 4; k++) { P.push(pts[k][0], pts[k][1]); R.push(...rs[k]); } I.push(b, b + 1, b + 2, b, b + 2, b + 3); };
+  // apron (triangulated polygon)
+  {
+    const fv = A.apron.flat(); const tri = earcut(fv, null, 2); const b = P.length / 2;
+    for (let k = 0; k < A.apron.length; k++) { P.push(A.apron[k][0], A.apron[k][1]); R.push(0, 0, 2, 0); }
+    for (const t of tri) I.push(b + t);
+  }
+  for (const t of A.twy) {
+    const hw = t.w / 2, O = hw + 6;
+    for (let k = 0; k < t.p.length - 1; k++) {
+      const [x0, z0] = t.p[k], [x1, z1] = t.p[k + 1], L = Math.hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L, vx = -uz, vz = ux;
+      const e = 6;   // run a little past the ends so joins are filled
+      const a0 = [x0 - ux * e, z0 - uz * e], a1 = [x1 + ux * e, z1 + uz * e];
+      quad([[a0[0] + vx * O, a0[1] + vz * O], [a1[0] + vx * O, a1[1] + vz * O], [a1[0] - vx * O, a1[1] - vz * O], [a0[0] - vx * O, a0[1] - vz * O]],
+        [[O, -e, 1, hw], [O, L + e, 1, hw], [-O, L + e, 1, hw], [-O, -e, 1, hw]]);
+    }
+  }
+  {
+    const [x0, z0, x1, z1, w] = A.rwy, L = Math.hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L, vx = -uz, vz = ux, O = w / 2 + 7.5, E = 60;
+    // across coordinate a is positive on the aircraft's left when landing towards 23
+    quad([[x0 - ux * E + vx * O, z0 - uz * E + vz * O], [x1 + ux * E + vx * O, z1 + uz * E + vz * O], [x1 + ux * E - vx * O, z1 + uz * E - vz * O], [x0 - ux * E - vx * O, z0 - uz * E - vz * O]],
+      [[-O, -E, 0, L], [-O, L + E, 0, L], [O, L + E, 0, L], [O, -E, 0, L]]);
+  }
+  const pos = new Float32Array(P), aR = new Float32Array(R);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 2)); g.setAttribute('aR', new THREE.BufferAttribute(aR, 4));
+  g.setIndex(new THREE.BufferAttribute(new Uint32Array(I), 1));
+  let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (let k = 0; k < P.length; k += 2) { x0 = Math.min(x0, P[k]); x1 = Math.max(x1, P[k]); z0 = Math.min(z0, P[k + 1]); z1 = Math.max(z1, P[k + 1]); }
+  g.boundingSphere = new THREE.Sphere(new THREE.Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2), Math.hypot(x1 - x0, z1 - z0) / 2);
+  const m = new THREE.Mesh(g, AIRFIELD); m.renderOrder = 3.6; m.receiveShadow = true; group.ground.add(m);
+  buildAircraft(A);
+}
+// parked narrow-bodies on the apron stands (the apron takes nine A321s plus ATRs)
+function buildAircraft(A) {
+  const G = new Geo(false);
+  const white = C255(240, 241, 243), grey = C255(150, 155, 162), glass = C255(30, 36, 44);
+  const tails = [C255(16, 36, 110), C255(16, 36, 110), C255(200, 30, 45), C255(240, 110, 40), C255(16, 36, 110), C255(210, 25, 30), C255(120, 30, 120)];
+  const [rx0, rz0, rx1, rz1] = A.rwy; const RL = Math.hypot(rx1 - rx0, rz1 - rz0), ux = (rx1 - rx0) / RL, uz = (rz1 - rz0) / RL;
+  // the apron's outer edge (towards the terminals) is its 3rd->4th corner; stands face it
+  const [p2x, p2z] = A.apron[2], [p3x, p3z] = A.apron[3];
+  const ex = p2x - p3x, ez = p2z - p3z, EL = Math.hypot(ex, ez);
+  const nX = -(A.apron[1][0] - A.apron[2][0]), nZ = -(A.apron[1][1] - A.apron[2][1]), nL = Math.hypot(nX, nZ);
+  const fx = nX / nL, fz = nZ / nL;   // nose direction: towards the terminal edge
+  const count = Math.min(10, Math.floor(EL / 52));
+  for (let k = 0; k < count; k++) {
+    const t = (k + 0.7) / (count + 0.4);
+    const cx = p3x + ex * t - fx * 30, cz = p3z + ez * t - fz * 30;
+    const sx = -fz, sz = fx, tail = tails[k % tails.length];
+    const atr = k % 4 === 3, S = atr ? 0.62 : 1.0;
+    cbox(G, cx, cz, fx, fz, 18.5 * S, 1.95 * S, 1.6 * S, 5.4 * S, white);                       // fuselage
+    cbox(G, cx + fx * 17.2 * S, cz + fz * 17.2 * S, fx, fz, 1.4 * S, 1.5 * S, 2.2 * S, 4.8 * S, white);  // nose
+    G.quad([cx + fx * 17.6 * S - sx * 1.0 * S, 4.3 * S, cz + fz * 17.6 * S - sz * 1.0 * S], [cx + fx * 17.6 * S + sx * 1.0 * S, 4.3 * S, cz + fz * 17.6 * S + sz * 1.0 * S],
+      [cx + fx * 18.6 * S + sx * 0.9 * S, 4.85 * S, cz + fz * 18.6 * S + sz * 0.9 * S], [cx + fx * 18.6 * S - sx * 0.9 * S, 4.85 * S, cz + fz * 18.6 * S - sz * 0.9 * S], [fx * 0.5, 0.86, fz * 0.5], glass);
+    // swept wings + engines
+    for (const sg of [1, -1]) {
+      const r0 = [cx + fx * 3 + sx * 2 * sg, 2.6 * S, cz + fz * 3 + sz * 2 * sg], r1 = [cx - fx * 3 + sx * 2 * sg, 2.6 * S, cz - fz * 3 + sz * 2 * sg];
+      const t1 = [cx - fx * 9 * S + sx * 17 * S * sg, 3.3 * S, cz - fz * 9 * S + sz * 17 * S * sg], t0 = [cx - fx * 6 * S + sx * 17 * S * sg, 3.3 * S, cz - fz * 6 * S + sz * 17 * S * sg];
+      G.quad(r0, t0, t1, r1, [0, 1, 0], grey);
+      if (!atr) cbox(G, cx + fx * 1.5 + sx * 5.8 * sg, cz + fz * 1.5 + sz * 5.8 * sg, fx, fz, 2.2, 0.95, 0.9, 2.7, grey);
+      else cbox(G, cx + fx * 2.5 * S + sx * 4.2 * S * sg, cz + fz * 2.5 * S + sz * 4.2 * S * sg, fx, fz, 1.9, 0.6, 2.4 * S, 3.6 * S, white);
+      const h0 = [cx - fx * 15 * S + sx * 1.2 * sg, 5.0 * S, cz - fz * 15 * S + sz * 1.2 * sg], h1 = [cx - fx * 18 * S + sx * 1.2 * sg, 5.0 * S, cz - fz * 18 * S + sz * 1.2 * sg];
+      const h2 = [cx - fx * 19 * S + sx * 6.2 * S * sg, 5.2 * S, cz - fz * 19 * S + sz * 6.2 * S * sg], h3 = [cx - fx * 17 * S + sx * 6.2 * S * sg, 5.2 * S, cz - fz * 17 * S + sz * 6.2 * S * sg];
+      G.quad(h0, h3, h2, h1, [0, 1, 0], white);
+    }
+    // tail fin in the airline colour
+    const b0 = [cx - fx * 12 * S, 5.4 * S, cz - fz * 12 * S], b1 = [cx - fx * 18.5 * S, 5.4 * S, cz - fz * 18.5 * S];
+    const tp1 = [cx - fx * 20 * S, 11.5 * S, cz - fz * 20 * S], tp0 = [cx - fx * 16.5 * S, 11.5 * S, cz - fz * 16.5 * S];
+    G.quad(b0, b1, tp1, tp0, [sx, 0, sz], tail); G.quad(b1, b0, tp0, tp1, [-sx, 0, -sz], tail);
+  }
+  if (!G.p.length) return;
+  const m = G.mesh(POLX); group.ground.add(m);
+}
+
+function geoTiles(G, mat, yr) {
+  if (!G.p.length) return [];
+  const pos = new Float32Array(G.p);
+  const attrs = { position: new THREE.BufferAttribute(pos, 3), normal: new THREE.Float32BufferAttribute(G.n, 3) };
+  if (G.x) attrs.aR = new THREE.Float32BufferAttribute(G.x, 4);
+  if (G.c.length) attrs.color = new THREE.Float32BufferAttribute(G.c, 3);
+  if (G.ids) attrs.aId = new THREE.Float32BufferAttribute(G.ids, 1);
+  return tileSplit(attrs, G.i, (i) => pos[i * 3], (i) => pos[i * 3 + 2], yr, (g) => {
+    const m = new THREE.Mesh(g, mat); m.castShadow = true; m.receiveShadow = true; m.renderOrder = 10; return [m];
+  });
+}
 let DECKIDX = null;
 function buildDecks(decks, xy) {
   const D = new Geo(true, true), W = new Geo(false, true);
@@ -665,8 +1187,8 @@ function buildDecks(decks, xy) {
     W.box(x, zz, ux, uz, 0.75, 0.85, 0, h - 2.1);
     W.box(x, zz, ux, uz, 0.95, hc, h - 2.1, h - 1.3);
   }
-  if (D.p.length) { const m = D.mesh(DECK); group.ground.add(m); }
-  if (W.p.length) { const m = W.mesh(DECKWALL); group.ground.add(m); }
+  for (const m of geoTiles(D, DECK, [0, 14])) group.ground.add(m);
+  for (const m of geoTiles(W, DECKWALL, [0, 14])) group.ground.add(m);
   buildAtal();
 }
 
@@ -746,6 +1268,7 @@ function buildRoads() {
     }
     for (let s = 0; s < SEG; s++) { idx[q++] = vb; idx[q++] = vb + 1 + ((s + 1) % SEG); idx[q++] = vb + 1 + s; }
   }
+  const qDisc = q;
   // map canvas: roads by class
   const mapW = [0.7, 0.9, 1.0, 1.6, 1.4, 2.0, 2.4, 1.6, 3.0, 3.4];
   const mapC = ['#6c7179', '#7d828a', '#868b93', '#a9adb3', '#b3b6bb', '#c4c7cc', '#d6d8db', '#c4c7cc', '#e9c46a', '#f0a94b'];
@@ -775,15 +1298,11 @@ function buildRoads() {
       mapCtx.stroke();
     }
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, v * 2), 2));
-  g.setAttribute('aR', new THREE.BufferAttribute(aR.subarray(0, v * 4), 4));
-  g.setIndex(new THREE.BufferAttribute(idx.subarray(0, q), 1));
-  g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+  // culled tiles: junction discs first, then the ribbons, for each of the two passes (kerb, then asphalt + markings)
+  const P2 = pos.subarray(0, v * 2), RA = { aR: new THREE.BufferAttribute(aR.subarray(0, v * 4), 4) };
+  for (const m of flatTiles(P2, RA, idx.subarray(0, qDisc), [[ROAD0, 4], [ROAD1, 5]])) group.ground.add(m);
+  for (const m of flatTiles(P2, RA, idx.subarray(qDisc, q), [[ROAD0, 4.1], [ROAD1, 5.1]])) group.ground.add(m);
   buildDecks(decks, xy);
-  for (const [mat, ord] of [[ROAD0, 4], [ROAD1, 5]]) {
-    const m = new THREE.Mesh(g, mat); m.renderOrder = ord; m.receiveShadow = true; m.frustumCulled = false; group.ground.add(m);
-  }
   buildRoadIndex();
 }
 
@@ -1036,10 +1555,11 @@ function fitShadow(Q) {
 
 // ---------------------------------------------------------------- LOD / detail scheduling
 const settings = { shadows: true, trees: true, labels: true, retro: false };
-const NEAR_MPP = 2.1, TREE_MPP = 1.6, PROP_MPP = 1.05;
+const NEAR_MPP = 2.6, TREE_MPP = 1.6, PROP_MPP = 1.05;
 let queue = [];
 function updateLOD(Q) {
   setFarLod(view.mpp > 6.5);
+  if (POLMESH) POLMESH.visible = view.mpp < 3.2;
   const near = view.mpp < NEAR_MPP;
   const [cx, cz] = [view.tx, view.tz];
   queue = [];
@@ -1430,6 +1950,7 @@ async function boot() {
   buildGround();
   setProgress(0.6, `Paving ${META.counts.roads.toLocaleString()} road segments…`); await tick();
   buildRoads();
+  buildAirport(); buildPolExtras();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;

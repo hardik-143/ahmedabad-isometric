@@ -10,7 +10,10 @@ rng = np.random.default_rng(7)
 bpolys = B['polys'][B['fabric'] != 1]
 btree = shapely.STRtree(bpolys)
 decks = [shapely.LineString(r['xy']).buffer(r['hw'] + r['sw'] + 3.5) for r in G['roads'] if r['bridge']]
-water = shapely.union_all(list(G['water']) + [f.buffer(4) for f in B['fields']] + decks)
+AF = airfield()   # no trees on the runway strip, taxiways or apron
+_rw = shapely.LineString([(AF['x0'] - AF['u'][0] * 300, AF['y0'] - AF['u'][1] * 300), (AF['x1'] + AF['u'][0] * 300, AF['y1'] + AF['u'][1] * 300)])
+airside = [_rw.buffer(300, cap_style='flat'), shapely.Polygon(AF['apron']).buffer(25)] + [shapely.LineString(t['xy']).buffer(45) for t in AF['twy']]
+water = shapely.union_all(list(G['water']) + [f.buffer(4) for f in B['fields']] + decks + airside)
 shapely.prepare(water)
 parks = G['parks']
 roads = G['roads']

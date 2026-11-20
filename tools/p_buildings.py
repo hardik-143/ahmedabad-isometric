@@ -25,6 +25,42 @@ m = area >= 10
 parts, H, area = parts[m], H[m], area[m]
 print('polys', len(parts), round(time.time() - t0, 1))
 
+# ---- heights: the VEDAS DSM heights are heavily compressed (4-6 storey societies come out at 1-2 floors).
+# Google Open Buildings v3 footprints carry per-building heights from the Open Buildings 2.5D Temporal (2023) rasters;
+# use them (calibrated) as a second opinion and keep whichever source says taller.
+tq = pq.read_table(f'{DATA}/gobi_ahd.parquet', columns=['confidence', 'height', 'geometry'])
+gq = proj_geom(shapely.from_wkb(tq.column('geometry').to_numpy(zero_copy_only=False)))
+hq = cal_height(tq.column('height').to_numpy(zero_copy_only=False))
+okq = (tq.column('confidence').to_numpy() >= 0.68) & shapely.is_valid(gq)
+gq, hq = gq[okq], hq[okq]
+gq, _gi = shapely.get_parts(gq, return_index=True)          # stored as (mostly single-part) multipolygons
+hq = hq[_gi]
+_pt = shapely.get_type_id(gq) == 3
+gq, hq = gq[_pt], hq[_pt]
+aq = shapely.area(gq); m = aq >= 10
+gq, hq, aq = gq[m], hq[m], aq[m]
+qc = shapely.centroid(gq)
+qi, vi = shapely.STRtree(parts).query(qc, predicate='within')
+owner = np.full(len(gq), -1); owner[qi] = vi
+has_h = hq[qi] > 0.5
+A_ = np.bincount(vi[has_h], weights=aq[qi][has_h], minlength=len(parts))
+W_ = np.bincount(vi[has_h], weights=(aq * hq)[qi][has_h], minlength=len(parts))
+cover = A_ / area
+Hq = np.where(cover >= 0.2, W_ / np.maximum(A_, 1e-9), 0.0)
+# a single dominant building inside a merged VEDAS outline sets the height on its own
+_dom = has_h & (aq[qi] >= 0.25 * area[vi])
+Hdom = np.zeros(len(parts)); np.maximum.at(Hdom, vi[_dom], hq[qi][_dom])
+Hq = np.maximum(Hq, Hdom)
+H0 = H.copy()
+H = np.maximum(H, Hq)
+fl0, fl1 = np.maximum(1, np.round(H0 / 3.1)), np.maximum(1, np.round(H / 3.1))
+print(f'heights: google covers {np.mean(cover >= 0.2) * 100:.0f}% of footprints; raised {np.mean(fl1 > fl0) * 100:.0f}% '
+      f'(by 2+ floors {np.mean(fl1 - fl0 >= 2) * 100:.0f}%); floors>=4 {np.mean(fl0 >= 4) * 100:.1f}% -> {np.mean(fl1 >= 4) * 100:.1f}%')
+WC = wc_poly()
+vcen = shapely.centroid(parts)
+inwc_v = shapely.contains_xy(WC, shapely.get_x(vcen), shapely.get_y(vcen))
+inwc_q = shapely.contains_xy(WC, shapely.get_x(qc), shapely.get_y(qc))
+
 hull = shapely.area(shapely.convex_hull(parts))
 solidity = area / np.maximum(hull, 1e-9)
 nv = shapely.get_num_coordinates(parts)
@@ -93,8 +129,10 @@ def subdivide(P, hb):
         cw, cd = 10.0, 13.0
     elif hb < 11:
         cw, cd = 11.0, 15.0
+    elif hb < 17:
+        cw, cd = 13.0, 18.0
     else:
-        cw, cd = 12.0, 17.0
+        cw, cd = 18.0, 24.0
     boxes = []
     yy = miny
     while yy < maxy:
@@ -113,20 +151,61 @@ def subdivide(P, hb):
     cp = cp[(shapely.get_type_id(cp) == 3)]
     cp = cp[shapely.area(cp) > 12]
     out = [affinity.rotate(p, ang, origin=ctr) for p in cp]
-    f = rng.uniform(0.5, 1.0, len(out)) if hb >= 8 else rng.uniform(0.7, 1.0, len(out))
+    f = rng.uniform(0.8, 1.0, len(out))
     return out, hb * f
 
 
-polys, hs, isfab, special, parent = [], [], [], [], []
+polys, hs, isfab, special, parent, src = [], [], [], [], [], []
+kids = {}
+for q, o in enumerate(owner):
+    if o >= 0:
+        kids.setdefault(o, []).append(q)
+wc_tall = (~fabric) & (~stadium) & inwc_v & (H > 15.5) & (area > 150)
+n_real = n_proc = 0
 for i in np.where(~fabric & ~stadium)[0]:
-    polys.append(parts[i]); hs.append(H[i]); isfab.append(0); special.append(0); parent.append(-1)
+    # inside the walled city the VEDAS outlines are merged pol blocks: far LOD only, real houses come from Google below
+    polys.append(parts[i]); hs.append(H[i]); isfab.append(1 if inwc_v[i] and not wc_tall[i] else 0); special.append(0); parent.append(-1); src.append(0)
 for i in np.where(fabric)[0]:
-    polys.append(parts[i]); hs.append(H[i] * 0.8); isfab.append(1); special.append(0); parent.append(-1)   # LOD0 block
-    cells, ch = subdivide(parts[i], H[i])
-    polys += cells; hs += list(ch); isfab += [2] * len(cells); special += [0] * len(cells); parent += [i] * len(cells)   # LOD1 cells
+    polys.append(parts[i]); hs.append(H[i] * 0.85); isfab.append(1); special.append(0); parent.append(-1); src.append(0)   # LOD0 block
+    if inwc_v[i]:
+        continue
+    ks = [q for q in kids.get(i, []) if not inwc_q[q]]
+    if ks and aq[ks].sum() >= 0.3 * area[i]:
+        # real footprints of the individual houses (Google Open Buildings) instead of a procedural split
+        n_real += len(ks)
+        for q in ks:
+            polys.append(gq[q]); hs.append(max(hq[q], 3.0) if hq[q] > 0.5 else H[i] * rng.uniform(0.8, 1.0))
+            isfab.append(2); special.append(0); parent.append(-3); src.append(1)
+    else:
+        cells, ch = subdivide(parts[i], H[i])
+        n_proc += len(cells)
+        polys += cells; hs += list(ch); isfab += [2] * len(cells); special += [0] * len(cells); parent += [i] * len(cells); src += [0] * len(cells)
+# walled city: every Google footprint is a house (pol house), unless it sits inside a modern tower we keep
+tall_idx = set(np.where(wc_tall)[0].tolist())
+n_wc = 0
+for q in np.where(inwc_q)[0]:
+    if owner[q] in tall_idx:
+        continue
+    polys.append(gq[q]); hs.append(max(hq[q], 3.0)); isfab.append(2); special.append(0); parent.append(-3); src.append(1); n_wc += 1
+# buildings VEDAS never mapped (whole outskirts are empty in it): take Google's footprints as they are
+n_fill = 0
+_un = np.where((owner < 0) & ~inwc_q)[0]
+_qa, _va = shapely.STRtree(parts).query(gq[_un], predicate='intersects')
+_ov = np.bincount(_qa, weights=shapely.area(shapely.intersection(gq[_un][_qa], parts[_va])), minlength=len(_un))
+dup = np.zeros(len(gq), bool); dup[_un] = _ov > 0.25 * aq[_un]     # same building already mapped by VEDAS
+_rwy = shapely.buffer(shapely.LineString([proj_xy(72.622394, 23.065897), proj_xy(72.646431, 23.088442)]), 160, cap_style='flat')
+for q in np.where((owner < 0) & ~inwc_q)[0]:
+    if aq[q] < 14 or dup[q] or _rwy.contains(qc[q]):
+        continue
+    # small houses only exist at street-level zoom (keeps the city-wide download lean)
+    polys.append(gq[q]); hs.append(max(hq[q], 3.0)); isfab.append(0 if aq[q] >= 110 else 2); special.append(0); parent.append(-3); src.append(1)
+    n_fill += 1
+print(f'detail footprints: {n_real} real (Google) in dense blocks, {n_proc} procedural cells, {n_wc} walled-city houses, '
+      f'{n_fill} gap-fill buildings')
 for k_, (p, h, t) in enumerate(stands):
-    polys.append(p); hs.append(h); isfab.append(0); special.append(1 + t); parent.append(-2)
+    polys.append(p); hs.append(h); isfab.append(0); special.append(1 + t); parent.append(-2); src.append(0)
 polys = np.array(polys, dtype=object); hs = np.array(hs); isfab = np.array(isfab); special = np.array(special); parent = np.array(parent)
+src = np.array(src)
 print('after subdivision', len(polys), round(time.time() - t0, 1))
 
 # ---- roads win: trim buildings back from the carriageway, drop ones mostly on it ----
@@ -143,7 +222,7 @@ hits = defaultdict(list)
 for b_, r_ in zip(bi, ri):
     hits[b_].append(r_)
 keep = np.ones(len(polys), bool)
-ex_p, ex_h, ex_f, ex_s, ex_par = [], [], [], [], []
+ex_p, ex_h, ex_f, ex_s, ex_par, ex_src = [], [], [], [], [], []
 dropped = clipped = 0
 drop_kind = [0, 0, 0]
 for b_, rs in hits.items():
@@ -161,10 +240,11 @@ for b_, rs in hits.items():
     clipped += 1
     for q in shapely.get_parts(cut):
         if q.geom_type == 'Polygon' and q.area > 12:
-            ex_p.append(q); ex_h.append(hs[b_]); ex_f.append(isfab[b_]); ex_s.append(0); ex_par.append(parent[b_])
+            ex_p.append(q); ex_h.append(hs[b_]); ex_f.append(isfab[b_]); ex_s.append(0); ex_par.append(parent[b_]); ex_src.append(src[b_])
 polys = np.concatenate([polys[keep], np.array(ex_p, dtype=object)]) if ex_p else polys[keep]
 hs = np.concatenate([hs[keep], np.array(ex_h)]); isfab = np.concatenate([isfab[keep], np.array(ex_f, dtype=int)])
 special = np.concatenate([special[keep], np.array(ex_s, dtype=int)]); parent = np.concatenate([parent[keep], np.array(ex_par, dtype=int)])
+src = np.concatenate([src[keep], np.array(ex_src, dtype=int)])
 print(f'road conflicts: {dropped} buildings dropped {drop_kind}, {clipped} trimmed', round(time.time() - t0, 1))
 
 # ---- no overlapping buildings: taller (then larger) footprint keeps the shared area ----
@@ -189,7 +269,7 @@ def resolve(sel):
     return out
 
 def apply(cuts, label):
-    global polys, hs, isfab, special, parent
+    global polys, hs, isfab, special, parent, src
     keep = np.ones(len(polys), bool); ex = []
     nd = nt = 0
     for x, cut in cuts.items():
@@ -200,34 +280,48 @@ def apply(cuts, label):
         nt += 1
         for q in shapely.get_parts(cut):
             if q.geom_type == 'Polygon' and q.area > 12:
-                ex.append((q, hs[x], isfab[x], special[x], parent[x]))
+                ex.append((q, hs[x], isfab[x], special[x], parent[x], src[x]))
     polys = np.concatenate([polys[keep], np.array([e[0] for e in ex], dtype=object)])
     hs = np.concatenate([hs[keep], np.array([e[1] for e in ex])])
     isfab = np.concatenate([isfab[keep], np.array([e[2] for e in ex], dtype=int)])
     special = np.concatenate([special[keep], np.array([e[3] for e in ex], dtype=int)])
     parent = np.concatenate([parent[keep], np.array([e[4] for e in ex], dtype=int)])
+    src = np.concatenate([src[keep], np.array([e[5] for e in ex], dtype=int)])
     print(f'{label}: {nd} dropped, {nt} trimmed', round(time.time() - t0, 1))
 
 apply(resolve(np.where(isfab != 1)[0]), 'overlaps (detail)')
 apply(resolve(np.where(isfab != 2)[0]), 'overlaps (far LOD)')
 
 # ---- separate neighbours: pull every footprint in so adjoining buildings read as distinct blocks ----
-inset = np.where(special > 0, 0.0, np.where(isfab == 2, 0.6, 0.7))
+_c = shapely.centroid(polys)
+_wc = shapely.contains_xy(WC, shapely.get_x(_c), shapely.get_y(_c))
+# real (Google) house footprints already have their own gaps; pol row houses share walls, so only a hairline seam there
+inset = np.where(special > 0, 0.0, np.where(src == 1, np.where(_wc, 0.12, 0.3), np.where(isfab == 2, 0.6, 0.7)))
 shr = shapely.buffer(polys, -inset, join_style='mitre', mitre_limit=2.0)
-P2, H2, F2, S2, R2_ = [], [], [], [], []
+P2, H2, F2, S2, R2_, C2 = [], [], [], [], [], []
 for k in range(len(polys)):
     g = shr[k] if inset[k] > 0 else polys[k]
     for q in shapely.get_parts(g):
         if q.geom_type == 'Polygon' and q.area > 9:
-            P2.append(q); H2.append(hs[k]); F2.append(isfab[k]); S2.append(special[k]); R2_.append(parent[k])
+            P2.append(q); H2.append(hs[k]); F2.append(isfab[k]); S2.append(special[k]); R2_.append(parent[k]); C2.append(src[k])
 print(f'inset: {len(polys)} -> {len(P2)} footprints', round(time.time() - t0, 1))
-polys = np.array(P2, dtype=object); hs = np.array(H2); isfab = np.array(F2); special = np.array(S2); parent = np.array(R2_)
+polys = np.array(P2, dtype=object); hs = np.array(H2); isfab = np.array(F2); special = np.array(S2); parent = np.array(R2_); src = np.array(C2)
 
-tol = np.where(isfab == 1, 1.2, 0.3)
+tol = np.where(isfab == 1, 1.2, np.where(src == 1, 0.2, 0.3))
 polys = shapely.simplify(polys, tol, preserve_topology=True)
 polys = shapely.orient_polygons(polys, exterior_cw=False)
 ok = (shapely.get_type_id(polys) == 3) & (~shapely.is_empty(polys)) & (shapely.area(polys) > 6)
-polys, hs, isfab, special = polys[ok], hs[ok], isfab[ok], special[ok]
+polys, hs, isfab, special, src = polys[ok], hs[ok], isfab[ok], special[ok], src[ok]
+area = shapely.area(polys)
+
+# ---- nothing on the runway, taxiways or apron
+AF = airfield()
+_af = shapely.union_all([shapely.buffer(shapely.LineString([(AF['x0'], AF['y0']), (AF['x1'], AF['y1'])]), 80, cap_style='flat')]
+                        + [shapely.buffer(shapely.LineString(t['xy']), 30) for t in AF['twy']] + [shapely.Polygon(AF['apron'])])
+_c = shapely.centroid(polys)
+ok = ~shapely.contains_xy(_af, shapely.get_x(_c), shapely.get_y(_c))
+print('airfield: removed', int((~ok).sum()), 'footprints')
+polys, hs, isfab, special, src = polys[ok], hs[ok], isfab[ok], special[ok], src[ok]
 area = shapely.area(polys)
 
 floors = np.maximum(1, np.round(hs / 3.1)).astype(int)
@@ -235,6 +329,123 @@ floors = np.minimum(floors, 60)
 hsnap = floors * 3.1 + 0.5
 cen = shapely.centroid(polys)
 cx, cy = shapely.get_x(cen), shapely.get_y(cen)
+inwc = shapely.contains_xy(WC, cx, cy)
+
+# ---- pol houses: street facade (edge opening onto a lane/chowk), roof form, ridge parallel to the street
+prng = np.random.default_rng(7)
+N = len(polys)
+polT = np.zeros(N, np.uint8); face = np.full(N, 255, np.uint8); face2 = np.full(N, 255, np.uint8)
+rr0 = np.zeros(N, np.uint8); rr1 = np.zeros(N, np.uint8); rise = np.zeros(N, np.uint8)
+cand = np.where(inwc & (src == 1) & (floors <= 4) & (special == 0))[0]
+_flat = [r for r in G['roads'] if r.get('z') is None]
+rlines = np.array([shapely.LineString(r['xy']) for r in _flat], dtype=object)
+rclear = np.array([r['hw'] + r['sw'] for r in _flat])
+rtree, btree = shapely.STRtree(rlines), shapely.STRtree(polys)
+E = []  # (building, edge, x0, y0, x1, y1)
+for i in cand:
+    ring = np.asarray(polys[i].exterior.coords)
+    for k in range(len(ring) - 1):
+        E.append((i, k, ring[k, 0], ring[k, 1], ring[k + 1, 0], ring[k + 1, 1]))
+E = np.array(E)
+eb, ek = E[:, 0].astype(int), E[:, 1].astype(int)
+dx, dy = E[:, 4] - E[:, 2], E[:, 5] - E[:, 3]; EL = np.hypot(dx, dy) + 1e-9
+nx_, ny_ = dy / EL, -dx / EL                                   # outward normal of a CCW ring
+mx, my = (E[:, 2] + E[:, 4]) / 2, (E[:, 3] + E[:, 5]) / 2
+p1 = shapely.points(mx + nx_ * 1.0, my + ny_ * 1.0); p2 = shapely.points(mx + nx_ * 2.6, my + ny_ * 2.6)
+blocked = np.zeros(len(E), bool)
+for pp in (p1, p2):
+    a_, b_ = btree.query(pp, predicate='intersects'); blocked[a_] = True
+ri, rd = rtree.query_nearest(p1, return_distance=True, all_matches=False)
+near = np.zeros(len(E), bool); near[ri[0]] = rd <= rclear[ri[1]] + 3.0
+score = EL * (~blocked) * (1 + 1.5 * near) * (EL >= 1.8)
+best = {}
+for j in np.argsort(-score):
+    if score[j] <= 0:
+        break
+    b = eb[j]
+    if b not in best:
+        best[b] = [j]
+    elif len(best[b]) == 1:
+        j0 = best[b][0]
+        if abs(dx[j] * dx[j0] + dy[j] * dy[j0]) / (EL[j] * EL[j0]) < 0.7 and EL[j] >= 3.0:
+            best[b].append(j)
+TAN = math.tan(math.radians(24))
+n_gable = n_flat = 0
+for i in cand:
+    js = best.get(i, [])
+    P = polys[i]
+    ring = np.asarray(P.exterior.coords)[:-1]; n = len(ring)
+    fe = ek[js[0]] if js else -1
+    fe2 = ek[js[1]] if len(js) > 1 else -1
+    want_gable = prng.random() < 0.68 and len(P.interiors) == 0 and n <= 120
+    done = False
+    if want_gable:
+        if fe >= 0:
+            d = ring[(fe + 1) % n] - ring[fe]
+        else:
+            sg = np.diff(np.vstack([ring, ring[:1]]), axis=0); d = sg[np.argmax(np.hypot(sg[:, 0], sg[:, 1]))]
+        u = d / (np.hypot(*d) + 1e-9); v = np.array([-u[1], u[0]])
+        pr = (ring - ring[0]) @ v; c = (pr.min() + pr.max()) / 2; half = (pr.max() - pr.min()) / 2
+        dd = pr - c
+        if half >= 1.3:
+            new, ridx, omap = [], [], {}
+            for k in range(n):
+                a, b = ring[k], ring[(k + 1) % n]; da, db = dd[k], dd[(k + 1) % n]
+                omap[k] = len(new); new.append(a)
+                if abs(da) < 1e-6:
+                    ridx.append(len(new) - 1)
+                elif da * db < 0 and abs(db) > 1e-6:
+                    t = da / (da - db); new.append(a + (b - a) * t); ridx.append(len(new) - 1)
+            if len(ridx) == 2 and len(new) <= 250:
+                Q = shapely.Polygon(new)
+                if Q.is_valid:
+                    polys[i] = Q
+                    polT[i] = 2; rr0[i], rr1[i] = ridx
+                    rise[i] = int(round(min(2.4, max(0.9, half * TAN)) * 10))
+                    if fe >= 0: face[i] = omap[fe]
+                    if fe2 >= 0: face2[i] = omap[fe2]
+                    done = True; n_gable += 1
+    if not done:
+        polT[i] = 1; n_flat += 1
+        if fe >= 0: face[i] = fe
+        if fe2 >= 0: face2[i] = fe2
+print(f'pol houses: {n_gable} tiled gable roofs, {n_flat} flat terraces (agasi), {int((face[cand] < 255).sum())} with a street facade')
+
+# ---- pol gates (at lane mouths on bigger streets) and chabutros (bird feeders in the lane chowks)
+from collections import defaultdict as _dd
+ends = _dd(list)
+for r in _flat:
+    xy = np.asarray(r['xy'])
+    for e, pt in ((0, xy[0]), (-1, xy[-1])):
+        ends[(round(pt[0], 1), round(pt[1], 1))].append((r, e))
+gates, chab = [], []
+for key, lst in ends.items():
+    if not WC.contains(shapely.Point(key)):
+        continue
+    big = [r for r, e in lst if r['cls'] >= 3]
+    lanes = [(r, e) for r, e in lst if r['cls'] <= 2]
+    if big:
+        off = max(r['hw'] + r['sw'] for r in big) + 3.5
+        for r, e in lanes:
+            ln = shapely.LineString(r['xy'])
+            if ln.length < 35:
+                continue
+            s0 = off if e == 0 else ln.length - off
+            pa, pb = ln.interpolate(max(0, s0 - 1)), ln.interpolate(min(ln.length, s0 + 1))
+            pc = ln.interpolate(s0)
+            ang = math.atan2(pb.y - pa.y, pb.x - pa.x)
+            gates.append((pc.x, pc.y, ang, r['hw'] + r['sw'] + 0.4))
+    elif len(lanes) >= 3:
+        chab.append(key)
+def _thin(pts, dmin):
+    out = []
+    for p in pts:
+        if all((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 > dmin * dmin for q in out):
+            out.append(p)
+    return out
+gates = _thin(gates, 22)
+chab = [c for c in _thin(chab, 70) if all((c[0] - g[0]) ** 2 + (c[1] - g[1]) ** 2 > 30 ** 2 for g in gates)]
+print('pol gates', len(gates), 'chabutros', len(chab))
 old = in_oldcity(cx, cy)
 industrial = (isfab == 0) & (special == 0) & (area > 1200) & (hsnap <= 10.5)
 
@@ -252,8 +463,16 @@ PAL = {
     'old': [('#d9b58d', '#a97c61'), ('#cba07a', '#b9a48e'), ('#e4c8a3', '#9d8f80'), ('#bb916d', '#c5b59e'),
             ('#e7d3b4', '#a8735a'), ('#d6a98a', '#b3a593')],
     'stand': [('#d4d1ca', '#3d6da6'), ('#d4d1ca', '#b9bdc5'), ('#ebe9e4', '#f3f2ee')],
+    # pol houses: lime-washed pastel walls (yellow, blue, green, red ochre, white) under Mangalore-tile roofs
+    'pol': [('#e9d9a6', '#a5522f'), ('#cfe0cf', '#b3623b'), ('#b8cfe3', '#8e4a2d'), ('#ebc3ae', '#9b5b3d'),
+            ('#f1e8d6', '#a5522f'), ('#a9cdb6', '#7f4b36'), ('#e8d290', '#b86b45'), ('#d98f7a', '#9b5b3d'),
+            ('#9fc3cf', '#a5522f'), ('#d9cbe3', '#b3623b'), ('#f3ead2', '#8e4a2d'), ('#c9b48e', '#a5522f')],
+    # far-LOD walled-city blocks: read as a sea of tile roofs from above
+    'polblk': [('#dcc39a', '#a35a3a'), ('#d2b48f', '#9a5a3f'), ('#e2cfaa', '#ad6644'), ('#cdb08a', '#8f5038')],
+    # airport terminals / hangars: glass curtain walls, light metal roofs
+    'term': [('#dfe6ec', '#e9ecee'), ('#cfd9e2', '#dfe3e6'), ('#e8ebee', '#d5dade')],
 }
-WSTYLE = {'low': 1, 'mid': 1, 'high': 2, 'ind': 0, 'old': 3, 'stand': 0}
+WSTYLE = {'low': 1, 'mid': 1, 'high': 2, 'ind': 0, 'old': 3, 'stand': 0, 'pol': 4, 'polblk': 3, 'term': 2}
 palette, pal_index = [], {}
 for k, lst in PAL.items():
     pal_index[k] = []
@@ -264,6 +483,11 @@ for k, lst in PAL.items():
             ws = 1
         palette.append([w, r, ws])
 
+# terminal zone: the built strip behind the apron, along the terminal side of the runway
+_tz = shapely.Polygon([AF['P'](-250, 440), AF['P'](1450, 440), AF['P'](1450, 720), AF['P'](-250, 720)])
+terminal = shapely.contains_xy(_tz, cx, cy) & (area > 1500) & (special == 0)
+hsnap = np.where(terminal, np.maximum(hsnap, 3 * 3.1 + 0.5), hsnap)
+print('airport terminal/hangar buildings', int(terminal.sum()))
 hv = hash01(np.round(cx * 7).astype(np.int64), np.round(cy * 13).astype(np.int64))
 style = np.zeros(len(polys), dtype=np.uint8)
 for i in range(len(polys)):
@@ -271,7 +495,13 @@ for i in range(len(polys)):
         t = special[i] - 1
         style[i] = pal_index['stand'][2 if t == N_TIER - 1 else t % 2]
         continue
-    if industrial[i]:
+    if terminal[i]:
+        k = 'term'
+    elif polT[i]:
+        k = 'pol'
+    elif inwc[i] and isfab[i] == 1:
+        k = 'polblk'
+    elif industrial[i]:
         k = 'ind'
     elif old[i] and hsnap[i] < 20:
         k = 'old'
@@ -293,7 +523,7 @@ inner = shapely.buffer(polys, -1.1, quad_segs=1)
 props = []  # (x, y, base_h, type, rot, scale)
 rect_ang = np.zeros(len(polys))
 for i in range(len(polys)):
-    if isfab[i] == 1 or special[i] or industrial[i] or hsnap[i] < 3.5 or area[i] < 35:
+    if isfab[i] == 1 or special[i] or industrial[i] or hsnap[i] < 3.5 or area[i] < 35 or polT[i] == 2 or terminal[i]:
         continue
     r = hv[i]
     if r > 0.88:
@@ -332,5 +562,6 @@ props = np.array(props)
 print('props', len(props), round(time.time() - t0, 1))
 
 pickle.dump(dict(polys=polys, hs=hsnap, style=style, recs=recs, props=props, palette=palette, fields=fields, pitches=pitches,
-                 fabric=isfab, industrial=industrial), open(f'{OUT}/buildings.pkl', 'wb'))
+                 fabric=isfab, industrial=industrial, polT=polT, face=face, face2=face2, rr0=rr0, rr1=rr1, rise=rise,
+                 gates=gates, chab=chab), open(f'{OUT}/buildings.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))
