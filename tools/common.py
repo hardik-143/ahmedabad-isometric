@@ -150,8 +150,9 @@ DARWAJAS = [
     ('Sarangpur Darwaza', 23.02250, 72.59806, 15 * FT, 26 * FT, None, (33 * FT, 16 * FT), 8.0, 2.4),
     ('Raipur Darwaza', 23.01722, 72.59472, 19 * FT, 26 * FT, None, (32 * FT, 20 * FT), 8.0, 2.4),
     ('Astodia Darwaza', 23.01667, 72.59083, 17 * FT, 25 * FT, None, (28 * FT, 27 * FT), 8.5, 2.4),
-    ('Jamalpur Darwaza', 23.01222, 72.58139, 16 * FT, 24 * FT, None, (30 * FT, 18 * FT), 8.0, 2.4),
+    ('Jamalpur Darwaza', 23.01222, 72.58139, 22 * FT, 27 * FT, None, (32 * FT, 27 * FT), 8.5, 2.4),
     ('Raikhad Darwaza', 23.01904, 72.57886, 16 * FT, 24 * FT, None, (30 * FT, 18 * FT), 8.0, 2.4),
     ('Khanpur Darwaza', 23.03000, 72.57694, 16 * FT, 24 * FT, None, (30 * FT, 18 * FT), 8.0, 2.4),
-    ('Shahpur Darwaza', 23.03917, 72.57944, 16 * FT, 24 * FT, None, (30 * FT, 18 * FT), 8.0, 2.4),
 ]
+# Not modelled: Shahpur (recorded as demolished), Khan Jahan / Lal Darwaza / Salapas (the published coordinates are a
+# copy of one another), Mahudha, Ganesh, Ram, Manek (no coordinates).

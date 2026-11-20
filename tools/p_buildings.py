@@ -324,27 +324,47 @@ ok = (shapely.get_type_id(polys) == 3) & (~shapely.is_empty(polys)) & (shapely.a
 polys, hs, isfab, special, src = polys[ok], hs[ok], isfab[ok], special[ok], src[ok]
 area = shapely.area(polys)
 
-# ---- darwajas: snap each gate onto the street that runs through it, clear what stands in the way
+# ---- darwajas. City gates are openings in the old wall, so the passage runs across the wall line: find the street
+# that crosses the wall within a few tens of metres of the recorded position and stand the gate astride it.
+# Teen Darwaza is the citadel's inner gate and straddles the Bhadra - Manek Chowk street.
 darw = []
-_flat_all = [r for r in G['roads'] if r.get('z') is None and r['cls'] >= 2]
-_dl = shapely.STRtree(np.array([shapely.LineString(r['xy']) for r in _flat_all], dtype=object))
+_flat_all = [r for r in G['roads'] if r.get('z') is None]
+_rls = np.array([shapely.LineString(r['xy']) for r in _flat_all], dtype=object)
+_dl = shapely.STRtree(_rls)
+_wall = WC.exterior
+def _dir_at(ln, q):
+    t = ln.project(q); a1_, b1_ = ln.interpolate(max(0, t - 5)), ln.interpolate(min(ln.length, t + 5))
+    dx_, dy_ = b1_.x - a1_.x, b1_.y - a1_.y; l_ = math.hypot(dx_, dy_) or 1
+    return dx_ / l_, dy_ / l_
 for nm, la, lo, cw, ch, sw_, plat, depth, pier in DARWAJAS:
-    x, y = proj_xy(lo, la)
-    pt = shapely.Point(x, y)
-    near_ = _dl.query(pt.buffer(45))
+    x, y = proj_xy(lo, la); P_ = shapely.Point(x, y)
     best_ = None
-    for j in near_:
-        r = _flat_all[j]; ln = shapely.LineString(r['xy']); d = ln.distance(pt)
-        sc = d - 6 * r['cls']
-        if best_ is None or sc < best_[0]:
-            best_ = (sc, ln, r)
-    if best_ is not None:
-        ln = best_[1]; t = ln.project(pt); q = ln.interpolate(t)
-        a1, b1 = ln.interpolate(max(0, t - 6)), ln.interpolate(min(ln.length, t + 6))
-        ux, uy = b1.x - a1.x, b1.y - a1.y; l_ = math.hypot(ux, uy) or 1; ux, uy = ux / l_, uy / l_
-        x, y = q.x, q.y
+    if nm == 'Teen Darwaza':
+        for j in _dl.query(P_.buffer(30)):
+            d_ = _rls[j].distance(P_)
+            if best_ is None or d_ < best_[0]:
+                q = _rls[j].interpolate(_rls[j].project(P_)); best_ = (d_, q, _dir_at(_rls[j], q), _flat_all[j])
     else:
-        ux, uy = 1.0, 0.0
+        tw0 = _wall.project(P_); wa, wb = _wall.interpolate(tw0 - 25), _wall.interpolate(tw0 + 25)
+        Tx, Ty = wb.x - wa.x, wb.y - wa.y; tl = math.hypot(Tx, Ty) or 1; Tx, Ty = Tx / tl, Ty / tl
+        Nx, Ny = -Ty, Tx
+        seg = shapely.LineString([(x - Tx * 45, y - Ty * 45), (x + Tx * 45, y + Ty * 45)])
+        for j in _dl.query(seg, predicate='intersects'):
+            for q in shapely.get_parts(_rls[j].intersection(seg)):
+                if q.geom_type != 'Point':
+                    continue
+                ux_, uy_ = _dir_at(_rls[j], q)
+                if abs(ux_ * Nx + uy_ * Ny) < 0.55:     # runs along the wall, not through it
+                    continue
+                sc = q.distance(P_) - 5 * _flat_all[j]['cls']
+                if best_ is None or sc < best_[0]:
+                    best_ = (sc, q, (ux_, uy_), _flat_all[j])
+        if best_ is None:
+            best_ = (0, P_, (Nx, Ny), None)
+    _, q, (ux, uy), rr = best_
+    x, y = q.x, q.y
+    print(f'  {nm:18s} moved {math.hypot(x - proj_xy(lo, la)[0], y - proj_xy(lo, la)[1]):5.1f} m onto '
+          f'{(rr["name"] or "unnamed") if rr else "-"} (cls {rr["cls"] if rr else "-"})')
     sw_ = sw_ if sw_ else cw * 0.72
     W = cw + 2 * sw_ + 4 * pier
     darw.append(dict(name=nm, x=x, y=y, ux=ux, uy=uy, cw=cw, ch=ch, sw=sw_, sh=ch * 0.8, depth=depth, pier=pier, W=W, plat=plat))
@@ -496,6 +516,10 @@ def _thin(pts, dmin):
     return out
 gates = _thin(gates, 22)
 chab = [c for c in _thin(chab, 70) if all((c[0] - g[0]) ** 2 + (c[1] - g[1]) ** 2 > 30 ** 2 for g in gates)]
+# keep the little pol gates and bird feeders well clear of the big city gates
+_gzb = _gz.buffer(12)
+gates = [g for g in gates if not _gzb.contains(shapely.Point(g[0], g[1]))]
+chab = [c for c in chab if not _gzb.contains(shapely.Point(c[0], c[1]))]
 print('pol gates', len(gates), 'chabutros', len(chab))
 old = in_oldcity(cx, cy)
 industrial = (isfab == 0) & (special == 0) & (area > 1200) & (hsnap <= 10.5)
