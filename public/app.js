@@ -41,8 +41,9 @@ class Reader {
 }
 
 async function fetchBin(name, total, onProgress) {
-  let res = await fetch(`data/${name}.bin`), b64 = false;
-  if (!res.ok) { res = await fetch(`data/${name}.txt`); b64 = true; }
+  const v = META && META.build ? `?v=${META.build}` : '';
+  let res = await fetch(`data/${name}.bin${v}`), b64 = false;
+  if (!res.ok) { res = await fetch(`data/${name}.txt${v}`); b64 = true; }
   if (!res.ok) throw new Error(`Could not load ${name} (${res.status})`);
   let bytes;
   if (res.body && res.body.getReader) {
@@ -1414,7 +1415,7 @@ function frame(now) {
 // ---------------------------------------------------------------- boot
 async function boot() {
   setProgress(0.02, 'Loading city plan…');
-  META = await (await fetch('data/meta.json')).json();
+  META = await (await fetch('data/meta.json', { cache: 'no-store' })).json();
   PAL = META.palette.map(([w, r, ws]) => ({ w: hexLin8(w), r: hexLin8(r), ws }));
   for (const w of META.wards) { if (w.name === 'S.P.Stadium') w.name = 'Stadium'; if (w.name === 'Kubernagr') w.name = 'Kubernagar'; }
   const o = META.origin;
@@ -1436,6 +1437,7 @@ async function boot() {
   view.tx = 0; view.tz = 0; view.mpp = 26; view.az = Math.PI / 4;
   applyTod(tod);
   ready = true; dirty = true;
+  try { sessionStorage.removeItem('amd-retry'); } catch (_) {}
   setProgress(1, 'Ready');
   $('loader').classList.add('hide');
   const [sx, sz] = [(72.5745 - o.lon) * o.kx, -(23.0255 - o.lat) * o.ky];
@@ -1447,4 +1449,10 @@ async function boot() {
 }
 window.AMD = { STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
-boot().catch((e) => { showErr('Failed to start: ' + e.message); console.error(e); });
+boot().catch((e) => {
+  console.error(e);
+  // one automatic retry: a half-updated browser cache is the usual cause after a redeploy
+  let retried = false; try { retried = sessionStorage.getItem('amd-retry') === '1'; if (!retried) sessionStorage.setItem('amd-retry', '1'); } catch (_) { retried = true; }
+  if (!retried) { location.reload(); return; }
+  showErr('Failed to start: ' + e.message + ' — try a hard refresh (Ctrl/Cmd+Shift+R).');
+});

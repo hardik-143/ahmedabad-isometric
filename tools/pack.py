@@ -270,6 +270,11 @@ meta = dict(
                 props=int(len(props)), trees=int(len(tp)), roads=len(roads), water=len(G['water']), parks=len(G['parks'])),
     sizes={k: os.path.getsize(f'{SITE}/data/{k}.{FMT}') for k in files},
 )
+import hashlib
+_h = hashlib.sha1()
+for k in sorted(files):
+    _h.update(open(f'{SITE}/data/{k}.{FMT}', 'rb').read())
+meta['build'] = _h.hexdigest()[:12]   # bins are fetched as ?v=<build> so a cached copy can never mix with a new meta.json
 json.dump(meta, open(f'{SITE}/data/meta.json', 'w'), separators=(',', ':'))
 print('meta KB', os.path.getsize(f'{SITE}/data/meta.json') // 1024, 'stations', [s['name'] for s in stations])
 print('done', round(time.time() - t0, 1))
