@@ -192,7 +192,7 @@ n_fill = 0
 _un = np.where((owner < 0) & ~inwc_q)[0]
 _qa, _va = shapely.STRtree(parts).query(gq[_un], predicate='intersects')
 _ov = np.bincount(_qa, weights=shapely.area(shapely.intersection(gq[_un][_qa], parts[_va])), minlength=len(_un))
-dup = np.zeros(len(gq), bool); dup[_un] = _ov > 0.25 * aq[_un]     # same building already mapped by VEDAS
+dup = np.zeros(len(gq), bool); dup[_un] = _ov > 0.06 * aq[_un]     # same building already mapped by VEDAS
 _rwy = shapely.buffer(shapely.LineString([proj_xy(72.622394, 23.065897), proj_xy(72.646431, 23.088442)]), 160, cap_style='flat')
 for q in np.where((owner < 0) & ~inwc_q)[0]:
     if aq[q] < 14 or dup[q] or _rwy.contains(qc[q]):
@@ -289,6 +289,16 @@ def apply(cuts, label):
     src = np.concatenate([src[keep], np.array([e[5] for e in ex], dtype=int)])
     print(f'{label}: {nd} dropped, {nt} trimmed', round(time.time() - t0, 1))
 
+# a Google footprint that overlaps a VEDAS building is the same building seen twice (slightly offset):
+# drop it rather than trimming it, which would fuse two differently coloured halves into one
+_g = np.where(src == 1)[0]; _v = np.where((src == 0) & (isfab == 0) & (special == 0))[0]
+_gi_, _vi_ = shapely.STRtree(polys[_v]).query(polys[_g], predicate='intersects')
+_ova = shapely.area(shapely.intersection(polys[_g][_gi_], polys[_v][_vi_]))
+_ovs = np.bincount(_gi_, weights=_ova, minlength=len(_g))
+_dropg = _g[_ovs > 0.06 * shapely.area(polys[_g])]
+_keep = np.ones(len(polys), bool); _keep[_dropg] = False
+print('cross-source duplicates dropped', len(_dropg))
+polys, hs, isfab, special, parent, src = polys[_keep], hs[_keep], isfab[_keep], special[_keep], parent[_keep], src[_keep]
 apply(resolve(np.where(isfab != 1)[0]), 'overlaps (detail)')
 apply(resolve(np.where(isfab != 2)[0]), 'overlaps (far LOD)')
 
@@ -313,6 +323,47 @@ polys = shapely.orient_polygons(polys, exterior_cw=False)
 ok = (shapely.get_type_id(polys) == 3) & (~shapely.is_empty(polys)) & (shapely.area(polys) > 6)
 polys, hs, isfab, special, src = polys[ok], hs[ok], isfab[ok], special[ok], src[ok]
 area = shapely.area(polys)
+
+# ---- darwajas: snap each gate onto the street that runs through it, clear what stands in the way
+darw = []
+_flat_all = [r for r in G['roads'] if r.get('z') is None and r['cls'] >= 2]
+_dl = shapely.STRtree(np.array([shapely.LineString(r['xy']) for r in _flat_all], dtype=object))
+for nm, la, lo, cw, ch, sw_, plat, depth, pier in DARWAJAS:
+    x, y = proj_xy(lo, la)
+    pt = shapely.Point(x, y)
+    near_ = _dl.query(pt.buffer(45))
+    best_ = None
+    for j in near_:
+        r = _flat_all[j]; ln = shapely.LineString(r['xy']); d = ln.distance(pt)
+        sc = d - 6 * r['cls']
+        if best_ is None or sc < best_[0]:
+            best_ = (sc, ln, r)
+    if best_ is not None:
+        ln = best_[1]; t = ln.project(pt); q = ln.interpolate(t)
+        a1, b1 = ln.interpolate(max(0, t - 6)), ln.interpolate(min(ln.length, t + 6))
+        ux, uy = b1.x - a1.x, b1.y - a1.y; l_ = math.hypot(ux, uy) or 1; ux, uy = ux / l_, uy / l_
+        x, y = q.x, q.y
+    else:
+        ux, uy = 1.0, 0.0
+    sw_ = sw_ if sw_ else cw * 0.72
+    W = cw + 2 * sw_ + 4 * pier
+    darw.append(dict(name=nm, x=x, y=y, ux=ux, uy=uy, cw=cw, ch=ch, sw=sw_, sh=ch * 0.8, depth=depth, pier=pier, W=W, plat=plat))
+_gz = shapely.union_all([shapely.Polygon([(d['x'] + d['ux'] * a_ * (d['depth'] / 2 + 1.5) + -d['uy'] * b_ * (d['W'] / 2 + 1.5),
+                                           d['y'] + d['uy'] * a_ * (d['depth'] / 2 + 1.5) + d['ux'] * b_ * (d['W'] / 2 + 1.5))
+                                          for a_, b_ in ((-1, -1), (1, -1), (1, 1), (-1, 1))]) for d in darw])
+_okg = ~shapely.intersects(polys, _gz)
+print('darwajas', len(darw), 'cleared', int((~_okg).sum()), 'footprints')
+polys, hs, isfab, special, src = polys[_okg], hs[_okg], isfab[_okg], special[_okg], src[_okg]
+
+# ---- nothing standing in water (lake-bed / riverbed footprints from older imagery)
+_wat = shapely.union_all(list(G['water']))
+_wi = shapely.STRtree(polys).query(_wat, predicate='intersects')
+_wi = np.unique(_wi[1] if _wi.ndim == 2 else _wi)
+_wa = np.zeros(len(polys))
+_wa[_wi] = shapely.area(shapely.intersection(polys[_wi], _wat)) / np.maximum(shapely.area(polys[_wi]), 1e-9)
+_okw = _wa < 0.35
+print('water: removed', int((~_okw).sum()), 'footprints standing in lakes / the river')
+polys, hs, isfab, special, src = polys[_okw], hs[_okw], isfab[_okw], special[_okw], src[_okw]
 
 # ---- nothing on the runway, taxiways or apron
 AF = airfield()
@@ -472,7 +523,7 @@ PAL = {
     # airport terminals / hangars: glass curtain walls, light metal roofs
     'term': [('#dfe6ec', '#e9ecee'), ('#cfd9e2', '#dfe3e6'), ('#e8ebee', '#d5dade')],
 }
-WSTYLE = {'low': 1, 'mid': 1, 'high': 2, 'ind': 0, 'old': 3, 'stand': 0, 'pol': 4, 'polblk': 3, 'term': 2}
+WSTYLE = {'low': 1, 'mid': 1, 'high': 2, 'ind': 10, 'old': 3, 'stand': 0, 'pol': 4, 'polblk': 3, 'term': 2}
 palette, pal_index = [], {}
 for k, lst in PAL.items():
     pal_index[k] = []
@@ -549,6 +600,12 @@ for i in range(len(polys)):
                 px, py = cxp + ux * ox + vx * oy, cyp + uy * ox + vy * oy
                 if inner[i] is not None and not inner[i].is_empty and inner[i].contains(shapely.Point(px, py)):
                     props.append((px, py, base, 0, 0, 1.0))
+        # rooftop solar on a few modern blocks (Gujarat's rooftop-solar push), kept clear of the stair room
+        if not inwc[i] and hsnap[i] >= 10 and area[i] >= 260 and ((r * 37.0) % 1.0) < 0.13:
+            for ox, oy in ((6.5, 0), (-6.5, 0), (0, 6.0)):
+                px, py = cxp + ux * ox + vx * oy, cyp + uy * ox + vy * oy
+                if inner[i] is not None and not inner[i].is_empty and inner[i].buffer(-3.2).contains(shapely.Point(px, py)):
+                    props.append((px, py, base, 2, ang, 1.0)); break
     else:
         n = 1 + (area[i] > 500) + (area[i] > 1200 and isfab[i] == 0)
         if isfab[i] == 2 and r > 0.55:
@@ -563,5 +620,5 @@ print('props', len(props), round(time.time() - t0, 1))
 
 pickle.dump(dict(polys=polys, hs=hsnap, style=style, recs=recs, props=props, palette=palette, fields=fields, pitches=pitches,
                  fabric=isfab, industrial=industrial, polT=polT, face=face, face2=face2, rr0=rr0, rr1=rr1, rise=rise,
-                 gates=gates, chab=chab), open(f'{OUT}/buildings.pkl', 'wb'))
+                 gates=gates, chab=chab, darw=darw), open(f'{OUT}/buildings.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))

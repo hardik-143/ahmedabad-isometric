@@ -148,9 +148,8 @@ b.arr(np.array([round(r['sw'] * 10) for r in roads], np.uint8))
 b.arr(np.array([nidx.get(r['name'], 65535) for r in roads], np.uint16))
 b.arr(np.array([len(r['xy']) for r in roads], np.uint16))
 xy = np.concatenate([r['xy'] for r in roads])
-X = np.round(xy[:, 0] * 2); Z = np.round(-xy[:, 1] * 2)
-assert np.abs(X).max() < 32767 and np.abs(Z).max() < 32767
-b.arr(np.column_stack([X, Z]).ravel().astype(np.int16))
+X = np.round(xy[:, 0] * 20); Z = np.round(-xy[:, 1] * 20)   # 5 cm precision so smoothed curves stay smooth
+b.arr(np.column_stack([X, Z]).ravel().astype(np.int32))
 J = G['junctions']
 jk = list(J.keys())
 jx = np.array([k[0] for k in jk]); jy = np.array([k[1] for k in jk])
@@ -249,6 +248,7 @@ LANDMARKS = [
     ('Hutheesing Jain Temple', 23.0369, 72.5918, 'monument'), ('Vastrapur Lake', 23.0389, 72.5293, 'lake'),
     ('Chandola Lake', 22.9871, 72.5870, 'lake'), ('Atal Bridge', 23.01647, 72.57545, 'monument'),
 ]
+LANDMARKS += [(n, la, lo, 'gate') for n, la, lo, *_ in DARWAJAS if n != 'Teen Darwaza']
 lms = []
 for nm, lat, lon, kind in LANDMARKS:
     x, y = proj_xy(lon, lat)
@@ -264,6 +264,14 @@ for w in G['wards']:
 rl = [[nidx[n], round(x, 1), round(-y, 1), round(-a, 3)] for n, x, y, a in G['road_labels']]
 sr = [[nidx[n], round(x, 1), round(-y, 1), round(L)] for n, x, y, L in G['search_roads']]
 AF = airfield()
+AFD = airfield_detail()
+
+
+def tri_flat(g):
+    V, I = tri_polys([p for p in shapely.get_parts(g) if p.geom_type == 'Polygon' and p.area > 1])
+    return dict(v=[round(float(c), 2) for xy in V for c in (xy[0], -xy[1])], i=[int(t) for t in I])
+
+
 x0, y0, x1, y1 = bbox_m()
 meta = dict(
     version=1, chunk=CHUNK, origin=dict(lon=LON0, lat=LAT0, kx=KX, ky=KY),
@@ -275,8 +283,13 @@ meta = dict(
     gates=[[round(x, 1), round(-y, 1), round(math.cos(a), 3), round(-math.sin(a), 3), round(w, 1)] for x, y, a, w in B['gates']],
     chabutros=[[round(x, 1), round(-y, 1)] for x, y in B['chab']],
     airport=dict(rwy=[*m2three(AF['x0'], AF['y0']), *m2three(AF['x1'], AF['y1']), AF['w']],
-                 twy=[dict(w=t['w'], p=[list(m2three(*q)) for q in t['xy']]) for t in AF['twy']],
-                 apron=[list(m2three(*q)) for q in AF['apron']]),
+                 apron=[list(m2three(*q)) for q in AF['apron']],
+                 pave=tri_flat(AFD['pave']), shoulder=tri_flat(AFD['shoulder']),
+                 lines=[[k, w, [c for q in pts for c in m2three(*q)]] for k, w, pts in AFD['lines']],
+                 stands=[[*m2three(*p), round(AFD['nose'][0], 4), round(-AFD['nose'][1], 4), 1 if atr else 0] for p, atr in AFD['stands']]),
+    darwajas=[dict(n=d['name'], x=m2three(d['x'], d['y'])[0], z=m2three(d['x'], d['y'])[1], ux=round(d['ux'], 4), uz=round(-d['uy'], 4),
+                   cw=round(d['cw'], 2), ch=round(d['ch'], 2), sw=round(d['sw'], 2), sh=round(d['sh'], 2), dp=d['depth'], pr=d['pier'],
+                   plat=[round(d['plat'][0], 2), round(d['plat'][1], 2)] if d['plat'] else None) for d in B['darw']],
     atal=dict(x0=round(G['atal']['x0'], 1), z0=round(-G['atal']['y0'], 1), x1=round(G['atal']['x1'], 1), z1=round(-G['atal']['y1'], 1), w=G['atal']['w'], deck=G['atal']['deck'], ws0=round(G['atal']['ws0'], 1), ws1=round(G['atal']['ws1'], 1)),
     counts=dict(buildings=int((fab != 2).sum()), blocks=int((fab == 1).sum()), cells=int((fab == 2).sum()),
                 props=int(len(props)), trees=int(len(tp)), roads=len(roads), water=len(G['water']), parks=len(G['parks'])),

@@ -184,16 +184,37 @@ const bldMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
     else { wx = smoothstep(0.24, 0.24+aa, xu)*(1.0-smoothstep(0.76-aa, 0.76, xu)); wy = smoothstep(0.30, 0.30+aa*1.5, yv)*(1.0-smoothstep(0.80-aa*1.5, 0.80, yv)); }
     float wallId = floor(dot(vWPos.xz, wn.xz)*0.5 + 0.5);
     float rnd = h21(vec2(col*1.37 + wallId*7.13, row*2.11 + fl*3.7));
-    if (W == 3) wx *= step(0.45, h21(vec2(col, wallId)));
+    if (W == 3) wx *= step(0.18, h21(vec2(col, wallId)));
     float inFacade = step(0.6, vWPos.y) * (1.0 - step(topH - 0.8, vWPos.y));
     float win = wx * wy * inFacade;
+    // ground floor: a door (or a shop shutter) every few bays instead of a window
+    float isDoor = (1.0 - step(1.0, row)) * step(h21(vec2(col * 0.71 + wallId, 5.3)), glassT ? 0.0 : 0.3);
+    float dx0 = smoothstep(0.30, 0.30+aa, xu)*(1.0-smoothstep(0.70-aa, 0.70, xu));
+    float door = isDoor * dx0 * (1.0 - smoothstep(0.74, 0.74+aa*1.5, yv));
+    win *= 1.0 - isDoor;
     float detail = 1.0 - smoothstep(0.3, 0.85, px);
     vec3 glass = glassT ? vec3(0.30, 0.42, 0.52) + 0.08*h21(vec2(col,row)) : vec3(0.22, 0.25, 0.29) + 0.07*h21(vec2(col,row));
     glass = pow(glass, vec3(2.2));
     diffuseColor.rgb = mix(diffuseColor.rgb, glass, win * 0.85 * detail);
+    vec3 doorC = h21(vec2(col, wallId + 1.0)) < 0.5 ? pow(vec3(0.32, 0.22, 0.14), vec3(2.2)) : pow(vec3(0.42, 0.44, 0.46), vec3(2.2)) * (0.85 + 0.15*step(0.5, fract(vWPos.y * 6.0)));
+    diffuseColor.rgb = mix(diffuseColor.rgb, doorC, door * detail);
     float on = step(rnd, 0.40);
     litW = win * on * detail;
     glowW = 0.40 * (glassT ? 0.6 : 0.2) * inFacade * (0.55 + 0.5*h21(vec2(floor(vWPos.y/3.1), wallId))) * (1.0 - detail);
+  } else if (isWall > 0.5 && W == 10) {
+    vec2 t = normalize(vec2(-wn.z, wn.x));
+    float u = dot(vWPos.xz, t); float y = vWPos.y;
+    float px = fwidth(u); float det = 1.0 - smoothstep(0.3, 0.9, px);
+    vec3 c = diffuseColor.rgb * (0.92 + 0.08 * step(0.5, fract(u / 0.9)));
+    float clere = step(topH - 1.7, y) * step(y, topH - 0.7) * step(0.12, fract(u / 1.6));
+    c = mix(c, pow(vec3(0.26, 0.32, 0.38), vec3(2.2)), clere * det);
+    float bay = floor(u / 14.0); float bx = fract(u / 14.0) * 14.0;
+    float shut = step(5.0, bx) * step(bx, 9.0) * step(y, 4.4) * step(h21(vec2(bay, floor(dot(vWPos.xz, wn.xz)))), 0.6);
+    c = mix(c, pow(vec3(0.50, 0.52, 0.54), vec3(2.2)) * (0.8 + 0.2 * step(0.5, fract(y * 5.0))), shut * det);
+    float pdoor = step(1.5, bx) * step(bx, 2.5) * step(y, 2.2) * (1.0 - shut);
+    c = mix(c, pow(vec3(0.20, 0.22, 0.25), vec3(2.2)), pdoor * det);
+    diffuseColor.rgb = c;
+    litW = clere * det * step(0.6, h21(vec2(floor(u / 1.6), 3.0)));
   } else if (W == 6) {
     // Mangalore-tile roof: courses down the slope, staggered rolls across, grime, darker ridge cap
     vec2 sd = normalize(wn.xz + vec2(1e-5, 0.0));
@@ -224,9 +245,11 @@ const bldMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
     float seed = h21(floor((vWPos.xz + t*uL) * 2.0) + vec2(0.37, 0.71));
     float seed2 = fract(seed * 13.7), seed3 = fract(seed * 71.3);
     float pxu = fwidth(uL) + 1e-4;
-    float det = 1.0 - smoothstep(0.05, 0.16, pxu);
+    float det = 1.0 - smoothstep(0.22, 0.5, pxu);
     vec3 base = diffuseColor.rgb;
     vec3 wood = pow(vec3(0.38, 0.24, 0.13), vec3(2.2));
+    vec3 teakW = pow(vec3(0.55, 0.37, 0.20), vec3(2.2));
+    vec3 frameL = pow(vec3(0.86, 0.74, 0.52), vec3(2.2));
     vec3 woodD = pow(vec3(0.20, 0.12, 0.07), vec3(2.2));
     bool teak = seed < 0.30;
     vec3 c = base;
@@ -237,13 +260,13 @@ const bldMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
       float nb = max(1.0, floor(L / 1.9 + 0.5)); float bw = L / nb;
       float bx = fract(uL / bw); float bi = floor(uL / bw);
       float fy = (y - 3.1) / 3.1; float row = floor(fy); float yv = fract(fy) * 3.1;
-      if (teak) c = wood * (0.78 + 0.34*vnoise(mod(vec2(uL*5.0, y*14.0), 1024.0)));
+      if (teak) c = teakW * (0.82 + 0.28*vnoise(mod(vec2(uL*5.0, y*14.0), 1024.0)));
       // carved floor beam with dentils, pilasters between bays
       float beam = step(yv, 0.34);
       float dent = step(0.5, fract(uL / 0.21)) * step(yv, 0.15);
-      c = mix(c, mix(wood, woodD, dent), beam * det + beam * (1.0 - det) * 0.6);
+      c = mix(c, teak ? mix(frameL, wood, dent) : mix(wood, woodD, dent), beam * det + beam * (1.0 - det) * 0.6);
       float pil = 1.0 - smoothstep(0.06, 0.09, min(bx, 1.0 - bx) * bw);
-      c = mix(c, teak ? woodD : c * 0.86, pil * (1.0 - beam) * det);
+      c = mix(c, teak ? wood : c * 0.86, pil * (1.0 - beam) * det);
       // window per bay: carved frame, arched head on some houses, louvred shutters in the house colour
       float dxm = abs(bx * bw - bw * 0.5);
       float ww = min(1.05, bw * 0.56);
@@ -254,12 +277,13 @@ const bldMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
       float inW = step(dxm, r1) * step(0.64, yv) * step(yv, topIn);
       float frame = step(dxm, r2) * step(0.55, yv) * step(yv, topFr) * (1.0 - inW);
       vec3 sh = seed2 < 0.25 ? vec3(0.12,0.40,0.38) : seed2 < 0.45 ? vec3(0.15,0.29,0.52) : seed2 < 0.62 ? vec3(0.20,0.43,0.22) : seed2 < 0.82 ? vec3(0.40,0.25,0.13) : vec3(0.46,0.14,0.12);
+      if (teak && seed2 >= 0.62 && seed2 < 0.82) sh = vec3(0.10, 0.42, 0.45);   // no brown shutters on a brown wall
       sh = pow(sh, vec3(2.2));
       float open = step(h21(vec2(bi * 3.1 + seed * 91.0, row * 1.7 + fl)), 0.38);
       vec3 shut = sh * (0.80 + 0.20*step(0.5, fract(yv * 7.5))) * (1.0 - 0.45*(1.0 - smoothstep(0.015, 0.035, dxm)));
       vec3 dark = pow(vec3(0.08, 0.07, 0.07), vec3(2.2));
       vec3 win = mix(shut, dark, open);
-      c = mix(c, wood, frame * det);
+      c = mix(c, teak ? frameL : wood, frame * det);
       c = mix(c, win, inW * det);
       // little sunshade (chhajja) shadow over each window
       c *= 1.0 - 0.25 * step(topFr, yv) * step(yv, topFr + 0.12) * step(dxm, r2 + 0.1) * det;
@@ -290,8 +314,22 @@ const bldMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
       if (rail < 0.5 && fract(uL / 0.15) > 0.55 && det > 0.5) discard;
       c = wood * (0.8 + 0.3*vnoise(mod(vec2(uL * 9.0, y * 9.0), 1024.0)));
     } else {
-      // party / rear wall: plain lime plaster, coping line at the top
+      // side / rear wall: lime plaster with plain shuttered windows (party walls hide in the seam anyway)
+      float bw = 2.3; float bi = floor(uW / bw); float bx = fract(uW / bw);
+      float fi = floor(y / 3.1); float yv = y - fi * 3.1;
+      float dxm = abs(bx - 0.5) * bw;
+      float has = step(0.25, h21(vec2(bi + seed * 37.0, fi * 1.3)));
+      float inW = step(dxm, 0.40) * step(0.95, yv) * step(yv, 2.15) * step(y, topH - 0.4) * has;
+      float fr = step(dxm, 0.48) * step(0.87, yv) * step(yv, 2.25) * step(y, topH - 0.32) * has * (1.0 - inW);
+      vec3 sh = seed2 < 0.3 ? vec3(0.12,0.40,0.38) : seed2 < 0.55 ? vec3(0.15,0.29,0.52) : seed2 < 0.8 ? vec3(0.40,0.25,0.13) : vec3(0.20,0.43,0.22);
+      sh = pow(sh, vec3(2.2));
+      float open = step(h21(vec2(bi * 1.7 + seed * 11.0, fi)), 0.35);
+      vec3 win = mix(sh * (0.80 + 0.20*step(0.5, fract(yv * 7.5))) * (1.0 - 0.45*(1.0 - smoothstep(0.015, 0.035, dxm))), pow(vec3(0.08), vec3(2.2)), open);
+      c = mix(c, wood, fr * det);
+      c = mix(c, win, inW * det);
+      c *= 1.0 - 0.22 * step(2.25, yv) * step(yv, 2.37) * step(dxm, 0.55) * has * det * step(y, topH - 0.3);
       c = mix(c, c * 0.84, step(topH - 0.22, y) * step(y, topH + 0.02));
+      litW = inW * open * step(h21(vec2(bi + 3.0, fi + seed)), 0.6) * det;
     }
     diffuseColor.rgb = c;
   }
@@ -417,7 +455,13 @@ function roadMat(pass) {
 const ROAD0 = roadMat(0), ROAD1 = roadMat(1);
 
 const treeMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-const tankMat = new THREE.MeshLambertMaterial({ color: '#1c1e21' });
+const tankMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
+  vHead: 'varying vec3 vLN;', vBody: 'vLN = normal;', fHead: 'varying vec3 vLN;',
+  fColor: `float top = step(0.7, normalize(vLN).y);
+  float ribs = 0.80 + 0.20*smoothstep(0.35, 0.5, abs(fract(vWPos.y * 4.2) - 0.5) * 2.0);
+  diffuseColor.rgb *= mix(ribs, 1.3, top);`,
+});
+const TANK_COLS = ['#1f2124', '#1f2124', '#1f2124', '#26292d', '#e8e4da', '#3a6fb0'].map((h) => new THREE.Color(h));
 const mumtyMat = hook(new THREE.MeshLambertMaterial({ color: '#d8d1c3' }), {
   fColor: 'diffuseColor.rgb *= 0.9 + 0.1*vnoise(mod(vWPos.xz*3.0,1024.0));',
 });
@@ -1036,9 +1080,15 @@ const AIRFIELD = (() => {
         white += seg7(2, vec2((a + 3.9) / 3.0, dy1)) + seg7(3, vec2((a - 0.9) / 3.0, dy1));
       }
     } else if (ty == 1) {
-      c = vec3(0.34, 0.34, 0.35) * (0.93 + 0.1*vnoise(mod(p*0.6, 1024.0)));
-      if (aa > P) c = vec3(0.50, 0.48, 0.44) * (0.9 + 0.1*vnoise(mod(p*0.7, 1024.0)));
-      yel += step(aa, 0.3 + lw) + step(abs(aa - (P - 0.4)), 0.12 + lw * 0.5) + step(abs(aa - (P - 0.85)), 0.12 + lw * 0.5);
+      c = vec3(0.33, 0.33, 0.34) * (0.92 + 0.1*vnoise(mod(p*0.6, 1024.0)) + 0.04*vnoise(mod(p*4.0, 1024.0)));
+    } else if (ty == 3) {
+      c = vec3(0.47, 0.46, 0.43) * (0.9 + 0.1*vnoise(mod(p*0.7, 1024.0)));
+    } else if (ty >= 4) {
+      float on = step(aa, P + lw);
+      if (ty == 5) on *= step(fract(s / 2.0), 0.5);
+      if (on < 0.5) discard;
+      c = vec3(0.90, 0.72, 0.16);
+      c = mix(vec3(0.33, 0.33, 0.34), c, clamp(det + 0.35, 0.0, 1.0));
     } else {
       c = vec3(0.62, 0.61, 0.58) * (0.9 + 0.12*vnoise(mod(p*0.25, 1024.0)) + 0.05*vnoise(mod(p*3.0, 1024.0)));
       vec2 j = abs(fract(p / 7.5) - 0.5);
@@ -1053,9 +1103,10 @@ const AIRFIELD = (() => {
       float edge = step(abs(aa - 22.0), 0.6) * step(fract(s / 60.0), 0.06);
       float cl = step(aa, 0.4) * step(fract(s / 15.0), 0.12);
       xEm += (vec3(1.0, 0.95, 0.8) * edge + vec3(0.9, 0.95, 1.0) * cl * 0.7) * 2.0 * uNight;
-    } else if (ty == 1) {
-      xEm += vec3(0.2, 0.9, 0.3) * step(aa, 0.35) * step(fract(s / 15.0), 0.15) * 1.6 * uNight
-           + vec3(0.25, 0.45, 1.0) * step(abs(aa - P - 0.5), 0.5) * step(fract(s / 30.0), 0.1) * 1.6 * uNight;
+    } else if (ty == 4) {
+      xEm += vec3(0.2, 0.9, 0.3) * step(0.12, P) * step(fract(s / 15.0), 0.12) * 1.8 * uNight;
+    } else if (ty == 1 || ty == 3) {
+      xEm += vec3(0.0);
     } else {
       xEm += vec3(1.0, 0.75, 0.45) * 0.10 * uNight;
     }`,
@@ -1064,28 +1115,32 @@ const AIRFIELD = (() => {
 function buildAirport() {
   const A = META.airport; if (!A) return;
   const P = [], R = [], I = [];
+  const addTri = (T, ty) => { const b = P.length / 2; for (let k = 0; k < T.v.length; k += 2) { P.push(T.v[k], T.v[k + 1]); R.push(0, 0, ty, 0); } for (const t of T.i) I.push(b + t); };
+  // apron (concrete), then shoulders, then filleted taxiway pavement
+  { const fv = A.apron.flat(); const tri = earcut(fv, null, 2); const b = P.length / 2;
+    for (const [x, z] of A.apron) { P.push(x, z); R.push(0, 0, 2, 0); } for (const t of tri) I.push(b + t); }
+  if (A.shoulder) addTri(A.shoulder, 3);
+  if (A.pave) addTri(A.pave, 1);
   const quad = (pts, rs) => { const b = P.length / 2; for (let k = 0; k < 4; k++) { P.push(pts[k][0], pts[k][1]); R.push(...rs[k]); } I.push(b, b + 1, b + 2, b, b + 2, b + 3); };
-  // apron (triangulated polygon)
-  {
-    const fv = A.apron.flat(); const tri = earcut(fv, null, 2); const b = P.length / 2;
-    for (let k = 0; k < A.apron.length; k++) { P.push(A.apron[k][0], A.apron[k][1]); R.push(0, 0, 2, 0); }
-    for (const t of tri) I.push(b + t);
-  }
-  for (const t of A.twy) {
-    const hw = t.w / 2, O = hw + 6;
-    for (let k = 0; k < t.p.length - 1; k++) {
-      const [x0, z0] = t.p[k], [x1, z1] = t.p[k + 1], L = Math.hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L, vx = -uz, vz = ux;
-      const e = 6;   // run a little past the ends so joins are filled
-      const a0 = [x0 - ux * e, z0 - uz * e], a1 = [x1 + ux * e, z1 + uz * e];
-      quad([[a0[0] + vx * O, a0[1] + vz * O], [a1[0] + vx * O, a1[1] + vz * O], [a1[0] - vx * O, a1[1] - vz * O], [a0[0] - vx * O, a0[1] - vz * O]],
-        [[O, -e, 1, hw], [O, L + e, 1, hw], [-O, L + e, 1, hw], [-O, -e, 1, hw]]);
-    }
-  }
   {
     const [x0, z0, x1, z1, w] = A.rwy, L = Math.hypot(x1 - x0, z1 - z0), ux = (x1 - x0) / L, uz = (z1 - z0) / L, vx = -uz, vz = ux, O = w / 2 + 7.5, E = 60;
     // across coordinate a is positive on the aircraft's left when landing towards 23
     quad([[x0 - ux * E + vx * O, z0 - uz * E + vz * O], [x1 + ux * E + vx * O, z1 + uz * E + vz * O], [x1 + ux * E - vx * O, z1 + uz * E - vz * O], [x0 - ux * E - vx * O, z0 - uz * E - vz * O]],
       [[-O, -E, 0, L], [-O, L + E, 0, L], [O, L + E, 0, L], [O, -E, 0, L]]);
+  }
+  // markings: ribbons along each polyline (kind 4 solid yellow, 5 dashed yellow), drawn last
+  for (const [kind, w, pts] of A.lines || []) {
+    const n = pts.length / 2; if (n < 2) continue;
+    const hw = w / 2 + 0.9, b = P.length / 2; let s = 0;
+    for (let j = 0; j < n; j++) {
+      const x = pts[j * 2], z = pts[j * 2 + 1];
+      const j0 = Math.max(0, j - 1), j1 = Math.min(n - 1, j + 1);
+      let dx = pts[j1 * 2] - pts[j0 * 2], dz = pts[j1 * 2 + 1] - pts[j0 * 2 + 1]; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
+      if (j > 0) s += Math.hypot(x - pts[j * 2 - 2], z - pts[j * 2 - 1]);
+      P.push(x - dz * hw, z + dx * hw); R.push(hw, s, kind, w / 2);
+      P.push(x + dz * hw, z - dx * hw); R.push(-hw, s, kind, w / 2);
+      if (j > 0) { const q = b + (j - 1) * 2; I.push(q, q + 1, q + 2, q + 1, q + 3, q + 2); }
+    }
   }
   const pos = new Float32Array(P), aR = new Float32Array(R);
   const g = new THREE.BufferGeometry();
@@ -1096,30 +1151,19 @@ function buildAirport() {
   const m = new THREE.Mesh(g, AIRFIELD); m.renderOrder = 3.6; m.receiveShadow = true; group.ground.add(m);
   buildAircraft(A);
 }
-// parked narrow-bodies on the apron stands (the apron takes nine A321s plus ATRs)
+// parked narrow-bodies (and the odd ATR) nose-in on the apron stands
 function buildAircraft(A) {
   const G = new Geo(false);
   const white = C255(240, 241, 243), grey = C255(150, 155, 162), glass = C255(30, 36, 44);
   const tails = [C255(16, 36, 110), C255(16, 36, 110), C255(200, 30, 45), C255(240, 110, 40), C255(16, 36, 110), C255(210, 25, 30), C255(120, 30, 120)];
-  const [rx0, rz0, rx1, rz1] = A.rwy; const RL = Math.hypot(rx1 - rx0, rz1 - rz0), ux = (rx1 - rx0) / RL, uz = (rz1 - rz0) / RL;
-  // the apron's outer edge (towards the terminals) is its 3rd->4th corner; stands face it
-  const [p2x, p2z] = A.apron[2], [p3x, p3z] = A.apron[3];
-  const ex = p2x - p3x, ez = p2z - p3z, EL = Math.hypot(ex, ez);
-  const nX = -(A.apron[1][0] - A.apron[2][0]), nZ = -(A.apron[1][1] - A.apron[2][1]), nL = Math.hypot(nX, nZ);
-  const fx = nX / nL, fz = nZ / nL;   // nose direction: towards the terminal edge
-  const count = Math.min(10, Math.floor(EL / 52));
-  for (let k = 0; k < count; k++) {
-    const t = (k + 0.7) / (count + 0.4);
-    const cx = p3x + ex * t - fx * 30, cz = p3z + ez * t - fz * 30;
-    const sx = -fz, sz = fx, tail = tails[k % tails.length];
-    const atr = k % 4 === 3, S = atr ? 0.62 : 1.0;
-    cbox(G, cx, cz, fx, fz, 18.5 * S, 1.95 * S, 1.6 * S, 5.4 * S, white);                       // fuselage
-    cbox(G, cx + fx * 17.2 * S, cz + fz * 17.2 * S, fx, fz, 1.4 * S, 1.5 * S, 2.2 * S, 4.8 * S, white);  // nose
+  (A.stands || []).forEach(([cx, cz, fx, fz, atr], k) => {
+    const sx = -fz, sz = fx, tail = tails[k % tails.length], S = atr ? 0.62 : 1.0;
+    cbox(G, cx, cz, fx, fz, 18.5 * S, 1.95 * S, 1.6 * S, 5.4 * S, white);
+    cbox(G, cx + fx * 17.2 * S, cz + fz * 17.2 * S, fx, fz, 1.4 * S, 1.5 * S, 2.2 * S, 4.8 * S, white);
     G.quad([cx + fx * 17.6 * S - sx * 1.0 * S, 4.3 * S, cz + fz * 17.6 * S - sz * 1.0 * S], [cx + fx * 17.6 * S + sx * 1.0 * S, 4.3 * S, cz + fz * 17.6 * S + sz * 1.0 * S],
       [cx + fx * 18.6 * S + sx * 0.9 * S, 4.85 * S, cz + fz * 18.6 * S + sz * 0.9 * S], [cx + fx * 18.6 * S - sx * 0.9 * S, 4.85 * S, cz + fz * 18.6 * S - sz * 0.9 * S], [fx * 0.5, 0.86, fz * 0.5], glass);
-    // swept wings + engines
     for (const sg of [1, -1]) {
-      const r0 = [cx + fx * 3 + sx * 2 * sg, 2.6 * S, cz + fz * 3 + sz * 2 * sg], r1 = [cx - fx * 3 + sx * 2 * sg, 2.6 * S, cz - fz * 3 + sz * 2 * sg];
+      const r0 = [cx + fx * 3 * S + sx * 2 * S * sg, 2.6 * S, cz + fz * 3 * S + sz * 2 * S * sg], r1 = [cx - fx * 3 * S + sx * 2 * S * sg, 2.6 * S, cz - fz * 3 * S + sz * 2 * S * sg];
       const t1 = [cx - fx * 9 * S + sx * 17 * S * sg, 3.3 * S, cz - fz * 9 * S + sz * 17 * S * sg], t0 = [cx - fx * 6 * S + sx * 17 * S * sg, 3.3 * S, cz - fz * 6 * S + sz * 17 * S * sg];
       G.quad(r0, t0, t1, r1, [0, 1, 0], grey);
       if (!atr) cbox(G, cx + fx * 1.5 + sx * 5.8 * sg, cz + fz * 1.5 + sz * 5.8 * sg, fx, fz, 2.2, 0.95, 0.9, 2.7, grey);
@@ -1128,13 +1172,118 @@ function buildAircraft(A) {
       const h2 = [cx - fx * 19 * S + sx * 6.2 * S * sg, 5.2 * S, cz - fz * 19 * S + sz * 6.2 * S * sg], h3 = [cx - fx * 17 * S + sx * 6.2 * S * sg, 5.2 * S, cz - fz * 17 * S + sz * 6.2 * S * sg];
       G.quad(h0, h3, h2, h1, [0, 1, 0], white);
     }
-    // tail fin in the airline colour
     const b0 = [cx - fx * 12 * S, 5.4 * S, cz - fz * 12 * S], b1 = [cx - fx * 18.5 * S, 5.4 * S, cz - fz * 18.5 * S];
     const tp1 = [cx - fx * 20 * S, 11.5 * S, cz - fz * 20 * S], tp0 = [cx - fx * 16.5 * S, 11.5 * S, cz - fz * 16.5 * S];
     G.quad(b0, b1, tp1, tp0, [sx, 0, sz], tail); G.quad(b1, b0, tp0, tp1, [-sx, 0, -sz], tail);
+  });
+  if (!G.p.length) return;
+  group.ground.add(G.mesh(POLX));
+}
+
+// ---------------------------------------------------------------- the historic darwajas (city gates)
+const STONE = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
+  vHead: 'varying vec3 vWN;', vBody: 'vWN = normal;', fHead: 'varying vec3 vWN;',
+  fColor: `
+  vec3 n = normalize(vWN);
+  float wall = 1.0 - step(0.7, abs(n.y));
+  vec2 t = normalize(vec2(-n.z, n.x) + 1e-5);
+  float u = wall > 0.5 ? dot(vWPos.xz, t) : vWPos.x;
+  float v = wall > 0.5 ? vWPos.y : vWPos.z;
+  float row = floor(v / 0.42);
+  float jx = fract(u / 0.85 + 0.5 * mod(row, 2.0)), jy = fract(v / 0.42);
+  float px = fwidth(u) + fwidth(v);
+  float det = 1.0 - smoothstep(0.05, 0.2, px);
+  float joint = (1.0 - smoothstep(0.0, 0.05, min(jx, 1.0 - jx) * 0.85)) + (1.0 - smoothstep(0.0, 0.05, min(jy, 1.0 - jy) * 0.42));
+  diffuseColor.rgb *= 1.0 - 0.22 * clamp(joint, 0.0, 1.0) * det;
+  diffuseColor.rgb *= 0.88 + 0.16 * h21(vec2(floor(u / 0.85 + 0.5 * mod(row, 2.0)), row));
+  diffuseColor.rgb *= 0.78 + 0.28 * fbm(mod(vec2(u * 0.6, v * 0.35), 512.0));
+  diffuseColor.rgb *= mix(0.72, 1.0, smoothstep(0.0, 2.5, vWPos.y));`,
+});
+function buildDarwajas() {
+  const G = new Geo(false);
+  const stone = C255(205, 176, 128), stoneD = C255(150, 124, 88), iron = C255(70, 52, 36), dark = C255(52, 42, 34);
+  for (const d of META.darwajas || []) {
+    const ux = d.uz === undefined ? 1 : d.ux, uz = d.uz;           // along the street (through the arches)
+    const vx = -uz, vz = ux;                                          // across the street (gate width)
+    const nArch = 3, widths = [d.sw, d.cw, d.sw], heights = [d.sh, d.ch, d.sh];
+    const pier = d.pr, W = d.cw + 2 * d.sw + 4 * pier, D = d.dp, Htop = d.ch + 2.6;
+    const at = (x, y, z) => [d.x + vx * x + ux * z, y, d.z + vz * x + uz * z];   // local: x across, z along
+    // facade outline (x, y) with pointed-arch notches cut up from the ground
+    const outline = [[-W / 2, 0]];
+    const arches = [];
+    let cx = -W / 2 + pier;
+    for (let k = 0; k < nArch; k++) {
+      const w = widths[k], h = heights[k], rise = 0.55 * w, hs = h - rise, r = (rise * rise + w * w / 4) / w;
+      const xl = cx, xr = cx + w, prof = [[xl, 0], [xl, hs]];
+      const N = 10;
+      const aL = Math.acos((r - w / 2) / r);   // sweep of each arc up to the apex
+      for (let s = 1; s <= N; s++) { const a = Math.PI - aL * s / N; prof.push([xl + r + r * Math.cos(a), hs + r * Math.sin(a)]); }
+      for (let s = N - 1; s >= 0; s--) { const a = aL * s / N; prof.push([xr - r + r * Math.cos(a), hs + r * Math.sin(a)]); }
+      prof.push([xr, hs], [xr, 0]);
+      arches.push(prof); outline.push(...prof);
+      cx = xr + pier;
+    }
+    outline.push([W / 2, 0], [W / 2, Htop], [-W / 2, Htop]);
+    const fv = outline.flat(); const tri = earcut(fv, null, 2);
+    for (const side of [1, -1]) {   // front and back faces
+      const base = G.p.length / 3;
+      for (const [x, y] of outline) G.v(...at(x, y, side * D / 2), ux * side, 0, uz * side, null, stone);
+      for (let t = 0; t < tri.length; t += 3) {
+        const A0 = tri[t], B0 = tri[t + 1], C0 = tri[t + 2];
+        const ax = fv[A0 * 2], ay = fv[A0 * 2 + 1], bx = fv[B0 * 2], by = fv[B0 * 2 + 1], cx2 = fv[C0 * 2], cy = fv[C0 * 2 + 1];
+        const cr = (bx - ax) * (cy - ay) - (by - ay) * (cx2 - ax);
+        // local (x right, y up) seen from +z: counter-clockwise faces +z; flip for the back face
+        if ((cr > 0) === (side > 0)) G.i.push(base + A0, base + C0, base + B0); else G.i.push(base + A0, base + B0, base + C0);
+      }
+    }
+    // arch soffits / jambs (the inside of each passage), iron-plated doors folded back against the jambs
+    for (const prof of arches) {
+      for (let k = 0; k < prof.length - 1; k++) {
+        const [x0, y0] = prof[k], [x1, y1] = prof[k + 1];
+        const ex = x1 - x0, ey = y1 - y0, el = Math.hypot(ex, ey) || 1;
+        const nx = ey / el, ny = -ex / el;                 // normal pointing into the opening
+        const n = [vx * nx, ny, vz * nx];
+        G.quad(at(x0, y0, -D / 2), at(x1, y1, -D / 2), at(x1, y1, D / 2), at(x0, y0, D / 2), n, k < 2 || k > prof.length - 3 ? stoneD : stone);
+      }
+      const xl = prof[0][0], xr = prof[prof.length - 1][0], hs = prof[1][1];
+      for (const [xx, sg] of [[xl, 1], [xr, -1]]) {
+        const p0 = at(xx + sg * 0.12, 0, D / 2 - 0.3), p1 = at(xx + sg * 0.12, 0, D / 2 - 0.3 - Math.min(2.2, (xr - xl) / 2));
+        G.quad(p0, p1, [p1[0], hs * 0.95, p1[2]], [p0[0], hs * 0.95, p0[2]], [vx * sg, 0, vz * sg], iron);
+      }
+    }
+    // outer ends and the top
+    G.quad(at(-W / 2, 0, D / 2), at(-W / 2, 0, -D / 2), at(-W / 2, Htop, -D / 2), at(-W / 2, Htop, D / 2), [-vx, 0, -vz], stone);
+    G.quad(at(W / 2, 0, -D / 2), at(W / 2, 0, D / 2), at(W / 2, Htop, D / 2), at(W / 2, Htop, -D / 2), [vx, 0, vz], stone);
+    G.quad(at(-W / 2, Htop, -D / 2), at(W / 2, Htop, -D / 2), at(W / 2, Htop, D / 2), at(-W / 2, Htop, D / 2), [0, 1, 0], stone);
+    // cornice band and buttresses on the pier faces
+    for (const side of [1, -1]) {
+      cbox(G, ...[at(0, 0, side * (D / 2 + 0.15))].map((p) => [p[0], p[2]])[0], vx, vz, W / 2 + 0.15, 0.2, Htop - 0.9, Htop - 0.5, stoneD);
+      let px = -W / 2 + pier / 2;
+      for (let k = 0; k <= nArch; k++) {
+        const p = at(px, 0, side * (D / 2 + 0.35));
+        cbox(G, p[0], p[2], vx, vz, pier * 0.32, 0.35, 0, heights[Math.min(k, nArch - 1)] * 0.92, stone);
+        cbox(G, p[0], p[2], vx, vz, pier * 0.38, 0.42, heights[Math.min(k, nArch - 1)] * 0.92, heights[Math.min(k, nArch - 1)] * 0.92 + 0.5, stoneD);
+        if (k < nArch) px += pier + widths[k];
+      }
+    }
+    // the roofed gun platform (or Teen Darwaza's open terrace) with a crenellated parapet
+    let top = Htop;
+    if (d.plat) {
+      const [pw, pd] = d.plat, PH = 3.4;
+      const c = at(0, 0, 0);
+      cbox(G, c[0], c[2], vx, vz, pw / 2, Math.min(pd, D) / 2, Htop, Htop + PH, stone);
+      for (const side of [1, -1]) for (const o of [-0.3, 0, 0.3]) {   // gun loops
+        const q = at(o * pw, 0, side * (Math.min(pd, D) / 2 + 0.02));
+        G.quad([q[0] - vx * 0.35, Htop + 1.2, q[2] - vz * 0.35], [q[0] + vx * 0.35, Htop + 1.2, q[2] + vz * 0.35], [q[0] + vx * 0.35, Htop + 2.2, q[2] + vz * 0.35], [q[0] - vx * 0.35, Htop + 2.2, q[2] - vz * 0.35], [ux * side, 0, uz * side], dark);
+      }
+      cbox(G, c[0], c[2], vx, vz, pw / 2 + 0.25, Math.min(pd, D) / 2 + 0.25, Htop + PH, Htop + PH + 0.3, stoneD);
+      top = Htop;
+    }
+    const merl = (x0, x1, z) => { for (let x = x0 + 0.4; x < x1 - 0.2; x += 1.3) { const p = at(x, 0, z); cbox(G, p[0], p[2], vx, vz, 0.35, 0.3, top, top + 0.9, stone); } };
+    merl(-W / 2, W / 2, D / 2 - 0.3); merl(-W / 2, W / 2, -D / 2 + 0.3);
   }
   if (!G.p.length) return;
-  const m = G.mesh(POLX); group.ground.add(m);
+  const m = G.mesh(STONE); m.renderOrder = 10; group.ground.add(m);
 }
 
 function geoTiles(G, mat, yr) {
@@ -1245,7 +1394,8 @@ function buildRoads() {
   const n = r.u32(), np = r.u32(), nj = r.u32();
   const cls = r.arr(Uint8Array, n), br = r.arr(Uint8Array, n), hw = r.arr(Uint8Array, n), sw = r.arr(Uint8Array, n);
   const name = r.arr(Uint16Array, n), lens = r.arr(Uint16Array, n);
-  const xy = r.arr(Int16Array, np * 2);
+  const xyi = r.arr(Int32Array, np * 2);
+  const xy = new Float32Array(np * 2); for (let k = 0; k < np * 2; k++) xy[k] = xyi[k] / 10;   // half-metre units, 5 cm precision
   const jxy = r.arr(Int16Array, nj * 2), jr = r.arr(Uint8Array, nj), jhw = r.arr(Uint8Array, nj), jcls = r.arr(Uint8Array, nj);
   const start = new Uint32Array(n + 1); for (let i = 0; i < n; i++) start[i + 1] = start[i] + lens[i];
   let nz = 0; for (let i = 0; i < n; i++) if (br[i]) nz += lens[i];
@@ -1382,13 +1532,36 @@ async function buildFarBuildings(progressBase, progressSpan) {
 }
 
 // near detail (lazy)
-let treeGeo, tankGeo, mumtyGeo;
+let treeGeo, tankGeo, mumtyGeo, solarGeo;
+const solarMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
+  vHead: 'varying vec3 vLN;', vBody: 'vLN = normal;', fHead: 'varying vec3 vLN;',
+  fColor: `vec3 n = normalize(vLN);
+  if (n.y > 0.6 && diffuseColor.r > 0.8) {
+    vec2 q = vWPos.xz * vec2(6.0, 6.0);
+    float grid = step(0.88, max(fract(q.x), fract(q.y * 0.6)));
+    diffuseColor.rgb = mix(pow(vec3(0.10, 0.16, 0.30), vec3(2.2)), pow(vec3(0.75, 0.78, 0.82), vec3(2.2)), grid * 0.6);
+  }`,
+});
 function initDetailGeos() {
   const canopy = new THREE.IcosahedronGeometry(1, 0); canopy.scale(3.0, 2.5, 3.0); canopy.translate(0, 5.0, 0);
   const trunk = new THREE.CylinderGeometry(0.22, 0.32, 3.4, 5); trunk.translate(0, 1.7, 0);
   const paint = (g, c) => { const n = g.attributes.position.count; const a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set(c, i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g.index ? g.toNonIndexed() : g; };
   treeGeo = mergeGeometries([paint(canopy.toNonIndexed(), [1, 1, 1]), paint(trunk.toNonIndexed(), [0.55, 0.42, 0.33])]);
-  tankGeo = new THREE.CylinderGeometry(0.62, 0.62, 1.25, 9); tankGeo.translate(0, 0.625, 0);
+  // Sintex-style water tank: ribbed body, conical lid with a cap, on a small steel stand
+  const body = new THREE.CylinderGeometry(0.62, 0.6, 1.2, 16, 1, true); body.translate(0, 0.32 + 0.6, 0);
+  const lid = new THREE.CylinderGeometry(0.2, 0.63, 0.24, 16); lid.translate(0, 0.32 + 1.2 + 0.12, 0);
+  const cap = new THREE.CylinderGeometry(0.17, 0.17, 0.1, 10); cap.translate(0, 0.32 + 1.2 + 0.24 + 0.05, 0);
+  const bottom = new THREE.CylinderGeometry(0.6, 0.6, 0.04, 16); bottom.translate(0, 0.33, 0);
+  const stand = new THREE.BoxGeometry(1.45, 0.3, 1.45); stand.translate(0, 0.15, 0);
+  tankGeo = mergeGeometries([paint(body, [1, 1, 1]), paint(lid, [1.08, 1.08, 1.08]), paint(cap, [0.75, 0.75, 0.75]), paint(bottom, [1, 1, 1]), paint(stand, [0.45, 0.45, 0.47])]);
+  // rooftop solar array: three tilted rows of panels on steel legs
+  const parts = [];
+  for (let r = 0; r < 3; r++) {
+    const pnl = new THREE.BoxGeometry(6.4, 0.05, 1.15); pnl.rotateX(-0.38); pnl.translate(0, 0.75, -1.9 + r * 1.9);
+    parts.push(paint(pnl, [1, 1, 1]));
+    for (const lx of [-2.9, 0, 2.9]) { const leg = new THREE.BoxGeometry(0.06, 0.9, 0.06); leg.translate(lx, 0.45, -1.9 + r * 1.9 - 0.3); parts.push(paint(leg, [0.35, 0.36, 0.38])); }
+  }
+  solarGeo = mergeGeometries(parts);
   mumtyGeo = new THREE.BoxGeometry(3.4, 2.7, 3.4); mumtyGeo.translate(0, 1.35, 0);
 }
 const TREE_COLS = ['#557f2f', '#6f9a36', '#86924a', '#b9653a', '#47732d'].map((h) => new THREE.Color(h));
@@ -1426,17 +1599,19 @@ function buildProps(ch) {
   if (!ch.pl || !BUF.props) return;
   const r = new Reader(BUF.props, ch.po); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), Y = r.arr(Uint16Array, n), T = r.arr(Uint8Array, n), RO = r.arr(Uint8Array, n), SC = r.arr(Uint8Array, n);
-  let nt = 0, nm = 0; for (let i = 0; i < n; i++) T[i] ? nm++ : nt++;
+  let nt = 0, nm = 0, ns = 0; for (let i = 0; i < n; i++) T[i] === 0 ? nt++ : T[i] === 1 ? nm++ : ns++;
   const tanks = new THREE.InstancedMesh(tankGeo, tankMat, Math.max(nt, 1)); tanks.count = nt;
   const mum = new THREE.InstancedMesh(mumtyGeo, mumtyMat, Math.max(nm, 1)); mum.count = nm;
-  let a = 0, b = 0;
+  const sol = new THREE.InstancedMesh(solarGeo, solarMat, Math.max(ns, 1)); sol.count = ns;
+  let a = 0, b = 0, c = 0;
   for (let i = 0; i < n; i++) {
     _p.set(X[i] * 0.1, Y[i] * 0.1, Z[i] * 0.1);
     const s = SC[i] / 20;
-    if (T[i] === 0) { _q.identity(); _s.set(s, s, s); _m.compose(_p, _q, _s); tanks.setMatrixAt(a++, _m); }
-    else { _e.set(0, (RO[i] / 255) * Math.PI, 0); _q.setFromEuler(_e); _s.set(s, s > 1.2 ? 1.3 : 1, s); _m.compose(_p, _q, _s); mum.setMatrixAt(b++, _m); }
+    if (T[i] === 0) { _q.identity(); _s.set(s, s, s); _m.compose(_p, _q, _s); tanks.setColorAt(a, TANK_COLS[Math.floor(hash1(i * 13 + ch.cx * 7 + ch.cy * 3) * TANK_COLS.length)]); tanks.setMatrixAt(a++, _m); }
+    else if (T[i] === 1) { _e.set(0, (RO[i] / 255) * Math.PI, 0); _q.setFromEuler(_e); _s.set(s, s > 1.2 ? 1.3 : 1, s); _m.compose(_p, _q, _s); mum.setMatrixAt(b++, _m); }
+    else { _e.set(0, (RO[i] / 255) * Math.PI, 0); _q.setFromEuler(_e); _s.set(1, 1, 1); _m.compose(_p, _q, _s); sol.setMatrixAt(c++, _m); }
   }
-  for (const im of [tanks, mum]) { im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; im.computeBoundingSphere(); group.near.add(im); ch.props.push(im); }
+  for (const im of [tanks, mum, sol]) { im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; im.computeBoundingSphere(); group.near.add(im); ch.props.push(im); }
 }
 function disposeNear(ch) {
   for (const k of ['cells', 'trees', 'props']) {
@@ -1608,8 +1783,8 @@ function initLabels() {
   const mk = (cls, html) => { const d = document.createElement('div'); d.className = 'lbl ' + cls; d.innerHTML = html; labelsEl.appendChild(d); return d; };
   for (const w of META.wards) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: w.area, name: w.name });
   for (const w of EXTRA_AREAS) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: 9e6, name: w.name });
-  const icon = { lake: '~', river: '~', monument: '★', stadium: '◎', airport: '✈', campus: '◆', park: '♣' };
-  for (const l of META.landmarks) LBL.poi.push({ el: mk('poi ' + l.kind, `<span class="pin">${icon[l.kind] || '★'}</span>${l.name}`), x: l.x, z: l.z, min: 14 });
+  const icon = { lake: '~', river: '~', monument: '★', stadium: '◎', airport: '✈', campus: '◆', park: '♣', gate: '∩' };
+  for (const l of META.landmarks) LBL.poi.push({ el: mk('poi ' + l.kind, `<span class="pin">${icon[l.kind] || '★'}</span>${l.name}`), x: l.x, z: l.z, min: l.kind === 'gate' ? 5 : 14 });
   for (const s of META.stations) LBL.poi.push({ el: mk('poi station', `<span class="pin">🚆︎</span>${s.name}`), x: s.x, z: s.z, min: 6 });
   for (let i = 0; i < 90; i++) { const d = mk('road', ''); d.style.display = 'none'; LBL.road.push(d); }
   for (const r of META.roadLabels) r.len = META.roadNames[r[0]].length;
@@ -1950,7 +2125,7 @@ async function boot() {
   buildGround();
   setProgress(0.6, `Paving ${META.counts.roads.toLocaleString()} road segments…`); await tick();
   buildRoads();
-  buildAirport(); buildPolExtras();
+  buildAirport(); buildPolExtras(); buildDarwajas();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
