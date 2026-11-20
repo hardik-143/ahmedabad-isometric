@@ -115,7 +115,7 @@ composer.setSize(innerWidth, innerHeight);
 // shared uniforms
 const U = {
   uTime: { value: 0 }, uNight: { value: 0 }, uDay: { value: 1 },
-  uSunCol: { value: new THREE.Color(1, 1, 1) },
+  uSunCol: { value: new THREE.Color(1, 1, 1) }, uHover: { value: -1 },
 };
 
 // ---------------------------------------------------------------- shaders
@@ -124,7 +124,7 @@ float h21(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return
 float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.-2.*f);
   return mix(mix(h21(i),h21(i+vec2(1,0)),u.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),u.x), u.y); }
 float fbm(vec2 p){ float s=0., a=.5; for(int i=0;i<4;i++){ s+=a*vnoise(p); p=p*2.03+17.1; a*=.5;} return s; }
-uniform float uTime; uniform float uNight; uniform float uDay; uniform vec3 uSunCol;
+uniform float uTime; uniform float uNight; uniform float uDay; uniform vec3 uSunCol; uniform float uHover;
 `;
 
 let hookId = 0;
@@ -563,10 +563,11 @@ function miter(xy, p, n, j, sc) {
 }
 
 // ---------------------------------------------------------------- elevated roads: flyovers & river bridges
+const SEE_THROUGH = 'if (abs(vId - uHover) < 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0) < 1.0) discard;';
 const DECK = hook(new THREE.MeshLambertMaterial({ color: 0xffffff }), {
-  vHead: 'attribute vec4 aR; varying vec4 vR;', vBody: 'vR = aR;',
-  fHead: 'varying vec4 vR; uniform vec3 uAsph[10];', uniforms: { uAsph: { value: ASPH } },
-  fColor: `
+  vHead: 'attribute vec4 aR; attribute float aId; varying vec4 vR; varying float vId;', vBody: 'vR = aR; vId = aId;',
+  fHead: 'varying vec4 vR; varying float vId; uniform vec3 uAsph[10];', uniforms: { uAsph: { value: ASPH } },
+  fColor: SEE_THROUGH + `
     float a = abs(vR.x); float s = vR.y; float hw = vR.z; float cls = vR.w;
     vec3 c;
     if (a > hw) {
@@ -586,13 +587,17 @@ const DECK = hook(new THREE.MeshLambertMaterial({ color: 0xffffff }), {
 const CONCRETE = hook(new THREE.MeshLambertMaterial({ color: '#cdc8bd', side: THREE.DoubleSide }), {
   fColor: 'diffuseColor.rgb *= 0.9 + 0.12*vnoise(mod(vWPos.xz*0.7 + vWPos.y*0.3, 1024.0));',
 });
+const DECKWALL = hook(new THREE.MeshLambertMaterial({ color: '#cfcac0', side: THREE.DoubleSide }), {
+  vHead: 'attribute float aId; varying float vId;', vBody: 'vId = aId;', fHead: 'varying float vId;',
+  fColor: SEE_THROUGH + 'diffuseColor.rgb *= 0.9 + 0.12*vnoise(mod(vWPos.xz*0.7 + vWPos.y*0.3, 1024.0));',
+});
 const KITE = hook(new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }), {
   fColor: 'xEm = diffuseColor.rgb * 0.9 * uNight;',
 });
 
 class Geo {
-  constructor(extra) { this.p = []; this.n = []; this.i = []; this.x = extra ? [] : null; this.c = []; }
-  v(x, y, z, nx, ny, nz, e, col) { this.p.push(x, y, z); this.n.push(nx, ny, nz); if (this.x) this.x.push(...e); if (col) this.c.push(...col); return this.p.length / 3 - 1; }
+  constructor(extra, withId) { this.p = []; this.n = []; this.i = []; this.x = extra ? [] : null; this.c = []; this.ids = withId ? [] : null; this.cur = 0; }
+  v(x, y, z, nx, ny, nz, e, col) { this.p.push(x, y, z); this.n.push(nx, ny, nz); if (this.x) this.x.push(...e); if (col) this.c.push(...col); if (this.ids) this.ids.push(this.cur); return this.p.length / 3 - 1; }
   q(a, b, c, d) { this.i.push(a, b, c, a, c, d); }
   quad(p0, p1, p2, p3, n, col) {
     const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2], bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
@@ -612,6 +617,7 @@ class Geo {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
     if (this.x) g.setAttribute('aR', new THREE.Float32BufferAttribute(this.x, 4));
     if (this.c.length) g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
+    if (this.ids) g.setAttribute('aId', new THREE.Float32BufferAttribute(this.ids, 1));
     g.setIndex(this.p.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(this.i, 1) : new THREE.Uint16BufferAttribute(this.i, 1));
     g.computeBoundingSphere();
     const m = new THREE.Mesh(g, mat); m.castShadow = true; m.receiveShadow = true; m.renderOrder = 10;
@@ -619,11 +625,15 @@ class Geo {
   }
 }
 
+let DECKIDX = null;
 function buildDecks(decks, xy) {
-  const D = new Geo(true), W = new Geo(false);
-  for (const d of decks) {
+  const D = new Geo(true, true), W = new Geo(false, true);
+  const chainOf = META.deckChain || [];
+  DECKIDX = new Map();
+  decks.forEach((d, di) => {
     const { p, L, c, H, z } = d; const O = H + Math.max(d.O - H, 0.6);
-    let s = 0, nextPier = 14;
+    const cid = chainOf[di] != null ? chainOf[di] : di; D.cur = cid; W.cur = cid;
+    let s = 0;
     const pts = [];
     for (let j = 0; j < L; j++) {
       const x = xy[(p + j) * 2] * 0.5, zz = xy[(p + j) * 2 + 1] * 0.5, h = z[j] / 10 + 0.05;
@@ -632,7 +642,11 @@ function buildDecks(decks, xy) {
       pts.push({ x, z: zz, h, nx, nz, ml, s });
       D.v(x + nx * O * ml, h, zz + nz * O * ml, 0, 1, 0, [O, s, H, c]);
       D.v(x - nx * O * ml, h, zz - nz * O * ml, 0, 1, 0, [-O, s, H, c]);
-      if (j > 0) { const b = D.p.length / 3 - 4; D.i.push(b, b + 1, b + 2, b + 1, b + 3, b + 2); }
+      if (j > 0) { const b = D.p.length / 3 - 4; D.i.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
+      if (j > 0 && h > 2.5) {   // hover index on the deck (cells of 40 m)
+        const k = Math.floor(x / 40) * 100003 + Math.floor(zz / 40);
+        let arr = DECKIDX.get(k); if (!arr) DECKIDX.set(k, (arr = [])); arr.push(pts[j - 1].x, pts[j - 1].z, x, zz, O, cid);
+      }
     }
     for (let j = 0; j < L - 1; j++) {
       const A = pts[j], B = pts[j + 1];
@@ -642,19 +656,16 @@ function buildDecks(decks, xy) {
         const n = [A.nx * sg, 0, A.nz * sg];
         W.quad([ax, Math.max(0, A.h - 1.3), az], [bx, Math.max(0, B.h - 1.3), bz], [bx, B.h + 0.85, bz], [ax, A.h + 0.85, az], n);
       }
-      // piers every ~26 m where the deck is high enough
-      while (nextPier < B.s) {
-        const t = (nextPier - A.s) / Math.max(B.s - A.s, 1e-3), h = A.h + (B.h - A.h) * t;
-        if (h > 2.6) {
-          const dx = B.x - A.x, dz = B.z - A.z, l = Math.hypot(dx, dz) || 1;
-          W.box(A.x + dx * t, A.z + dz * t, dx / l, dz / l, 0.8, Math.min(H * 0.55, 3.5), 0, h - 1.2);
-        }
-        nextPier += 26;
-      }
     }
+  });
+  // piers: square column + hammerhead cap, positions aligned across twin carriageways (from the data build)
+  for (const [x, zz, ux, uz, h, hc, cid] of META.piers || []) {
+    W.cur = cid;
+    W.box(x, zz, ux, uz, 0.75, 0.85, 0, h - 2.1);
+    W.box(x, zz, ux, uz, 0.95, hc, h - 2.1, h - 1.3);
   }
   if (D.p.length) { const m = D.mesh(DECK); group.ground.add(m); }
-  if (W.p.length) { const m = W.mesh(CONCRETE); group.ground.add(m); }
+  if (W.p.length) { const m = W.mesh(DECKWALL); group.ground.add(m); }
   buildAtal();
 }
 
@@ -664,21 +675,32 @@ function buildAtal() {
   const dx = A.x1 - A.x0, dz = A.z1 - A.z0, Lb = Math.hypot(dx, dz), ux = dx / Lb, uz = dz / Lb, vx = -uz, vz = ux, hw = A.w / 2;
   const S = new Geo(false), K = new Geo(false);
   const at = (s, c, y) => [A.x0 + ux * s + vx * c, y, A.z0 + uz * s + vz * c];
-  const yAt = (s) => A.deck - Math.max(0, 18 - Math.min(s, Lb - s)) * 0.2;
-  // deck slab + edges
-  const step = 6;
-  for (let s = 0; s < Lb - 0.01; s += step) {
-    const e = Math.min(Lb, s + step), y0 = yAt(s), y1 = yAt(e);
+  // deck is level over the river (plus 8 m), then ramps down to a paved landing on each bank
+  const w0 = A.ws0 != null ? A.ws0 : 18, w1 = A.ws1 != null ? A.ws1 : Lb - 18;
+  const f0 = Math.max(4, w0 - 8), f1 = Math.min(Lb - 4, w1 + 8);
+  const yAt = (s) => s < f0 ? 0.25 + (A.deck - 0.25) * (s / f0) : s > f1 ? 0.25 + (A.deck - 0.25) * ((Lb - s) / (Lb - f1)) : A.deck;
+  const marks = [0, f0, f1, Lb]; for (let s = 6; s < Lb; s += 6) marks.push(s);
+  marks.sort((a, b) => a - b);
+  for (let i = 0; i < marks.length - 1; i++) {
+    const s = marks[i], e = marks[i + 1]; if (e - s < 0.01) continue;
+    const y0 = yAt(s), y1 = yAt(e), solid = s < f0 || e > f1;   // ramps sit on solid abutments
+    const b0 = solid ? 0 : y0 - 1.4, b1 = solid ? 0 : y1 - 1.4;
     S.quad(at(s, -hw, y0), at(e, -hw, y1), at(e, hw, y1), at(s, hw, y0), [0, 1, 0]);
-    S.quad(at(s, -hw, y0 - 1.4), at(e, -hw, y1 - 1.4), at(e, -hw, y1 + 1.1), at(s, -hw, y0 + 1.1), [-vx, 0, -vz]);
-    S.quad(at(e, hw, y1 - 1.4), at(s, hw, y0 - 1.4), at(s, hw, y0 + 1.1), at(e, hw, y1 + 1.1), [vx, 0, vz]);
+    S.quad(at(s, -hw, b0), at(e, -hw, b1), at(e, -hw, y1 + 1.1), at(s, -hw, y0 + 1.1), [-vx, 0, -vz]);
+    S.quad(at(e, hw, b1), at(s, hw, b0), at(s, hw, y0 + 1.1), at(e, hw, y1 + 1.1), [vx, 0, vz]);
   }
-  for (const f of [0.34, 0.66]) S.box(A.x0 + dx * f, A.z0 + dz * f, ux, uz, 1.6, hw * 0.7, 0, A.deck - 1.4);
+  // piers: one at each bank, two in the river
+  for (const sp of [w0, w0 + (w1 - w0) / 3, w0 + 2 * (w1 - w0) / 3, w1]) S.box(A.x0 + ux * sp, A.z0 + uz * sp, ux, uz, 1.6, hw * 0.7, 0, A.deck - 1.4);
+  // paved landings where the bridge meets each riverfront promenade
+  for (const [sc, dir] of [[0, -1], [Lb, 1]]) {
+    const a0 = sc, a1 = sc + dir * 16;
+    S.quad(at(Math.min(a0, a1), -hw * 1.8, 0.08), at(Math.max(a0, a1), -hw * 1.8, 0.08), at(Math.max(a0, a1), hw * 1.8, 0.08), at(Math.min(a0, a1), hw * 1.8, 0.08), [0, 1, 0]);
+  }
   // canopy: arched kite panels with gaps, posts at each panel edge
   const KC = ['#e63946', '#f4a261', '#2a9d8f', '#e9c46a', '#7b5ce0', '#f06292', '#3fb6e8', '#ff7b25'].map((h) => new THREE.Color(h));
   const prof = [[-1, 3.0], [-0.55, 4.6], [0, 5.4], [0.55, 4.6], [1, 3.0]];
   let k = 0;
-  for (let s = 10; s < Lb - 16; s += 8, k++) {
+  for (let s = f0 - 2; s < f1 - 4; s += 8, k++) {
     const e = s + 6.2, col = KC[k % KC.length], cc = [col.r, col.g, col.b];
     const ys = yAt(s), ye = yAt(e);
     for (let t = 0; t < prof.length - 1; t++) {
@@ -762,6 +784,25 @@ function buildRoads() {
     const m = new THREE.Mesh(g, mat); m.renderOrder = ord; m.receiveShadow = true; m.frustumCulled = false; group.ground.add(m);
   }
   buildRoadIndex();
+}
+
+function deckUnder(sx, sy) {
+  if (!DECKIDX) return -1;
+  ndc.set((sx / innerWidth) * 2 - 1, -(sy / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(ndc, cam);
+  const o = raycaster.ray.origin, d = raycaster.ray.direction; const t = (6.5 - o.y) / d.y;
+  const x = o.x + d.x * t, z = o.z + d.z * t;
+  const ca = Math.floor(x / 40), cb = Math.floor(z / 40); let best = 1e9, id = -1;
+  for (let a = ca - 1; a <= ca + 1; a++) for (let b = cb - 1; b <= cb + 1; b++) {
+    const arr = DECKIDX.get(a * 100003 + b); if (!arr) continue;
+    for (let k = 0; k < arr.length; k += 6) {
+      const x0 = arr[k], z0 = arr[k + 1], x1 = arr[k + 2], z1 = arr[k + 3], O = arr[k + 4];
+      const dx = x1 - x0, dz = z1 - z0, L2 = dx * dx + dz * dz || 1, u = clamp(((x - x0) * dx + (z - z0) * dz) / L2, 0, 1);
+      const dd = Math.hypot(x - (x0 + u * dx), z - (z0 + u * dz)) - O;
+      if (dd < 1.5 && dd < best) { best = dd; id = arr[k + 5]; }
+    }
+  }
+  return id;
 }
 
 // spatial index for "which street am I on"
@@ -1357,6 +1398,8 @@ function frame(now) {
   if (whereDirty) {
     const [x, z] = mouse.in && !drag ? screenToGround(mouse.x, mouse.y) : [view.tx, view.tz];
     updateWhere(x, z); whereDirty = false;
+    const hov = mouse.in && !drag && view.mpp < 3 ? deckUnder(mouse.x, mouse.y) : -1;
+    if (hov !== U.uHover.value) { U.uHover.value = hov; dirty = true; renderer.shadowMap.needsUpdate = true; }
   }
   const idle = now - lastInteract > 1500 && todT >= 1;
   const minGap = idle ? (U.uNight.value > 0.5 ? 66 : 80) : 0;

@@ -9,7 +9,8 @@ rng = np.random.default_rng(7)
 
 bpolys = B['polys'][B['fabric'] != 1]
 btree = shapely.STRtree(bpolys)
-water = shapely.union_all(list(G['water']) + [f.buffer(4) for f in B['fields']])
+decks = [shapely.LineString(r['xy']).buffer(r['hw'] + r['sw'] + 3.5) for r in G['roads'] if r['bridge']]
+water = shapely.union_all(list(G['water']) + [f.buffer(4) for f in B['fields']] + decks)
 shapely.prepare(water)
 parks = G['parks']
 roads = G['roads']
@@ -56,7 +57,7 @@ print('park trees', len(pk), round(time.time() - t0, 1))
 # street trees
 st = []
 for r in roads:
-    if r['cls'] not in (3, 5, 6, 8):
+    if r['cls'] not in (3, 5, 6, 8) or r['bridge']:
         continue
     ln = shapely.LineString(r['xy'])
     L = ln.length

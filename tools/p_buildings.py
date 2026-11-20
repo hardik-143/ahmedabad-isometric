@@ -133,8 +133,11 @@ print('after subdivision', len(polys), round(time.time() - t0, 1))
 import pickle as _pk
 from collections import defaultdict
 G = _pk.load(open(f'{OUT}/ground.pkl', 'rb'))
-rl = [r for r in G['roads'] if not r['bridge']]
-rbuf = shapely.buffer(np.array([shapely.LineString(r['xy']) for r in rl], dtype=object), np.array([r['hw'] for r in rl]), quad_segs=3)
+rl = list(G['roads'])   # nothing is built on, or under, a road or flyover deck
+rbuf = shapely.buffer(np.array([shapely.LineString(r['xy']) for r in rl], dtype=object), np.array([r['hw'] + r['sw'] + 0.4 for r in rl]), quad_segs=3)
+jk = list(G['junctions'].keys())
+jbuf = shapely.buffer(shapely.points(np.array(jk, dtype=float)), np.array([G['junctions'][k][0] + 0.4 for k in jk]), quad_segs=4)
+rbuf = np.concatenate([rbuf, jbuf])
 bi, ri = shapely.STRtree(rbuf).query(polys, predicate='intersects')
 hits = defaultdict(list)
 for b_, r_ in zip(bi, ri):
@@ -207,6 +210,18 @@ def apply(cuts, label):
 
 apply(resolve(np.where(isfab != 1)[0]), 'overlaps (detail)')
 apply(resolve(np.where(isfab != 2)[0]), 'overlaps (far LOD)')
+
+# ---- separate neighbours: pull every footprint in so adjoining buildings read as distinct blocks ----
+inset = np.where(special > 0, 0.0, np.where(isfab == 2, 0.6, 0.7))
+shr = shapely.buffer(polys, -inset, join_style='mitre', mitre_limit=2.0)
+P2, H2, F2, S2, R2_ = [], [], [], [], []
+for k in range(len(polys)):
+    g = shr[k] if inset[k] > 0 else polys[k]
+    for q in shapely.get_parts(g):
+        if q.geom_type == 'Polygon' and q.area > 9:
+            P2.append(q); H2.append(hs[k]); F2.append(isfab[k]); S2.append(special[k]); R2_.append(parent[k])
+print(f'inset: {len(polys)} -> {len(P2)} footprints', round(time.time() - t0, 1))
+polys = np.array(P2, dtype=object); hs = np.array(H2); isfab = np.array(F2); special = np.array(S2); parent = np.array(R2_)
 
 tol = np.where(isfab == 1, 1.2, 0.3)
 polys = shapely.simplify(polys, tol, preserve_topology=True)

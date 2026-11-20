@@ -293,6 +293,64 @@ R2 = newR
 R2.sort(key=lambda r: (r['cls'], r['bridge']))
 print(f'elevated pieces {n_el}, {el_len / 1000:.1f} km of deck+ramps')
 
+# ---- piers: ~28 m apart under decks over 3.5 m; twin carriageways share aligned positions ----
+pieces = [r for r in R2 if r['bridge']]
+plines = [shapely.LineString(r['xy']) for r in pieces]
+# chain id per piece (pieces touching end-to-end belong to one flyover) for hover highlighting
+parent_ = list(range(len(pieces)))
+def _f(i):
+    while parent_[i] != i:
+        parent_[i] = parent_[parent_[i]]; i = parent_[i]
+    return i
+ends = {}
+for i, r in enumerate(pieces):
+    for pt in (r['xy'][0], r['xy'][-1]):
+        k = (round(pt[0]), round(pt[1]))
+        if k in ends:
+            parent_[_f(i)] = _f(ends[k])
+        else:
+            ends[k] = i
+ptree = shapely.STRtree(plines)
+for i in range(len(pieces)):   # parallel twin decks within 30 m also share a chain
+    for j in ptree.query(plines[i].buffer(30), predicate='intersects'):
+        if j != i and plines[i].length > 60 and plines[j].length > 60 and plines[i].hausdorff_distance(plines[j]) < 60:
+            parent_[_f(i)] = _f(j)
+roots = {}
+chain_of = [roots.setdefault(_f(i), len(roots)) for i in range(len(pieces))]
+piers, grid = [], {}
+order = sorted(range(len(pieces)), key=lambda i: -plines[i].length)
+for i in order:
+    ln, r = plines[i], pieces[i]
+    c = np.asarray(r['xy']); z = np.asarray(r['z'])
+    cs = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))]); L = cs[-1]
+    snap = []
+    gx0, gy0, gx1, gy1 = [int(v // 60) for v in ln.buffer(35).bounds]
+    for gx in range(gx0, gx1 + 1):
+        for gy in range(gy0, gy1 + 1):
+            for (px, py, pux, puy, pi_) in grid.get((gx, gy), []):
+                if pi_ == i:
+                    continue
+                sp = ln.project(shapely.Point(px, py))
+                if 2 < sp < L - 2:
+                    q = ln.interpolate(sp)
+                    if q.distance(shapely.Point(px, py)) < 30:
+                        a_ = ln.interpolate(max(0, sp - 3)); b_ = ln.interpolate(min(L, sp + 3))
+                        tx, ty = b_.x - a_.x, b_.y - a_.y; tl = np.hypot(tx, ty) or 1
+                        if abs(tx / tl * pux + ty / tl * puy) > 0.85:
+                            snap.append(sp)
+    ss = sorted(set(round(v, 1) for v in snap))
+    reg = [v for v in np.arange(14, L - 10, 28.0) if all(abs(v - w) > 14 for w in ss)]
+    for sp in sorted(ss + list(reg)):
+        h = float(np.interp(sp, cs, z))
+        if h < 3.5:
+            continue
+        p = ln.interpolate(sp); a_ = ln.interpolate(max(0, sp - 3)); b_ = ln.interpolate(min(L, sp + 3))
+        tx, ty = b_.x - a_.x, b_.y - a_.y; tl = np.hypot(tx, ty) or 1
+        ux_, uy_ = tx / tl, ty / tl
+        piers.append((p.x, p.y, ux_, uy_, h, (r['hw'] + max(r['sw'], 0.6)) * 0.82, chain_of[i]))
+        grid.setdefault((int(p.x // 60), int(p.y // 60)), []).append((p.x, p.y, ux_, uy_, i))
+print('piers', len(piers), 'flyover chains', len(roots))
+
 jun = {}
 for r in R2:
     for e, pt in ((0, r['xy'][0]), (-1, r['xy'][-1])):
@@ -311,7 +369,15 @@ rr = np.array(shapely.minimum_rotated_rectangle(loc).exterior.coords)
 e1, e2 = rr[1] - rr[0], rr[2] - rr[1]
 e = e1 if np.hypot(*e1) >= np.hypot(*e2) else e2
 u = e / np.hypot(*e); v = np.array([-u[1], u[0]])
-atal = dict(x0=float(ax - v[0] * 150), y0=float(ay - v[1] * 150), x1=float(ax + v[0] * 150), y1=float(ay + v[1] * 150), w=12.0, deck=6.5)
+# measure the actual river crossing along the bridge axis, then land 35 m beyond each bank
+axis = shapely.LineString([(ax - v[0] * 700, ay - v[1] * 700), (ax + v[0] * 700, ay + v[1] * 700)])
+segs = [g for g in shapely.get_parts(axis.intersection(water_u)) if g.geom_type == 'LineString']
+seg = min(segs, key=lambda g: g.distance(shapely.Point(ax, ay)))
+sa, sb = sorted(axis.project(shapely.Point(c)) - 700 for c in (seg.coords[0], seg.coords[-1]))
+L0, L1 = min(sa - 35, -150), max(sb + 35, 150)
+atal = dict(x0=float(ax + v[0] * L0), y0=float(ay + v[1] * L0), x1=float(ax + v[0] * L1), y1=float(ay + v[1] * L1),
+            w=12.0, deck=6.5, ws0=float(sa - L0), ws1=float(sb - L0))
+print(f'atal crossing: water {sb - sa:.0f} m, bridge {L1 - L0:.0f} m')
 print('atal', atal)
 
 # ---------------- wards ----------------
@@ -330,7 +396,7 @@ for g, p in zip(wd, wpp):
     wards.append(dict(name=nm, x=round(lab.x), y=round(lab.y), rings=rings, area=g.area))
 print('wards', len(wards))
 
-pickle.dump(dict(roads=R2, junctions=jun, road_labels=road_labels, search_roads=search_roads, atal=atal,
+pickle.dump(dict(roads=R2, junctions=jun, road_labels=road_labels, search_roads=search_roads, atal=atal, piers=piers, deck_chain=chain_of,
                  water=water_polys, parks=park_polys, rail=rail, stations=stations, wards=wards,
                  HW=HW, SW=SW), open(f'{OUT}/ground.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))
