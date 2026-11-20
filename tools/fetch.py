@@ -18,6 +18,8 @@ SOURCES = {
     'parks_ahmedabad.geojson': f'{RAW}/sandeshrajbhandari/urban-heat-ahmedabad/d360075f32290617e750906ae59ad3b632bd7a54/outputs/parks_ahmedabad.geojson',
     # Ahmedabad Metro GTFS (alignments, stations, timetable) from croyla/amd-gtfs, ODbL
     'amd_metro_gtfs.zip': f'{RAW}/croyla/amd-metro-navigator/98ca50f0db058141edc6eed6dbe6b96cf54b5559/static/metro.zip',
+    # Janmarg BRTS: official GTFS stops / route stop sequences / stop_times packed as SQLite (str3939/Janmarg-BRTS-Guide)
+    'brts.db': f'{RAW}/str3939/Janmarg-BRTS-Guide/95c0c7f1a756364f0eeef400f95d48f9814ce58c/brts.db',
     # AMC ward boundaries (DataMeet)
     'wards.geojson': f'{RAW}/datameet/Municipal_Spatial_Data/9b4d1c2ece54cdeb6f5e8bad9ccad7844f783b17/Ahmedabad/Wards.geojson',
 }

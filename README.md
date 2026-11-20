@@ -7,6 +7,7 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 - Narendra Modi & Sardar Patel stadium bowls, Atal Bridge with its kite canopy
 - Ahmedabad Metro: Blue, Red, Yellow and Violet line viaducts, 43 stations (4 underground), tunnel portals, trains running to the GTFS timetable
 - Sabarmati Riverfront as a sunken channel from Vasna Barrage to the Acher barrage-cum-bridge: retaining walls, lower and upper promenades, stairs, ghats, lamps
+- Janmarg BRTS: median busways with kerbs and railings (open at junctions), 183 island stations with ramps and zebra crossings, buses running to the GTFS timetable
 - Hand-built landmarks: Patang revolving restaurant, ISKCON temple, Taj Skyline, Pinnacle Business Park, and Ellis Bridge's 1892 steel spans between the Swami Vivekananda Bridge wings
 - Airport perimeter wall with anti-climb coil and watch towers; building outlines squared up from the traced data
 - Day / golden hour / night (lit windows, street lamps), Q/E rotation, search, radar and city map
@@ -93,3 +94,17 @@ opening remove notches and spurs). Procedural cells inside dense blocks are whol
 The perimeter is the edge of the open airside land around runway 05/23: inside a runway-frame envelope, whatever no
 building, through road or water occupies is airfield; the part holding the runway, opened and closed by 70 m and
 30 m, is fenced. Terminal and hangar façades that form the boundary themselves get no wall.
+
+### Janmarg BRTS
+Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
+str3939/Janmarg-BRTS-Guide). The GTFS has no shapes, so each route is routed station-to-station over the major road
+graph (service roads penalised). On dual carriageways the corridor moves onto the median; parallel corridors within
+12 m merge; corridors are smoothed so turns are arcs. Single carriageways that carry it are widened to 24 m. Lane paint
+and barriers stop at junctions; bridges and flyovers carry buses in mixed traffic (no lane paint). Each station is an
+island in the median (44 x 4.6 m, glass walls, arched roof, ramp to a zebra crossing); same-name stops within 300 m
+share one. Limitation: Janmarg is ~160 km of routes but only ~89 km of dedicated corridor, and the routing paints
+~144 km, so some stretches shown as busway run in mixed traffic in reality.
+
+### Road paint
+Wherever a road's edge line or lane paint would land on another carriageway (junctions, overlapping dual
+carriageways, slip roads) the paint fades out; continuations of the same road through a node are not masked.

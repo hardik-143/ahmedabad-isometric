@@ -38,6 +38,7 @@ body.night .lbl.road{color:#f3e7cf;text-shadow:0 0 2px #000,0 0 4px #000}
 .lbl.poi.gate .pin{background:#d9b77a}
 .lbl.poi.metro .pin{background:#fff;color:#1b1f24;border-radius:5px;font-family:Barlow,sans-serif;font-weight:900}
 .lbl.poi.metro .ml{display:inline-flex;gap:2px;margin-left:2px}
+.lbl.poi.brts .pin{background:#1f6fb0;color:#fff;border-radius:5px;font-family:Barlow,sans-serif;font-weight:900}
 .lbl.poi.metro .ml i{width:7px;height:7px;border-radius:50%;display:block;box-shadow:0 0 0 1px rgba(0,0,0,.35)}
 
 /* HUD */
@@ -164,7 +165,7 @@ body.night .lbl.road{color:#f3e7cf;text-shadow:0 0 2px #000,0 0 4px #000}
   <div id="radarWrap" class="hud"><canvas id="radar" width="440" height="440"></canvas></div>
   <div id="radarHint" class="hud">Click radar for city map</div>
   <div id="help" class="hud"><kbd>Drag</kbd> pan · <kbd>Scroll</kbd> zoom · <kbd>Q</kbd><kbd>E</kbd> rotate · <kbd>Right-drag</kbd> free rotate · <kbd>N</kbd> night · <kbd>M</kbd> map</div>
-  <div id="credits" class="hud">Buildings: VEDAS / ISRO-SAC and Google Open Buildings v3 + 2.5D Temporal 2023 (CC BY 4.0, via ramSeraph/indian_buildings) · Roads, parks, central water: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> (ODbL) · Rivers &amp; lakes: India-WRIS, Swachh Bharat Mission · Rail: Indian Railways (via ramSeraph/indian_transport) · Metro alignments, stations &amp; timetable: <a href="https://github.com/croyla/amd-gtfs">amd-gtfs</a> (ODbL) · Wards: DataMeet · Riverfront channel built from the river outline + SRFDCL design widths · Trees, rooftop tanks, pol façades, taxiway layout &amp; parked aircraft are procedural.</div>
+  <div id="credits" class="hud">Buildings: VEDAS / ISRO-SAC and Google Open Buildings v3 + 2.5D Temporal 2023 (CC BY 4.0, via ramSeraph/indian_buildings) · Roads, parks, central water: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> (ODbL) · Rivers &amp; lakes: India-WRIS, Swachh Bharat Mission · Rail: Indian Railways (via ramSeraph/indian_transport) · Metro alignments, stations &amp; timetable: <a href="https://github.com/croyla/amd-gtfs">amd-gtfs</a> (ODbL) · BRTS stops, routes &amp; timetable: Janmarg GTFS (via <a href="https://github.com/str3939/Janmarg-BRTS-Guide">Janmarg-BRTS-Guide</a>); corridors routed on the road graph · Wards: DataMeet · Riverfront channel built from the river outline + SRFDCL design widths · Trees, rooftop tanks, pol façades, taxiway layout &amp; parked aircraft are procedural.</div>
 
   <div id="bigmap"><div id="bigmapTitle">AHMEDABAD<small>Click anywhere to fly there · Esc to close</small></div><div id="bigmapInner"><canvas id="bigmapCanvas"></canvas><div id="bigmapLabels"></div></div></div>
 

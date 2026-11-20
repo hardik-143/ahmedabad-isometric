@@ -403,6 +403,10 @@ for i in order:
         grid.setdefault((int(p.x // 60), int(p.y // 60)), []).append((p.x, p.y, ux_, uy_, i))
 print('piers', len(piers), 'flyover chains', len(roots))
 
+# Janmarg BRTS: corridors on the medians, widened carriageways (before junction discs are sized)
+from p_brts import build_brts
+BRTS = build_brts(R2)
+
 jun = {}
 for r in R2:
     for e, pt in ((0, r['xy'][0]), (-1, r['xy'][-1])):
@@ -448,7 +452,7 @@ for g, p in zip(wd, wpp):
     wards.append(dict(name=nm, x=round(lab.x), y=round(lab.y), rings=rings, area=g.area))
 print('wards', len(wards))
 
-pickle.dump(dict(ellis=ELLIS, roads=R2, junctions=jun, road_labels=road_labels, search_roads=search_roads, atal=atal, piers=piers, deck_chain=chain_of,
+pickle.dump(dict(brts=BRTS, ellis=ELLIS, roads=R2, junctions=jun, road_labels=road_labels, search_roads=search_roads, atal=atal, piers=piers, deck_chain=chain_of,
                  water=water_polys, parks=park_polys, rail=rail, stations=stations, wards=wards,
                  HW=HW, SW=SW), open(f'{OUT}/ground.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))

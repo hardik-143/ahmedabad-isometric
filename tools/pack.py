@@ -159,6 +159,42 @@ b.arr(np.array([round(J[k][1] * 10) for k in jk], np.uint8))
 b.arr(np.array([J[k][2] for k in jk], np.uint8))
 ZZ = [np.round(np.asarray(r['z']) * 10).clip(0, 255) for r in roads if r['bridge']]
 b.arr((np.concatenate(ZZ) if ZZ else np.zeros(0)).astype(np.uint8))
+# paint mask: 1 where a ribbon's edge line / lane paint would land on another road's carriageway (junctions,
+# overlapping dual carriageways, slip roads); continuations of the same road at a shared node are ignored
+_at = [k for k, r in enumerate(roads) if not r['bridge']]
+_asph = [shapely.LineString(roads[k]['xy']).buffer(max(roads[k]['hw'] - 0.25, 0.3), cap_style='flat') for k in _at]
+_tree = shapely.STRtree(_asph)
+_ends = {}
+for k, r in enumerate(roads):
+    c = np.asarray(r['xy'])
+    for e, (q0, q1) in ((0, (c[0], c[1])), (-1, (c[-1], c[-2]))):
+        d = q1 - q0; d = d / (np.hypot(*d) or 1)
+        _ends.setdefault((round(q0[0], 0), round(q0[1], 0)), []).append((k, d))
+_cont = set()
+for lst in _ends.values():
+    for a_ in range(len(lst)):
+        for b_ in range(a_ + 1, len(lst)):
+            (ka, da), (kb, db) = lst[a_], lst[b_]
+            if np.dot(da, db) < -0.9:      # outgoing directions opposite: one road carries on into the other
+                _cont.add((ka, kb)); _cont.add((kb, ka))
+_off = np.zeros(len(roads) + 1, np.int64); _off[1:] = np.cumsum([len(r['xy']) for r in roads])
+_PL, _PR, _own = [], [], []
+for k, r in enumerate(roads):
+    c = np.asarray(r['xy'], float); n_ = len(c)
+    t = np.zeros_like(c); t[1:-1] = c[2:] - c[:-2]; t[0] = c[1] - c[0]; t[-1] = c[-1] - c[-2]
+    t /= np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None]
+    nl = np.column_stack([-t[:, 1], t[:, 0]]); h = max(r['hw'] - 0.35, 0.2)
+    _PL.append(c + nl * h); _PR.append(c - nl * h); _own.append(np.full(n_, k))
+_PL, _PR, _own = np.concatenate(_PL), np.concatenate(_PR), np.concatenate(_own)
+_atk = np.array(_at)
+MASK = np.zeros((len(_own), 2), np.uint8)
+for side, PP in ((0, _PL), (1, _PR)):
+    pi, gi = _tree.query(shapely.points(PP), predicate='within')
+    other = _atk[gi]; mine = _own[pi]
+    keep = (other != mine) & ~np.array([(m_, o_) in _cont for m_, o_ in zip(mine, other)], bool) & ~np.array([roads[m_]['bridge'] for m_ in mine], bool)
+    MASK[pi[keep], side] = 1
+print(f'road paint mask: {int(MASK.any(axis=1).sum())} of {len(MASK)} ribbon points sit on another carriageway')
+b.arr(MASK.ravel())
 b.pad(4)
 files['roads'] = b.b
 
@@ -248,6 +284,29 @@ for R in MT['routes']:
                                            ug=[int(v > 0.5) for v in ug], inb=[int(v > 0.5) for v in ib]))
 for rk, d, svc, ss, tt in MT['trips']:
     transit['metro']['trips'].append([rk, d, svc, [round(v) for v in ss], [tt[0]] + [b_ - a_ for a_, b_ in zip(tt, tt[1:])]])
+# ---- Janmarg BRTS: corridor lines (+ barrier gaps), median stations, bus paths (reverse paths shared), timetable
+BR = G.get('brts')
+if BR:
+    def _st(st):
+        return dict(n=st['name'], x=round(st['x'], 1), z=round(-st['y'], 1), ux=round(float(st['ux']), 4), uz=round(-float(st['uy']), 4), li=int(st['li']), s=round(float(st['s']), 1))
+    lidx = {lg['ab']: k for k, lg in enumerate(BR['legs'])}
+    legs_out, ref = [], {}
+    for k, lg in enumerate(BR['legs']):
+        a, b = lg['ab']
+        if (b, a) in ref:          # same street path driven the other way
+            ref[(a, b)] = -(ref[(b, a)] + 1); continue
+        ref[(a, b)] = len(legs_out)
+        P = np.asarray(lg['pts'])
+        legs_out.append(dict(p=[round(float(v), 1) for q in P for v in (q[0], -q[1], q[2])], o=[round(float(v), 1) for v in lg['off']]))
+    trips_out = []
+    for tr in BR['trips']:
+        row = [int(tr[0][1])]
+        for (li, ta, tb) in tr:
+            row += [ref[BR['legs'][li]['ab']], int(tb - ta)]
+        trips_out.append(row)
+    transit['brts'] = dict(lines=[dict(pts=fl3(c), paint=int(BR.get('paint', [1] * len(BR['lines']))[j]), gaps=[[round(a, 1), round(b, 1)] for a, b in BR['gaps'][j]]) for j, c in enumerate(BR['lines'])],
+                           stations=[_st(st) for st in BR['stations']], legs=legs_out, trips=trips_out)
+    print(f"brts: {len(BR['lines'])} corridor lines, {len(BR['stations'])} stations, {len(legs_out)} bus paths, {len(trips_out)} trips")
 files['transit'] = json.dumps(transit, separators=(',', ':')).encode()
 print('transit: corridors', len(MT['corr']), 'stations', len(MT['stations']), 'piers', len(MT['piers']), 'trips', len(MT['trips']))
 

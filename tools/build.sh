@@ -10,7 +10,7 @@ export PYTHONPATH="$ROOT/.pydeps" PYTHONUNBUFFERED=1
 mkdir -p "$AMD_DATA" "$AMD_OUT" "$AMD_SITE/data"
 echo "== installing python deps"
 $PY -m pip install --quiet --disable-pip-version-check --target "$ROOT/.pydeps" \
-  "numpy>=1.26" "scipy>=1.10" "pyarrow>=15" "shapely>=2.1" "mapbox_earcut>=1.0" "py7zr>=0.20" "requests>=2.28"
+  "numpy>=1.26" "scipy>=1.10" "networkx>=3.0" "pyarrow>=15" "shapely>=2.1" "mapbox_earcut>=1.0" "py7zr>=0.20" "requests>=2.28"
 echo "== downloading open data"
 $PY tools/fetch.py
 $PY tools/fetch_gobi.py

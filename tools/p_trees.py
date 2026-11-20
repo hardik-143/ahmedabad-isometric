@@ -22,7 +22,8 @@ if _os.path.exists(f'{OUT}/transit.pkl'):   # riverfront channel, under the metr
 APW, APW_LINES, APW_GATES = airport_wall(G, bpolys)
 print(f'airport wall: {APW.area / 1e6:.2f} km2 inside, {len(APW_GATES)} gates, {sum(shapely.LineString(l).length for l in APW_LINES) / 1e3:.1f} km of wall')
 wall_ = [shapely.LineString(l).buffer(3.0) for l in APW_LINES]
-water = shapely.union_all(wall_ + list(G['water']) + [f.buffer(4) for f in B['fields']] + decks + airside + gates_ + metro_)
+brts_ = [shapely.LineString(c).buffer(7.5) for c in G.get('brts', {}).get('lines', [])]   # median busways
+water = shapely.union_all(wall_ + brts_ + list(G['water']) + [f.buffer(4) for f in B['fields']] + decks + airside + gates_ + metro_)
 shapely.prepare(water)
 parks = G['parks']
 roads = G['roads']
