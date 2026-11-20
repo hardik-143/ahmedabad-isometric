@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Ahmedabad · Isometric City</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%23111%22/%3E%3Cpath d=%22M16 5 27 11v10l-11 6-11-6V11z%22 fill=%22%23ff9d2e%22/%3E%3Cpath d=%22M16 17 27 11v10l-11 6z%22 fill=%22%23c46a12%22/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;0,800;1,700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0d0f12; --paper:#f4efe6; --accent:#ff9d2e; --accent2:#2fb7a8; --panel:rgba(14,16,20,.78);
+  --line:rgba(255,255,255,.14); --muted:rgba(255,255,255,.62);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#0b0d10;color:#fff;font-family:Barlow,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+#app{position:fixed;inset:0}
+canvas#gl{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;cursor:grab}
+canvas#gl.dragging{cursor:grabbing}
+canvas#gl.retro{image-rendering:pixelated}
+#vignette{position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 90% at 50% 45%,transparent 55%,rgba(0,0,0,.28) 100%)}
+#labels{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+.lbl{position:absolute;left:0;top:0;white-space:nowrap;will-change:transform;transform-origin:0 0}
+.lbl.district{font-family:'Barlow Condensed',sans-serif;font-weight:800;text-transform:uppercase;letter-spacing:.14em;color:#fff;
+  text-shadow:0 0 1px #000,0 1px 2px rgba(0,0,0,.9),0 0 12px rgba(0,0,0,.45);line-height:1}
+.lbl.road{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:12px;letter-spacing:.06em;color:#20242a;
+  text-shadow:0 0 2px #fff,0 0 3px #fff,0 0 4px rgba(255,255,255,.9)}
+body.night .lbl.road{color:#f3e7cf;text-shadow:0 0 2px #000,0 0 4px #000}
+.lbl.poi{display:flex;align-items:center;gap:6px;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;letter-spacing:.04em;
+  color:#fff;text-shadow:0 1px 2px #000,0 0 6px rgba(0,0,0,.6)}
+.lbl.poi .pin{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:800;color:#111;
+  box-shadow:0 2px 6px rgba(0,0,0,.5),0 0 0 2px rgba(255,255,255,.9)}
+.lbl.poi.station .pin{background:#ffd23f}
+.lbl.poi .pin{background:var(--accent)}
+.lbl.poi.lake .pin,.lbl.poi.river .pin{background:#5cc8ff}
+.lbl.poi.park .pin{background:#8fd16a}
+
+/* HUD */
+.hud{position:absolute;z-index:5}
+#brand{left:22px;top:18px;pointer-events:none}
+#brand .t{font-family:'Bebas Neue',sans-serif;font-size:44px;line-height:.86;letter-spacing:.04em;color:#fff;
+  text-shadow:0 2px 0 #000,0 0 18px rgba(0,0,0,.45)}
+#brand .t b{color:var(--accent);font-weight:400}
+#brand .s{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;letter-spacing:.28em;text-transform:uppercase;color:#fff;opacity:.9;
+  text-shadow:0 1px 2px #000;margin-top:4px}
+#search{right:18px;top:18px;width:300px}
+#search input{width:100%;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(8px);
+  color:#fff;font:600 15px 'Barlow Condensed',sans-serif;letter-spacing:.04em;padding:0 14px 0 36px;outline:none}
+#search input:focus{border-color:var(--accent)}
+#search .ico{position:absolute;left:12px;top:11px;width:16px;height:16px;opacity:.7}
+#results{margin-top:6px;border-radius:10px;overflow:hidden;background:var(--panel);backdrop-filter:blur(8px);border:1px solid var(--line);display:none}
+#results div{padding:8px 12px;font:600 14px 'Barlow Condensed',sans-serif;letter-spacing:.03em;cursor:pointer;display:flex;justify-content:space-between;gap:10px}
+#results div span{opacity:.55;font-weight:500;text-transform:uppercase;font-size:11px;letter-spacing:.12em;padding-top:2px}
+#results div:hover,#results div.sel{background:rgba(255,157,46,.22)}
+#tools{right:18px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px}
+.btn{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--panel);backdrop-filter:blur(8px);color:#fff;
+  display:grid;place-items:center;cursor:pointer;font:700 18px 'Barlow Condensed',sans-serif;transition:background .15s,border-color .15s;position:relative}
+.btn:hover{border-color:rgba(255,255,255,.4)}
+.btn.on{background:rgba(255,157,46,.9);color:#111;border-color:transparent}
+.btn svg{width:20px;height:20px}
+.btn .tip{position:absolute;right:54px;top:50%;transform:translateY(-50%);background:#111;padding:5px 9px;border-radius:6px;font:600 12px Barlow,sans-serif;
+  white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s}
+.btn:hover .tip{opacity:1}
+.sep{height:6px}
+#timebar{right:76px;bottom:22px;display:flex;gap:6px;background:var(--panel);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:12px;padding:5px}
+#timebar button{border:0;background:transparent;color:#fff;font:700 13px 'Barlow Condensed',sans-serif;letter-spacing:.08em;text-transform:uppercase;padding:7px 10px;border-radius:8px;cursor:pointer;opacity:.75}
+#timebar button.on{background:#fff;color:#111;opacity:1}
+#where{right:22px;bottom:78px;text-align:right;pointer-events:none}
+#where .d{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-style:italic;font-size:30px;letter-spacing:.02em;line-height:1;
+  text-shadow:0 2px 0 #000,0 0 14px rgba(0,0,0,.5)}
+#where .r{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:17px;letter-spacing:.05em;color:#ffd9a8;margin-top:4px;
+  text-shadow:0 1px 2px #000}
+#where .m{font:600 12px 'Barlow Condensed',sans-serif;letter-spacing:.14em;color:var(--muted);margin-top:5px;text-transform:uppercase;text-shadow:0 1px 2px #000}
+#radarWrap{left:22px;bottom:30px;width:220px;height:220px;border-radius:18px;overflow:hidden;cursor:pointer;
+  box-shadow:0 8px 28px rgba(0,0,0,.5),0 0 0 3px rgba(0,0,0,.65),0 0 0 4px rgba(255,255,255,.18)}
+#radar{width:100%;height:100%;display:block}
+#radarHint{position:absolute;left:22px;bottom:8px;font:600 11px 'Barlow Condensed',sans-serif;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);text-shadow:0 1px 2px #000}
+#help{left:50%;top:26px;transform:translateX(-50%);font:500 12px Barlow,sans-serif;color:rgba(255,255,255,.8);text-shadow:0 1px 2px #000;
+  background:rgba(0,0,0,.35);padding:6px 12px;border-radius:999px;transition:opacity .6s;white-space:nowrap}
+#help kbd{font:700 11px 'Barlow Condensed',sans-serif;background:rgba(255,255,255,.16);border-radius:4px;padding:1px 5px;margin:0 2px}
+#credits{left:260px;bottom:8px;font:500 10.5px Barlow,sans-serif;color:rgba(255,255,255,.55);max-width:calc(100% - 780px);text-shadow:0 1px 1px #000;line-height:1.35}
+#credits a{color:inherit}
+#stats{left:22px;top:104px;font:600 11px 'Barlow Condensed',sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);text-shadow:0 1px 2px #000;pointer-events:none;line-height:1.6}
+
+/* big map */
+#bigmap{position:absolute;inset:0;z-index:20;background:rgba(6,8,10,.86);backdrop-filter:blur(6px);display:none;align-items:center;justify-content:center}
+#bigmap.show{display:flex}
+#bigmapInner{position:relative;box-shadow:0 20px 60px rgba(0,0,0,.6);border-radius:14px;overflow:hidden;cursor:crosshair}
+#bigmapCanvas{display:block}
+#bigmapLabels{position:absolute;inset:0;pointer-events:none}
+#bigmapLabels div{position:absolute;transform:translate(-50%,-50%);font:800 11px 'Barlow Condensed',sans-serif;letter-spacing:.12em;text-transform:uppercase;color:#fff;
+  text-shadow:0 0 2px #000,0 1px 3px #000;white-space:nowrap}
+#bigmapTitle{position:absolute;top:22px;left:50%;transform:translateX(-50%);font:400 40px 'Bebas Neue',sans-serif;letter-spacing:.06em}
+#bigmapTitle small{display:block;text-align:center;font:600 12px 'Barlow Condensed',sans-serif;letter-spacing:.2em;color:var(--muted)}
+
+/* loader */
+#loader{position:absolute;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:radial-gradient(80% 70% at 50% 40%,#2a1d12 0%,#0d0b0a 70%);transition:opacity .9s}
+#loader.hide{opacity:0;pointer-events:none}
+#loader .big{font-family:'Bebas Neue',sans-serif;font-size:min(16vw,150px);line-height:.85;letter-spacing:.03em;color:#fff;
+  text-shadow:0 6px 0 #000,0 0 50px rgba(255,140,40,.25)}
+#loader .big b{color:var(--accent);font-weight:400}
+#loader .sub{font:700 15px 'Barlow Condensed',sans-serif;letter-spacing:.42em;text-transform:uppercase;color:#ffd9a8;margin-top:14px}
+#loader .bar{width:min(440px,70vw);height:6px;border-radius:6px;background:rgba(255,255,255,.12);margin-top:44px;overflow:hidden}
+#loader .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ff7a1a,#ffc65a);transition:width .2s}
+#loader .status{font:600 13px 'Barlow Condensed',sans-serif;letter-spacing:.16em;text-transform:uppercase;color:rgba(255,255,255,.7);margin-top:14px;min-height:18px}
+#loader .tip{position:absolute;bottom:34px;left:50%;transform:translateX(-50%);font:500 14px Barlow,sans-serif;color:rgba(255,255,255,.6);text-align:center;width:min(640px,86vw)}
+#loader .tip b{color:#fff}
+#err{position:absolute;inset:auto 20px 20px auto;z-index:60;background:#3a0f0f;color:#fff;padding:12px 16px;border-radius:10px;font:500 13px Barlow,sans-serif;display:none;max-width:420px}
+@media (max-width:1180px){ #help{display:none} }
+@media (max-width:760px){
+  #brand .t{font-size:32px} #search{width:calc(100% - 150px)} #radarWrap{width:150px;height:150px;bottom:62px}
+  #credits{display:none} #help{display:none} #where .d{font-size:22px} #timebar{right:12px;bottom:12px} #where{bottom:64px;right:12px}
+  #tools{right:10px} .btn{width:40px;height:40px} #stats{display:none} #radarHint{display:none}
+}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="gl"></canvas>
+  <div id="vignette"></div>
+  <div id="labels"></div>
+
+  <div id="brand" class="hud"><div class="t">AHMEDA<b>BAD</b></div><div class="s">Amdavad · Isometric City</div></div>
+  <div id="stats" class="hud"></div>
+
+  <div id="search" class="hud">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <input id="q" placeholder="Search a road, area or landmark…" autocomplete="off" spellcheck="false">
+    <div id="results"></div>
+  </div>
+
+  <div id="tools" class="hud">
+    <div class="btn" id="bRotL"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M4 12a8 8 0 1 0 2.6-5.9"/><path d="M4 4v5h5"/></svg><span class="tip">Rotate left · Q</span></div>
+    <div class="btn" id="bRotR"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></svg><span class="tip">Rotate right · E</span></div>
+    <div class="sep"></div>
+    <div class="btn" id="bIn">+<span class="tip">Zoom in</span></div>
+    <div class="btn" id="bOut">−<span class="tip">Zoom out</span></div>
+    <div class="sep"></div>
+    <div class="btn on" id="bShadow"><svg viewBox="0 0 24 24" fill="#fff"><path d="M12 3a9 9 0 1 0 0 18V3z"/><path d="M12 3a9 9 0 0 1 0 18" fill="none" stroke="#fff" stroke-width="2"/></svg><span class="tip">Shadows</span></div>
+    <div class="btn on" id="bTrees"><svg viewBox="0 0 24 24" fill="#fff"><path d="M12 2l6 9h-3l4 6H5l4-6H6z"/><rect x="11" y="17" width="2" height="5"/></svg><span class="tip">Trees &amp; rooftops</span></div>
+    <div class="btn on" id="bLabels"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4"><path d="M5 6h14M12 6v13"/></svg><span class="tip">Labels</span></div>
+    <div class="btn" id="bRetro"><svg viewBox="0 0 24 24" fill="#fff"><rect x="3" y="3" width="6" height="6"/><rect x="9" y="9" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/><rect x="15" y="3" width="6" height="6" opacity=".5"/><rect x="3" y="15" width="6" height="6" opacity=".5"/></svg><span class="tip">Pixel mode</span></div>
+    <div class="btn" id="bMap"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linejoin="round"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span class="tip">City map · M</span></div>
+  </div>
+
+  <div id="timebar" class="hud">
+    <button data-t="morning">Morning</button><button data-t="noon" class="on">Noon</button><button data-t="golden">Golden hour</button><button data-t="night">Night</button>
+  </div>
+
+  <div id="where" class="hud"><div class="d" id="wD">—</div><div class="r" id="wR"></div><div class="m" id="wM"></div></div>
+
+  <div id="radarWrap" class="hud"><canvas id="radar" width="440" height="440"></canvas></div>
+  <div id="radarHint" class="hud">Click radar for city map</div>
+  <div id="help" class="hud"><kbd>Drag</kbd> pan · <kbd>Scroll</kbd> zoom · <kbd>Q</kbd><kbd>E</kbd> rotate · <kbd>Right-drag</kbd> free rotate · <kbd>N</kbd> night · <kbd>M</kbd> map</div>
+  <div id="credits" class="hud">Buildings: VEDAS / ISRO-SAC footprints &amp; heights (via ramSeraph/indian_buildings) · Roads, parks, central water: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> (ODbL) · Rivers &amp; lakes: India-WRIS, Swachh Bharat Mission · Rail: Indian Railways (via ramSeraph/indian_transport) · Wards: DataMeet · Trees, rooftop tanks &amp; old-city house splits are procedural.</div>
+
+  <div id="bigmap"><div id="bigmapTitle">AHMEDABAD<small>Click anywhere to fly there · Esc to close</small></div><div id="bigmapInner"><canvas id="bigmapCanvas"></canvas><div id="bigmapLabels"></div></div></div>
+
+  <div id="loader">
+    <div class="big">AHMEDA<b>BAD</b></div>
+    <div class="sub">Isometric City · Gujarat</div>
+    <div class="bar"><i id="lbar"></i></div>
+    <div class="status" id="lstatus">Loading city data…</div>
+    <div class="tip" id="ltip"></div>
+  </div>
+  <div id="err"></div>
+</div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
