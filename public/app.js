@@ -857,7 +857,7 @@ function miter(xy, p, n, j, sc) {
 }
 
 // ---------------------------------------------------------------- elevated roads: flyovers & river bridges
-const SEE_THROUGH = 'if (abs(vId - uHover) < 0.5 && mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.0) < 1.0) discard;';
+const SEE_THROUGH = '';   // (hover see-through on flyovers removed)
 const DECK = hook(new THREE.MeshLambertMaterial({ color: 0xffffff }), {
   vHead: 'attribute vec4 aR; attribute float aId; varying vec4 vR; varying float vId;', vBody: 'vR = aR; vId = aId;',
   fHead: 'varying vec4 vR; varying float vId; uniform vec3 uAsph[10];', uniforms: { uAsph: { value: ASPH } },
@@ -1151,6 +1151,52 @@ function buildAirport() {
   g.boundingSphere = new THREE.Sphere(new THREE.Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2), Math.hypot(x1 - x0, z1 - z0) / 2);
   const m = new THREE.Mesh(g, AIRFIELD); m.renderOrder = 3.6; m.receiveShadow = true; group.ground.add(m);
   buildAircraft(A);
+  buildAirportWall(A);
+}
+// perimeter wall: 3 m rendered wall with pilasters, an anti-climb coil along the top and watch towers at intervals
+function buildAirportWall(A) {
+  if (!A.wall || !A.wall.length) return;
+  const G = new Geo(false);
+  const wallC = C255(214, 206, 190), pilC = C255(196, 188, 172), coil = C255(78, 80, 84), armC = C255(110, 112, 116), twrC = C255(226, 222, 212), glass = C255(40, 52, 62);
+  const H = 3.0, T = 0.15;
+  let acc = 0, tacc = 400;
+  for (const pts of A.wall) {
+    const n = pts.length / 2;
+    for (let j = 0; j < n - 1; j++) {
+      const x0 = pts[j * 2], z0 = pts[j * 2 + 1], x1 = pts[j * 2 + 2], z1 = pts[j * 2 + 3];
+      const L = Math.hypot(x1 - x0, z1 - z0); if (L < 0.05) continue;
+      const ux = (x1 - x0) / L, uz = (z1 - z0) / L, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+      cbox(G, cx, cz, ux, uz, L / 2 + T, T, 0, H, wallC);
+      cbox(G, cx, cz, ux, uz, L / 2, 0.06, H, H + 0.55, armC, false);               // mesh panel of the anti-climb topping
+      cbox(G, cx, cz, ux, uz, L / 2, 0.24, H + 0.55, H + 0.95, coil);              // concertina coil
+      for (let s = (6 - acc % 6) % 6; s < L; s += 6) {                               // pilasters every 6 m
+        const px = x0 + ux * s, pz = z0 + uz * s;
+        cbox(G, px, pz, ux, uz, 0.22, 0.26, 0, H + 0.12, pilC);
+      }
+      for (let s = 0; s < L; s += 1) {
+        if ((tacc += 1) < 750) continue;
+        tacc = 0;
+        const px = x0 + ux * s, pz = z0 + uz * s, vx = -uz, vz = ux, ox = px + vx * 3.2, oz = pz + vz * 3.2;   // inside the fence line
+        for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) cbox(G, ox + ux * a * 1.1 + vx * b * 1.1, oz + uz * a * 1.1 + vz * b * 1.1, ux, uz, 0.15, 0.15, 0, 6.2, twrC);
+        cbox(G, ox, oz, ux, uz, 1.6, 1.6, 6.2, 6.5, twrC);
+        cbox(G, ox, oz, ux, uz, 1.5, 1.5, 6.5, 8.0, glass);
+        cbox(G, ox, oz, ux, uz, 1.8, 1.8, 8.0, 8.3, twrC);
+      }
+      acc += L;
+    }
+  }
+  // gates for VIP / service entries: pillars, a striped boom barrier, guard booth inside, barricades outside
+  const red = C255(200, 40, 36), wht = C255(238, 238, 236), booth = C255(222, 216, 204), bglass = C255(46, 60, 72);
+  for (const [gx, gz, ux, uz] of A.gates || []) {
+    const vx = -uz, vz = ux;
+    for (const sg of [-1, 1]) { cbox(G, gx + ux * 4.7 * sg, gz + uz * 4.7 * sg, ux, uz, 0.45, 0.45, 0, 3.6, pilC); cbox(G, gx + ux * 4.7 * sg, gz + uz * 4.7 * sg, ux, uz, 0.6, 0.6, 3.6, 3.9, wallC); }
+    for (let k = 0; k < 8; k++) cbox(G, gx + ux * (-3.9 + k * 1.0), gz + uz * (-3.9 + k * 1.0), ux, uz, 0.5, 0.06, 1.0, 1.12, k % 2 ? wht : red);   // boom
+    cbox(G, gx + ux * 6.6 + vx * 3.2, gz + uz * 6.6 + vz * 3.2, ux, uz, 1.2, 1.2, 0, 2.5, booth);
+    cbox(G, gx + ux * 6.6 + vx * 3.2, gz + uz * 6.6 + vz * 3.2, ux, uz, 1.22, 1.22, 1.2, 2.2, bglass, false);
+    cbox(G, gx + ux * 6.6 + vx * 3.2, gz + uz * 6.6 + vz * 3.2, ux, uz, 1.5, 1.5, 2.5, 2.7, wallC);
+    for (const t of [-3, 0, 3]) for (let k = 0; k < 2; k++) cbox(G, gx + ux * (t + (k - 0.5) * 0.7) - vx * 7, gz + uz * (t + (k - 0.5) * 0.7) - vz * 7, ux, uz, 0.35, 0.15, 0.2, 1.0, k ? wht : red);
+  }
+  const m = G.mesh(POLX); m.receiveShadow = true; group.ground.add(m);
 }
 // parked narrow-bodies (and the odd ATR) nose-in on the apron stands
 function buildAircraft(A) {
@@ -1179,6 +1225,297 @@ function buildAircraft(A) {
   });
   if (!G.p.length) return;
   group.ground.add(G.mesh(POLX));
+}
+
+// ---------------------------------------------------------------- bespoke landmarks (Patang, ISKCON, Taj Skyline, Pinnacle, Ellis Bridge)
+// aR.x = surface kind: 0 concrete / render, 1 glass behind white box frames, 2 curtain wall, 3 carved sandstone,
+// 4 revolving-restaurant glazing (aR.y = angle), 5 lamp ring, 6 steel, 7 floodlit concrete. aR.z = floor-line origin.
+const LMK = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
+  vHead: 'attribute vec4 aR; varying vec4 vK; varying vec3 vWN;', vBody: 'vK = aR; vWN = normalize(mat3(modelMatrix) * normal);',
+  fHead: 'varying vec4 vK; varying vec3 vWN;',
+  fColor: `
+  vec3 n = normalize(vWN);
+  float wall = 1.0 - step(0.6, abs(n.y));
+  vec2 t = normalize(vec2(-n.z, n.x) + 1e-5);
+  float u = dot(vWPos.xz, t), v = vWPos.y;
+  float px = fwidth(u) + fwidth(v);
+  float det = 1.0 - smoothstep(0.15, 0.9, px);
+  float k = floor(vK.x + 0.5);
+  if (k == 1.0 && wall > 0.5) {
+    float fl = 3.4, y = v - vK.z;
+    float fx = fract(u / 9.6), fy = fract(y / (fl * 3.0));
+    float fr = max(1.0 - smoothstep(0.0, 0.05 + px * 0.05, min(fx, 1.0 - fx)), 1.0 - smoothstep(0.0, 0.06 + px * 0.03, min(fy, 1.0 - fy)));
+    float mul = 1.0 - smoothstep(0.0, 0.08, min(fract(u / 1.6), 1.0 - fract(u / 1.6)));
+    float slab = 1.0 - smoothstep(0.0, 0.1, min(fract(y / fl), 1.0 - fract(y / fl)));
+    vec2 cell = floor(vec2(u / 1.6, y / fl));
+    vec3 glass = vec3(0.17, 0.24, 0.30) * (0.85 + 0.3 * h21(cell)) + vec3(0.10, 0.14, 0.18) * uDay * smoothstep(0.0, 70.0, v);
+    vec3 col = mix(glass, vec3(0.30, 0.34, 0.37), max(mul, slab) * 0.7 * det);
+    diffuseColor.rgb = mix(col, vec3(0.93, 0.92, 0.88), fr);
+    xEm = vec3(1.0, 0.8, 0.55) * 0.6 * step(0.5, h21(cell + 3.1)) * (1.0 - fr) * (1.0 - slab) * uNight;
+  } else if (k == 2.0 && wall > 0.5) {
+    float fl = 3.6, y = v - vK.z;
+    float mul = 1.0 - smoothstep(0.0, 0.06, min(fract(u / 1.5), 1.0 - fract(u / 1.5)));
+    float spd = smoothstep(0.80, 0.84, fract(y / fl));
+    vec2 cell = floor(vec2(u / 1.5, y / fl));
+    vec3 col = mix(vec3(0.14, 0.25, 0.34) * (0.85 + 0.3 * h21(cell)) + vec3(0.10, 0.16, 0.22) * uDay, vec3(0.12, 0.18, 0.24), spd);
+    diffuseColor.rgb = mix(col, vec3(0.70, 0.73, 0.75), mul * det);
+    xEm = vec3(0.95, 0.9, 0.8) * 0.55 * step(0.45, h21(cell + 1.7)) * (1.0 - spd) * (1.0 - mul) * uNight;
+  } else if (k == 3.0) {
+    float band = 1.0 - smoothstep(0.0, 0.06, min(fract(v / 0.9), 1.0 - fract(v / 0.9)));
+    diffuseColor.rgb *= (1.0 - 0.18 * band * det * wall) * (0.9 + 0.14 * vnoise(mod(vec2(u * 2.0, v * 4.0), 1024.0)));
+    xEm = diffuseColor.rgb * vec3(1.0, 0.8, 0.6) * 0.32 * uNight * smoothstep(1.0, 12.0, v);
+  } else if (k == 4.0) {
+    float m = fract(vK.y / 0.1309);
+    float mull = 1.0 - smoothstep(0.0, 0.07, min(m, 1.0 - m));
+    diffuseColor.rgb = mix(vec3(0.16, 0.22, 0.28) + vec3(0.12, 0.16, 0.2) * uDay, vec3(0.85, 0.85, 0.82), mull);
+    xEm = vec3(1.0, 0.78, 0.5) * 1.3 * uNight * (1.0 - mull);
+  } else if (k == 5.0) {
+    xEm = vec3(1.0, 0.86, 0.6) * 1.8 * uNight;
+  } else if (k == 6.0) {
+    diffuseColor.rgb *= 0.85 + 0.2 * vnoise(mod(vWPos.xz * 1.3 + vWPos.y, 1024.0));
+    xEm = diffuseColor.rgb * 0.18 * uNight;
+  } else {
+    diffuseColor.rgb *= 0.9 + 0.12 * vnoise(mod(vWPos.xz * 0.9 + vWPos.y * 0.5, 1024.0));
+    if (k == 7.0) xEm = diffuseColor.rgb * vec3(1.0, 0.85, 0.7) * 0.28 * uNight;
+  }`,
+});
+// quad with explicit extra attribute; winding flipped to face n
+function lq(G, p0, p1, p2, p3, n, e, col) {
+  const ax = p2[0] - p0[0], ay = p2[1] - p0[1], az = p2[2] - p0[2], bx = p3[0] - p1[0], by = p3[1] - p1[1], bz = p3[2] - p1[2];
+  const a = G.v(...p0, ...n, e, col), b = G.v(...p1, ...n, e, col), c = G.v(...p2, ...n, e, col), d = G.v(...p3, ...n, e, col);
+  if ((ay * bz - az * by) * n[0] + (az * bx - ax * bz) * n[1] + (ax * by - ay * bx) * n[2] < 0) G.q(a, d, c, b); else G.q(a, b, c, d);
+}
+// surface of revolution around (cx, cz); prof = [[r, y], ...] traced up the outside
+function lathe(G, cx, cz, prof, seg, col, kind, ez = 0) {
+  for (let j = 0; j < prof.length - 1; j++) {
+    const [r0, y0] = prof[j], [r1, y1] = prof[j + 1];
+    let nr = y1 - y0, ny = -(r1 - r0); const nl = Math.hypot(nr, ny) || 1; nr /= nl; ny /= nl;
+    for (let i = 0; i < seg; i++) {
+      const A = (i / seg) * Math.PI * 2, B = ((i + 1) / seg) * Math.PI * 2, cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(B), sB = Math.sin(B);
+      const p00 = [cx + r0 * cA, y0, cz + r0 * sA], p01 = [cx + r0 * cB, y0, cz + r0 * sB], p11 = [cx + r1 * cB, y1, cz + r1 * sB], p10 = [cx + r1 * cA, y1, cz + r1 * sA];
+      const a = G.v(...p00, nr * cA, ny, nr * sA, [kind, A, ez, 0], col), b = G.v(...p01, nr * cB, ny, nr * sB, [kind, B, ez, 0], col);
+      const c = G.v(...p11, nr * cB, ny, nr * sB, [kind, B, ez, 0], col), d = G.v(...p10, nr * cA, ny, nr * sA, [kind, A, ez, 0], col);
+      const ax = p11[0] - p00[0], ay = p11[1] - p00[1], az = p11[2] - p00[2], bx = p10[0] - p01[0], by = p10[1] - p01[1], bz = p10[2] - p01[2];
+      const fx = ay * bz - az * by, fy = az * bx - ax * bz, fz = ax * by - ay * bx, mc = (cA + cB) / 2, ms = (sA + sB) / 2;
+      if (fx * nr * mc + fy * ny + fz * nr * ms < 0) G.q(a, d, c, b); else G.q(a, b, c, d);
+    }
+  }
+}
+// rectangular member from a to b: w across (along sd projected off the axis), h in the remaining direction
+function beam(G, a, b, w, h, col, kind, sd = null) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.hypot(dx, dy, dz) || 1, t = [dx / L, dy / L, dz / L];
+  let s = sd ? [...sd] : [-t[2], 0, t[0]];
+  const st = s[0] * t[0] + s[1] * t[1] + s[2] * t[2]; s = [s[0] - t[0] * st, s[1] - t[1] * st, s[2] - t[2] * st];
+  let sl = Math.hypot(...s); if (sl < 1e-4) { s = [1, 0, 0]; sl = 1; } s = s.map((q) => q / sl);
+  const up = [t[1] * s[2] - t[2] * s[1], t[2] * s[0] - t[0] * s[2], t[0] * s[1] - t[1] * s[0]];
+  const P = (p, i, j) => [p[0] + s[0] * w / 2 * i + up[0] * h / 2 * j, p[1] + s[1] * w / 2 * i + up[1] * h / 2 * j, p[2] + s[2] * w / 2 * i + up[2] * h / 2 * j];
+  const e = [kind, 0, 0, 0], ng = (q) => q.map((x) => -x);
+  lq(G, P(a, 1, -1), P(b, 1, -1), P(b, 1, 1), P(a, 1, 1), s, e, col);
+  lq(G, P(a, -1, -1), P(b, -1, -1), P(b, -1, 1), P(a, -1, 1), ng(s), e, col);
+  lq(G, P(a, -1, 1), P(b, -1, 1), P(b, 1, 1), P(a, 1, 1), up, e, col);
+  lq(G, P(a, -1, -1), P(b, -1, -1), P(b, 1, -1), P(a, 1, -1), ng(up), e, col);
+}
+// box in a landmark frame F: a along u (a0..a1), b along v (b0..b1), y0..y1
+function fbox(G, F, a0, a1, b0, b1, y0, y1, col, kind, ez = 0, top = true) {
+  const p = (a, b, y) => F(a, b, y), e = [kind, 0, ez, 0], U = [F.ux, 0, F.uz], V = [F.vx, 0, F.vz], ng = (q) => q.map((x) => -x);
+  lq(G, p(a1, b0, y0), p(a1, b1, y0), p(a1, b1, y1), p(a1, b0, y1), U, e, col);
+  lq(G, p(a0, b0, y0), p(a0, b1, y0), p(a0, b1, y1), p(a0, b0, y1), ng(U), e, col);
+  lq(G, p(a0, b1, y0), p(a1, b1, y0), p(a1, b1, y1), p(a0, b1, y1), V, e, col);
+  lq(G, p(a0, b0, y0), p(a1, b0, y0), p(a1, b0, y1), p(a0, b0, y1), ng(V), e, col);
+  if (top) lq(G, p(a0, b0, y1), p(a1, b0, y1), p(a1, b1, y1), p(a0, b1, y1), [0, 1, 0], e, col);
+}
+function lmFrame(o) {
+  const ux = o.ux, uz = o.uz, vx = o.uz, vz = -o.ux;   // v = 90 deg left of u in map terms (north for an east-facing u)
+  const F = (a, b, y) => [o.x + ux * a + vx * b, y, o.z + uz * a + vz * b];
+  Object.assign(F, { ux, uz, vx, vz });
+  return F;
+}
+// Nagara shikhara: curvilinear spire on a stepped square plan, amalaka and kalash on top
+function shikhara(G, F, a, b, y0, R, top, col, gold) {
+  const c = F(a, b, 0), N = 14, M = 32, rings = [];
+  for (let j = 0; j <= N; j++) {
+    const t = j / N, y = y0 + t * (top - 4.2 - y0), r = R * (1 - 0.8 * Math.pow(t, 1.6));
+    const ring = [];
+    for (let i = 0; i <= M; i++) {
+      const th = (i / M) * Math.PI * 2, cq = Math.cos(th), sq = Math.sin(th);
+      const sqr = 1 / Math.max(Math.abs(cq), Math.abs(sq));                                    // square plan...
+      const off = 1 - 0.07 * (Math.abs(Math.sin(th * 4)) > 0.7 ? 1 : 0);                         // ...with offset projections
+      const rr = r * Math.min(sqr, 1.32) * off * (1 - 0.04 * (j % 2));                          // horizontal tiers
+      ring.push([c[0] + (F.ux * cq + F.vx * sq) * rr, y, c[2] + (F.uz * cq + F.vz * sq) * rr]);
+    }
+    rings.push(ring);
+  }
+  for (let j = 0; j < N; j++) for (let i = 0; i < M; i++) {
+    const p00 = rings[j][i], p01 = rings[j][i + 1], p11 = rings[j + 1][i + 1], p10 = rings[j + 1][i];
+    const ax = p11[0] - p00[0], ay = p11[1] - p00[1], az = p11[2] - p00[2], bx = p10[0] - p01[0], by = p10[1] - p01[1], bz = p10[2] - p01[2];
+    let n = [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx]; const nl = Math.hypot(...n) || 1; n = n.map((q) => q / nl);
+    const mx = (p00[0] + p01[0]) / 2 - c[0], mz = (p00[2] + p01[2]) / 2 - c[2]; if (n[0] * mx + n[2] * mz < 0) n = n.map((q) => -q);
+    lq(G, p00, p01, p11, p10, n, [3, 0, 0, 0], col);
+  }
+  const ya = top - 4.2;
+  lathe(G, c[0], c[2], [[R * 0.2, ya], [R * 0.34, ya + 0.5], [R * 0.36, ya + 1.0], [R * 0.3, ya + 1.5], [R * 0.12, ya + 1.7]], 20, col, 3);   // amalaka
+  lathe(G, c[0], c[2], [[R * 0.12, ya + 1.7], [0.75, ya + 2.1], [0.85, ya + 2.7], [0.4, ya + 3.3], [0.22, ya + 3.6], [0.0, top]], 12, gold, 0);   // kalash
+}
+function buildIskcon(o) {
+  const G = new Geo(true), F = lmFrame(o);
+  const plinth = C255(214, 176, 148), hall = C255(240, 228, 208), pink = C255(228, 182, 150), trim = C255(205, 150, 120), gold = C255(222, 178, 70), flag = C255(242, 122, 32);
+  fbox(G, F, -62, 50, -30, 30, 0, 1.6, plinth, 3);                                                     // stone platform
+  for (let k = 0; k < 4; k++) fbox(G, F, 50, 56 - k * 1.5, -12, 12, 0, 1.6 - k * 0.4, plinth, 3);   // front steps
+  fbox(G, F, -30, 40, -26, 26, 1.6, 13, hall, 3);                                                      // temple hall
+  fbox(G, F, -31, 41, -27, 27, 13, 13.8, trim, 3);                                                     // cornice
+  fbox(G, F, 40, 46, -10, 10, 1.6, 11, hall, 3);                                                       // entrance porch
+  fbox(G, F, 39.5, 46.5, -10.5, 10.5, 11, 11.7, trim, 3);
+  for (const [a, b] of [[-29, -25], [-29, 25], [39, -25], [39, 25]]) {                                 // corner chhatris
+    for (const [da, db] of [[-1.2, -1.2], [1.2, -1.2], [1.2, 1.2], [-1.2, 1.2]]) fbox(G, F, a + da - 0.2, a + da + 0.2, b + db - 0.2, b + db + 0.2, 13.8, 16.2, hall, 3);
+    const c = F(a, b, 0); lathe(G, c[0], c[2], [[1.9, 16.2], [1.9, 16.6], [1.6, 17.8], [0.9, 18.6], [0.2, 19.1], [0, 19.6]], 10, pink, 3);
+  }
+  for (const a of [26, 4]) {                                                                           // mandapa domes over the hall
+    const c = F(a, 0, 0);
+    lathe(G, c[0], c[2], [[7.2, 13.8], [7.2, 15.8], [6.8, 15.8], [6.6, 18.0], [5.6, 20.4], [3.8, 21.9], [1.8, 22.8], [0.5, 23.2], [0.0, 23.4]], 16, pink, 3);
+    lathe(G, c[0], c[2], [[0.5, 23.2], [0.6, 23.8], [0.25, 24.6], [0, 25.2]], 8, gold, 0);
+  }
+  fbox(G, F, -58, -30, -26, 26, 1.6, 16, hall, 3);                                                     // sanctum block under the spires
+  fbox(G, F, -59, -29, -27, 27, 16, 16.8, trim, 3);
+  for (const [b, R, top] of [[-17, 6.9, 33], [0, 7.6, 37], [17, 6.9, 33]]) {                           // the three 50 ft shikharas
+    shikhara(G, F, -44, b, 16.8, R, top, pink, gold);
+    for (const [da, db] of [[-5.6, -5.6], [5.6, -5.6], [5.6, 5.6], [-5.6, 5.6]]) shikhara(G, F, -44 + da, b + db * 0.85, 16.8, 2.1, 25.5, pink, gold);   // urushringas
+  }
+  const fp = F(-44, 0, 0);                                                                             // flag on the central spire
+  beam(G, [fp[0], 36.6, fp[2]], [fp[0], 40.5, fp[2]], 0.08, 0.08, C255(90, 80, 70), 0);
+  lq(G, [fp[0], 40.4, fp[2]], [fp[0] + F.vx * 2.6, 39.9, fp[2] + F.vz * 2.6], [fp[0] + F.vx * 2.6, 39.9, fp[2] + F.vz * 2.6], [fp[0], 39.0, fp[2]], [F.ux, 0, F.uz], [0, 0, 0, 0], flag);
+  lq(G, [fp[0], 40.4, fp[2]], [fp[0] + F.vx * 2.6, 39.9, fp[2] + F.vz * 2.6], [fp[0] + F.vx * 2.6, 39.9, fp[2] + F.vz * 2.6], [fp[0], 39.0, fp[2]], [-F.ux, 0, -F.uz], [0, 0, 0, 0], flag);
+  group.ground.add(G.mesh(LMK));
+}
+function buildPatang(o) {
+  const G = new Geo(true), { x, z } = o;
+  const conc = C255(224, 218, 206), concD = C255(196, 190, 178), roof = C255(238, 234, 226), glass = C255(40, 56, 70);
+  lathe(G, x, z, [[7.5, -0.2], [7.5, 1.0], [4.6, 1.0]], 32, concD, 0);                                                // base
+  lathe(G, x, z, [[4.6, 1.0], [4.6, 51.5], [9.0, 57.8], [9.7, 57.8], [9.7, 58.6], [9.35, 58.6]], 48, conc, 7);       // shaft, chabutaro capital, floor slab
+  lathe(G, x, z, [[9.35, 58.6], [9.6, 64.1]], 96, glass, 4);                                                          // revolving-restaurant glazing (62 ft ring, 18 ft high)
+  lathe(G, x, z, [[9.6, 64.1], [10.35, 64.3], [10.35, 64.9]], 96, roof, 0);                                           // eave of the 68 ft umbrella roof
+  lathe(G, x, z, [[10.4, 64.36], [10.4, 64.6]], 96, roof, 5);                                                         // light ring
+  lathe(G, x, z, [[10.35, 64.9], [6.5, 66.1], [2.2, 66.9], [0.9, 67.1], [0.35, 67.3], [0.22, 70.5], [0.0, 70.6]], 48, roof, 0);
+  for (let i = 0; i < 8; i++) {                                                                                        // spars up the shaft, flaring under the capital
+    const a = (i / 8) * Math.PI * 2 + Math.PI / 8, c = Math.cos(a), s = Math.sin(a), tg = [-s, 0, c];
+    beam(G, [x + c * 4.85, 1.0, z + s * 4.85], [x + c * 4.85, 51.2, z + s * 4.85], 0.5, 0.7, conc, 7, tg);
+    beam(G, [x + c * 4.85, 51.2, z + s * 4.85], [x + c * 8.7, 57.5, z + s * 8.7], 0.5, 0.7, conc, 7, tg);
+  }
+  group.ground.add(G.mesh(LMK));
+}
+function buildTaj(o) {
+  const G = new Geo(true), F = lmFrame(o);
+  const white = C255(236, 234, 228), stone = C255(206, 198, 184);
+  fbox(G, F, -58, 58, -23, 48, 0, 15, stone, 2, 0);                                     // podium (banquets, lobby)
+  fbox(G, F, -59, 59, -24, 49, 15, 15.6, white, 0);
+  for (const [a0, a1, b0, b1] of [[-56.5, -25.5, -19.5, 21.5], [-69.7, 6.3, 27.6, 47.6]]) {   // the two towers
+    fbox(G, F, a0, a1, b0, b1, 15.6, 68, white, 1, 15.6);
+    fbox(G, F, a0 - 0.4, a1 + 0.4, b0 - 0.4, b1 + 0.4, 68, 68.8, white, 0);
+    const T = 0.5;                                                                        // open crown frame above the roof
+    fbox(G, F, a0 - 0.4, a0 + T, b0 - 0.4, b1 + 0.4, 68.8, 74, white, 0);
+    fbox(G, F, a1 - T, a1 + 0.4, b0 - 0.4, b1 + 0.4, 68.8, 74, white, 0);
+    fbox(G, F, a0 - 0.4, a1 + 0.4, b0 - 0.4, b0 + T, 72.8, 74, white, 0);
+    fbox(G, F, a0 - 0.4, a1 + 0.4, b1 - T, b1 + 0.4, 72.8, 74, white, 0);
+    fbox(G, F, (a0 + a1) / 2 - 5, (a0 + a1) / 2 + 5, (b0 + b1) / 2 - 4, (b0 + b1) / 2 + 4, 68.8, 72, stone, 0);   // lift / plant room
+  }
+  group.ground.add(G.mesh(LMK));
+}
+// Pinnacle Business Park: U-plan around a landscaped forecourt; each wing ends in white-rimmed "sail" blocks whose
+// glazed roofs sweep down to the ground, the outer sails stepped back; central atrium block under a tensile cone
+function sailBlock(G, F, ai, ao, b0, b1, Ht, glassK, white, stone) {
+  const sg = Math.sign(ao - ai), w = Math.abs(ao - ai), N = 14, U = [F.ux, 0, F.uz], V = [F.vx, 0, F.vz], ng = (q) => q.map((x) => -x);
+  const cv = []; for (let k = 0; k <= N; k++) { const d = w * Math.sin((k / N) * Math.PI / 2); cv.push([ai + sg * d, Ht * Math.sqrt(Math.max(0, 1 - (d / w) ** 2)), d]); }
+  const e2 = [glassK, 0, 0, 0];
+  for (let k = 0; k < N; k++) {
+    const [a0, y0] = cv[k], [a1, y1] = cv[k + 1];
+    lq(G, F(ai, b1, 0), F(a0, b1, y0), F(a1, b1, y1), F(a1, b1, y1), V, e2, white);       // front elevation (fan)
+    lq(G, F(ai, b0, 0), F(a0, b0, y0), F(a1, b0, y1), F(a1, b0, y1), ng(V), e2, white);   // back elevation
+    const dm = (cv[k][2] + cv[k + 1][2]) / 2, ym = (y0 + y1) / 2;
+    let na = sg * dm / (w * w), ny = ym / (Ht * Ht); const nl = Math.hypot(na, ny) || 1; na /= nl; ny /= nl;
+    const n = [F.ux * na, ny, F.uz * na];
+    lq(G, F(a0, b0, y0), F(a1, b0, y1), F(a1, b1, y1), F(a0, b1, y0), n, e2, white);      // glazed sweep
+    // white rim along the front edge of the sail, standing proud of the face
+    const o0 = [na * 0.45, ny * 0.45], p0 = F(a0 + sg * 0, b1 + 0.35, y0), p1 = F(a1, b1 + 0.35, y1);
+    beam(G, [p0[0] + F.ux * o0[0], p0[1] + o0[1], p0[2] + F.uz * o0[0]], [p1[0] + F.ux * o0[0], p1[1] + o0[1], p1[2] + F.uz * o0[0]], 1.5, 0.9, white, 0, V);
+  }
+  lq(G, F(ai, b0, 0), F(ai, b1, 0), F(ai, b1, Ht), F(ai, b0, Ht), sg > 0 ? ng(U) : U, e2, white);   // inner wall
+  beam(G, F(ai, b1 + 0.35, 0), F(ai, b1 + 0.35, Ht + 2.2), 1.5, 0.9, white, 0, V);                  // rim up the inner edge to the tip
+  const d1 = 1.6, d2 = 3.8, yt = Ht * Math.sqrt(1 - (d2 / w) ** 2) - 0.8;                             // perforated stone strip
+  fbox(G, F, Math.min(ai + sg * d1, ai + sg * d2), Math.max(ai + sg * d1, ai + sg * d2), b1, b1 + 0.3, 0, yt, stone, 0);
+}
+function buildPinnacle(o) {
+  if (!o.W) return;
+  const G = new Geo(true), F = lmFrame(o), hw = o.W / 2, hd = o.D / 2;
+  const white = C255(240, 240, 236), stone = C255(186, 186, 182), green = C255(92, 138, 66), paving = C255(214, 204, 186), water = C255(70, 132, 172);
+  const H = 40, hc = 0.12 * o.W, ti = 0.45 * (hw - hc), rec = 8;
+  for (const sg of [-1, 1]) {                                     // the two towers: flat-roofed block + one sail at the outer end
+    const a0 = sg * hc, a1 = sg * (hc + ti), lo = Math.min(a0, a1), hi = Math.max(a0, a1);
+    fbox(G, F, lo, hi, -hd, hd, 0, H, white, 2, 0);
+    fbox(G, F, lo - 0.2, hi + 0.2, -hd - 0.2, hd + 0.2, H, H + 0.8, white, 0);
+    sailBlock(G, F, a1, sg * hw, -hd, hd, H + 5, 2, white, stone);
+    for (const [s0, s1] of [[hc, hc + 2.6], [hc + ti - 3.2, hc + ti]]) fbox(G, F, Math.min(sg * s0, sg * s1), Math.max(sg * s0, sg * s1), hd, hd + 0.45, 0, H + 1.4, stone, 0);
+  }
+  fbox(G, F, -hc, hc, -hd, hd - rec, 0, H - 1.5, white, 2, 0);   // internal link block, set back
+  fbox(G, F, -hc, hc, -hd, hd - rec, H - 1.5, H - 0.8, white, 0);
+  fbox(G, F, -4.2, 4.2, hd - rec, hd - rec + 1.2, 0, H - 4, white, 2, 0);   // glazed atrium
+  const cc = F(0, (-hd + hd - rec) / 2, 0);
+  lathe(G, cc[0], cc[2], [[6.2, H - 0.8], [6.0, H - 0.2], [1.3, H + 4.6], [0.55, H + 5.0], [0.0, H + 5.1]], 28, white, 0);   // tensile cone
+  fbox(G, F, -hc + 0.3, hc - 0.3, hd - rec + 1.3, hd + 6, 0, 0.16, paving, 0);              // forecourt garden in the recess
+  fbox(G, F, -hc + 2, hc - 2, hd - rec + 3, hd + 4, 0.16, 0.3, green, 0);
+  const fc = F(0, hd - rec / 2 + 1.5, 0);
+  lathe(G, fc[0], fc[2], [[2.6, 0.3], [2.6, 0.85], [2.25, 0.85], [2.25, 0.66], [0.0, 0.66]], 24, stone, 0);
+  lathe(G, fc[0], fc[2], [[2.2, 0.68], [0.0, 0.68]], 24, water, 0);
+  lathe(G, fc[0], fc[2], [[0.4, 0.68], [0.28, 1.5], [0.0, 1.6]], 8, white, 0);
+  group.ground.add(G.mesh(LMK));
+}
+function buildLandmarks3D() {
+  for (const o of META.lm3d || []) {
+    if (o.kind === 'patang') buildPatang(o);
+    else if (o.kind === 'iskcon') buildIskcon(o);
+    else if (o.kind === 'taj') buildTaj(o);
+    else if (o.kind === 'pinnacle') buildPinnacle(o);
+  }
+  if (META.ellis) buildEllis(META.ellis);
+}
+// Ellis Bridge (1892): 14 bowstring lattice-truss spans, 433 m, between the concrete wings of Swami Vivekananda Bridge
+function buildEllis(E) {
+  const G = new Geo(true);
+  const steel = C255(122, 132, 140), steelD = C255(88, 96, 104), deckC = C255(98, 90, 80), pierC = C255(132, 128, 120);
+  const L = Math.hypot(E.x1 - E.x0, E.z1 - E.z0), ux = (E.x1 - E.x0) / L, uz = (E.z1 - E.z0) / L, vx = -uz, vz = ux;
+  const SP = L / E.n, H = E.h, RISE = 4.8, HW = 3.4, NP = 8, wy = E.wy != null ? E.wy : -5.6;
+  const P = (s, b, y) => [E.x0 + ux * s + vx * b, y, E.z0 + uz * s + vz * b], V = [vx, 0, vz], U = [ux, 0, uz];
+  for (let k = 0; k < E.n; k++) {
+    const s0 = k * SP + 0.35, s1 = (k + 1) * SP - 0.35;
+    const arch = (t) => H + 0.35 + RISE * (1 - Math.pow(2 * t - 1, 2));
+    for (const b of [-HW, HW]) {
+      beam(G, P(s0, b, H), P(s1, b, H), 0.45, 0.75, steelD, 6, V);
+      for (let i = 0; i < NP; i++) {
+        const ta = i / NP, tb = (i + 1) / NP, sa = s0 + (s1 - s0) * ta, sb = s0 + (s1 - s0) * tb;
+        beam(G, P(sa, b, arch(ta)), P(sb, b, arch(tb)), 0.5, 0.55, steel, 6, V);
+        if (i > 0) beam(G, P(sa, b, H), P(sa, b, arch(ta)), 0.26, 0.3, steel, 6, V);
+        beam(G, P(sa, b, H + 0.3), P(sb, b, arch(tb) - 0.2), 0.16, 0.2, steel, 6, V);
+        beam(G, P(sb, b, H + 0.3), P(sa, b, arch(ta) - 0.2), 0.16, 0.2, steel, 6, V);
+      }
+    }
+    for (let i = 2; i <= NP - 2; i++) { const t = i / NP, s = s0 + (s1 - s0) * t; beam(G, P(s, -HW, arch(t)), P(s, HW, arch(t)), 0.24, 0.28, steel, 6, U); }
+    for (let i = 2; i < NP - 2; i++) {                    // top wind bracing
+      const ta = i / NP, tb = (i + 1) / NP, sa = s0 + (s1 - s0) * ta, sb = s0 + (s1 - s0) * tb;
+      beam(G, P(sa, -HW, arch(ta)), P(sb, HW, arch(tb)), 0.12, 0.12, steel, 6, U);
+      beam(G, P(sa, HW, arch(ta)), P(sb, -HW, arch(tb)), 0.12, 0.12, steel, 6, U);
+    }
+    // deck plate and cross girders
+    lq(G, P(s0, -HW, H + 0.36), P(s1, -HW, H + 0.36), P(s1, HW, H + 0.36), P(s0, HW, H + 0.36), [0, 1, 0], [0, 0, 0, 0], deckC);
+    lq(G, P(s0, -HW, H - 0.3), P(s1, -HW, H - 0.3), P(s1, HW, H - 0.3), P(s0, HW, H - 0.3), [0, -1, 0], [6, 0, 0, 0], steelD);
+    for (let i = 0; i <= NP; i++) { const s = s0 + (s1 - s0) * i / NP; beam(G, P(s, -HW, H - 0.05), P(s, HW, H - 0.05), 0.3, 0.6, steelD, 6, U); }
+  }
+  for (let k = 0; k <= E.n; k++) {                        // paired cylindrical piers on every support line
+    const s = k * SP;
+    for (const b of [-HW, HW]) {
+      const c = P(s, b, 0);
+      lathe(G, c[0], c[2], [[1.05, wy - 0.6], [1.05, H - 1.1], [1.25, H - 1.1], [1.25, H - 0.75], [0.0, H - 0.75]], 14, pierC, 0);
+    }
+    beam(G, P(s, -HW - 0.6, H - 0.55), P(s, HW + 0.6, H - 0.55), 0.9, 0.4, steelD, 6, U);
+  }
+  const m = G.mesh(LMK); m.receiveShadow = true; group.ground.add(m);
 }
 
 // ---------------------------------------------------------------- the historic darwajas (city gates)
@@ -1302,30 +1639,74 @@ let DECKIDX = null;
 function buildDecks(decks, xy) {
   const D = new Geo(true, true), W = new Geo(false, true);
   const chainOf = META.deckChain || [];
-  DECKIDX = new Map();
-  decks.forEach((d, di) => {
-    const { p, L, c, H, z } = d; const O = H + Math.max(d.O - H, 0.6);
-    const cid = chainOf[di] != null ? chainOf[di] : di; D.cur = cid; W.cur = cid;
+  // pass 1: centre points, normals, heights and half-widths of every deck piece
+  const DK = decks.map((d) => {
+    const { p, L, H, z } = d, O = H + Math.max(d.O - H, 0.6), P = [];
     let s = 0;
-    const pts = [];
     for (let j = 0; j < L; j++) {
-      const x = xy[(p + j) * 2] * 0.5, zz = xy[(p + j) * 2 + 1] * 0.5, h = z[j] / 10 + 0.05 + (di % 3) * 0.04;   // tiny per-deck lift: twin carriageways never z-fight
-      if (j > 0) s += Math.hypot(x - pts[j - 1].x, zz - pts[j - 1].z);
+      const x = xy[(p + j) * 2] * 0.5, zz = xy[(p + j) * 2 + 1] * 0.5, h = z[j] / 10 + 0.05;
+      if (j > 0) s += Math.hypot(x - P[j - 1].x, zz - P[j - 1].z);
       const [nx, nz, ml] = miter(xy, p, L, j, 0.5);
-      pts.push({ x, z: zz, h, nx, nz, ml, s });
-      D.v(x + nx * O * ml, h, zz + nz * O * ml, 0, 1, 0, [O, s, H, c]);
-      D.v(x - nx * O * ml, h, zz - nz * O * ml, 0, 1, 0, [-O, s, H, c]);
-      if (j > 0) { const b = D.p.length / 3 - 4; D.i.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
-      if (j > 0 && h > 2.5) {   // hover index on the deck (cells of 40 m)
-        const k = Math.floor(x / 40) * 100003 + Math.floor(zz / 40);
-        let arr = DECKIDX.get(k); if (!arr) DECKIDX.set(k, (arr = [])); arr.push(pts[j - 1].x, pts[j - 1].z, x, zz, O, cid);
+      P.push({ x, z: zz, h, nx, nz, ml, s, tx: nz, tz: -nx });
+    }
+    return { P, O, wl: new Float32Array(L).fill(O), wr: new Float32Array(L).fill(O) };
+  });
+  // pass 2: twin carriageways mapped as two overlapping decks are trimmed so they meet along a shared median
+  // instead of overlapping (overlapping decks z-fight and shadow each other into hatching)
+  const CS = 32, grid = new Map(), key = (i, j) => i * 100003 + j;
+  DK.forEach((k, ki) => { for (let j = 0; j < k.P.length - 1; j++) {
+    const a = k.P[j], b = k.P[j + 1];
+    for (let gx = Math.floor(Math.min(a.x, b.x) / CS); gx <= Math.floor(Math.max(a.x, b.x) / CS); gx++)
+      for (let gz = Math.floor(Math.min(a.z, b.z) / CS); gz <= Math.floor(Math.max(a.z, b.z) / CS); gz++) {
+        const g = key(gx, gz); let arr = grid.get(g); if (!arr) grid.set(g, (arr = [])); arr.push(ki, j);
       }
+  } });
+  DK.forEach((k, ki) => {
+    for (let j = 0; j < k.P.length; j++) {
+      const p = k.P[j], R = k.O + 14, seen = new Set();
+      for (let gx = Math.floor((p.x - R) / CS); gx <= Math.floor((p.x + R) / CS); gx++)
+        for (let gz = Math.floor((p.z - R) / CS); gz <= Math.floor((p.z + R) / CS); gz++) {
+          const arr = grid.get(key(gx, gz)); if (!arr) continue;
+          for (let q = 0; q < arr.length; q += 2) {
+            const k2 = arr[q], j2 = arr[q + 1]; if (k2 === ki || seen.has(k2 * 4096 + j2)) continue; seen.add(k2 * 4096 + j2);
+            const o = DK[k2], A = o.P[j2], B = o.P[j2 + 1];
+            const ex = B.x - A.x, ez = B.z - A.z, el = ex * ex + ez * ez || 1;
+            const t = Math.max(0, Math.min(1, ((p.x - A.x) * ex + (p.z - A.z) * ez) / el));
+            const qx = A.x + ex * t, qz = A.z + ez * t, qh = A.h + (B.h - A.h) * t;
+            if (Math.abs(qh - p.h) > 1.0) continue;                                   // a deck crossing above / below
+            const dx = qx - p.x, dz = qz - p.z, lat = dx * p.nx + dz * p.nz, along = dx * p.tx + dz * p.tz;
+            if (Math.abs(lat) >= k.O + o.O + 0.1 || Math.abs(along) > Math.abs(lat) + 1.5) continue;
+            const ln = Math.sqrt(el); if (Math.abs((ex * p.tx + ez * p.tz) / ln) < 0.8) continue;   // not running alongside
+            if (Math.abs(lat) < 1.2) { if (k2 < ki) { k.wl[j] = Math.min(k.wl[j], 0.05); k.wr[j] = Math.min(k.wr[j], 0.05); } continue; }
+            const share = Math.max(0.8, Math.abs(lat) * k.O / (k.O + o.O) - 0.12);
+            if (lat > 0) k.wl[j] = Math.min(k.wl[j], share); else k.wr[j] = Math.min(k.wr[j], share);
+          }
+        }
+    }
+    // smooth the trimmed edges so they never zig-zag
+    for (const w of [k.wl, k.wr]) {
+      const m = Float32Array.from(w);
+      for (let j = 0; j < w.length; j++) m[j] = Math.min(w[j], w[Math.max(0, j - 1)], w[Math.min(w.length - 1, j + 1)]);
+      for (let j = 0; j < w.length; j++) w[j] = (m[Math.max(0, j - 1)] + 2 * m[j] + m[Math.min(w.length - 1, j + 1)]) / 4;
+    }
+  });
+  // pass 3: geometry
+  decks.forEach((d, di) => {
+    const { L, c, H } = d, k = DK[di], pts = k.P;
+    const cid = chainOf[di] != null ? chainOf[di] : di; D.cur = cid; W.cur = cid;
+    for (let j = 0; j < L; j++) {
+      const { x, z: zz, h, nx, nz, ml, s } = pts[j], wl = k.wl[j], wr = k.wr[j];
+      D.v(x + nx * wl * ml, h, zz + nz * wl * ml, 0, 1, 0, [wl, s, H, c]);
+      D.v(x - nx * wr * ml, h, zz - nz * wr * ml, 0, 1, 0, [-wr, s, H, c]);
+      if (j > 0) { const b = D.p.length / 3 - 4; D.i.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
     }
     for (let j = 0; j < L - 1; j++) {
       const A = pts[j], B = pts[j + 1];
       if (A.h < 0.35 && B.h < 0.35) continue;
       for (const sg of [1, -1]) {
-        const ax = A.x + A.nx * O * A.ml * sg, az = A.z + A.nz * O * A.ml * sg, bx = B.x + B.nx * O * B.ml * sg, bz = B.z + B.nz * O * B.ml * sg;
+        const wa = sg > 0 ? k.wl[j] : k.wr[j], wb = sg > 0 ? k.wl[j + 1] : k.wr[j + 1];
+        if (wa < 0.2 && wb < 0.2) continue;
+        const ax = A.x + A.nx * wa * A.ml * sg, az = A.z + A.nz * wa * A.ml * sg, bx = B.x + B.nx * wb * B.ml * sg, bz = B.z + B.nz * wb * B.ml * sg;
         const n = [A.nx * sg, 0, A.nz * sg];
         W.quad([ax, Math.max(0, A.h - 1.3), az], [bx, Math.max(0, B.h - 1.3), bz], [bx, B.h + 0.85, bz], [ax, A.h + 0.85, az], n);
       }
@@ -1794,7 +2175,7 @@ function initLabels() {
   const mk = (cls, html) => { const d = document.createElement('div'); d.className = 'lbl ' + cls; d.innerHTML = html; labelsEl.appendChild(d); return d; };
   for (const w of META.wards) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: w.area, name: w.name });
   for (const w of EXTRA_AREAS) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: 9e6, name: w.name });
-  const icon = { lake: '~', river: '~', monument: '★', stadium: '◎', airport: '✈', campus: '◆', park: '♣', gate: '∩' };
+  const icon = { lake: '~', river: '~', monument: '★', stadium: '◎', airport: '✈', campus: '◆', park: '♣', gate: '∩', tower: '▲' };
   for (const l of META.landmarks) LBL.poi.push({ el: mk('poi ' + l.kind, `<span class="pin">${icon[l.kind] || '★'}</span>${l.name}`), x: l.x, z: l.z, min: l.kind === 'gate' ? 5 : 14 });
   for (const s of META.stations) LBL.poi.push({ el: mk('poi station', `<span class="pin">🚆︎</span>${s.name}`), x: s.x, z: s.z, min: 6 });
   if (TR) for (const s of TR.metro.stations) {
@@ -2310,12 +2691,21 @@ function wallStrip(T, P, y0, y1, col, kind, side = 1) {
     T.quad([ax, y0, az], [bx, y0, bz], [bx, y1, bz], [ax, y1, az], [nx, 0, nz], col, [kind, 0, 0, 0]);
   }
 }
-function railStrip(T, P, y0, h, off = 0) {
+function densify(P, step) {
+  const out = [P[0], P[1]];
+  for (let j = 1; j < P.length / 2; j++) {
+    const ax = P[j * 2 - 2], az = P[j * 2 - 1], bx = P[j * 2], bz = P[j * 2 + 1], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / step));
+    for (let q = 1; q <= n; q++) out.push(ax + (bx - ax) * q / n, az + (bz - az) * q / n);
+  }
+  return out;
+}
+function railStrip(T, P, y0, h, off = 0, skip = null) {
   const n = P.length / 2; let s = 0;
   const [N] = off ? lnormals(P) : [null];
   let pa = null;
   for (let j = 0; j < n; j++) {
     const x = P[j * 2] + (off ? N[j * 2] * off : 0), z = P[j * 2 + 1] + (off ? N[j * 2 + 1] * off : 0);
+    if (skip && skip(x, z)) { if (pa) s += Math.hypot(x - pa[0], z - pa[1]); pa = null; continue; }
     if (pa) s += Math.hypot(x - pa[0], z - pa[1]);
     const yb = typeof y0 === 'function' ? y0(j) : y0;
     T.v(x, yb, z, 0, 0, 1, [1, 1, 1], [0, 0, s, 0]); T.v(x, yb + h, z, 0, 0, 1, [1, 1, 1], [0, 1, s, 0]);
@@ -2357,22 +2747,41 @@ function buildRiverfront() {
     }
   }
   for (const P of R.edges) wallStrip(W, P, wy - 0.3, py, lin('#bab3a6'), 0, 1);
-  // stairs from the upper promenade down to the lower one, laid against the wall
-  const stairCol = lin('#cfc8bb');
+  // stairs between the upper and lower promenades, as built on the riverfront: a solid concrete flight cast against
+  // the retaining wall, entered from a landing flush with the upper promenade through an opening in the wall-top
+  // railing, with steel handrails on the open side, landing on the lower promenade with a last step
+  const stairCol = lin('#cfc8bb'), stairSide = lin('#c2bbae');
+  const STAIR = { run: 9.6, land: 3.2, c0: -0.3, c1: 2.9, N: 26 };
+  const RLs = new TGeo();
   for (const [x, z, ux, uz] of R.stairs) {
-    const nx = uz, nz = -ux, N = 26, run = 9.6, c0 = 0.3, c1 = 3.0;
+    const nx = uz, nz = -ux, { run, land, c0, c1, N } = STAIR, a00 = -run / 2;
     const P = (a, c, y) => [x + ux * a + nx * c, y, z + uz * a + nz * c];
+    const ty = (k) => (py * (k + 1)) / (N + 1);   // tread k; the last tread is one riser above the promenade
+    // landing: solid from the lower promenade up to city level
+    W.quad(P(a00 - land, c0, 0), P(a00, c0, 0), P(a00, c1, 0), P(a00 - land, c1, 0), [0, 1, 0], stairCol);
+    W.quad(P(a00 - land, c1, py), P(a00, c1, py), P(a00, c1, 0), P(a00 - land, c1, 0), [nx, 0, nz], stairSide);
+    W.quad(P(a00 - land, c0, py), P(a00 - land, c1, py), P(a00 - land, c1, 0), P(a00 - land, c0, 0), [-ux, 0, -uz], stairSide);
+    let yp = 0;
     for (let k = 0; k < N; k++) {
-      const a0 = -run / 2 + (run * k) / N, a1 = a0 + run / N, yt = (py * (k + 1)) / N, yp = (py * k) / N;
-      W.quad(P(a0, c0, yt), P(a1, c0, yt), P(a1, c1, yt), P(a0, c1, yt), [0, 1, 0], stairCol);
-      W.quad(P(a0, c0, yp), P(a0, c1, yp), P(a0, c1, yt), P(a0, c0, yt), [ux, 0, uz], stairCol);
-      W.quad(P(a0, c1, py), P(a1, c1, py), P(a1, c1, yt), P(a0, c1, yt), [nx, 0, nz], stairCol);
+      const a0 = a00 + (run * k) / N, a1 = a0 + run / N, yt = ty(k);
+      W.quad(P(a0, c0, yt), P(a1, c0, yt), P(a1, c1, yt), P(a0, c1, yt), [0, 1, 0], stairCol);          // tread
+      W.quad(P(a0, c0, yt), P(a0, c1, yt), P(a0, c1, yp), P(a0, c0, yp), [ux, 0, uz], stairCol);        // riser
+      W.quad(P(a0, c1, py), P(a1, c1, py), P(a1, c1, yt), P(a0, c1, yt), [nx, 0, nz], stairSide);      // solid side
+      yp = yt;
     }
-    // parapet on the open side of the flight
-    W.quad(P(-run / 2, c1, 0), P(run / 2, c1, py), P(run / 2, c1, py + 1.0), P(-run / 2, c1, 1.0), [-nx, 0, -nz], wallCol);
-    W.quad(P(-run / 2, c1 + 0.25, 0), P(run / 2, c1 + 0.25, py), P(run / 2, c1 + 0.25, py + 1.0), P(-run / 2, c1 + 0.25, 1.0), [nx, 0, nz], wallCol);
-    W.quad(P(-run / 2, c1, 1.0), P(run / 2, c1, py + 1.0), P(run / 2, c1 + 0.25, py + 1.0), P(-run / 2, c1 + 0.25, 1.0), [0, 1, 0], wallCol);
+    W.quad(P(-a00, c0, yp), P(-a00, c1, yp), P(-a00, c1, py), P(-a00, c0, py), [ux, 0, uz], stairCol);   // last step down
+    // handrail: round the landing's open end and side, then down the flight
+    const rail = [P(a00 - land, c0 + 0.15, 0), P(a00 - land, c1 - 0.06, 0), P(a00, c1 - 0.06, 0), P(-a00, c1 - 0.06, yp)];
+    railStrip(RLs, rail.flatMap((q) => [q[0], q[2]]), (j) => rail[j][1], 1.0, 0);
   }
+  const inStairGap = (px, pz) => R.stairs.some(([x, z, ux, uz]) => {
+    const dx = px - x, dz = pz - z, a = dx * ux + dz * uz;
+    return Math.abs(dx * uz - dz * ux) < 1.6 && a > -STAIR.run / 2 - STAIR.land + 0.1 && a < -STAIR.run / 2 - 0.05;
+  });
+  const inGhatGap = (px, pz) => R.ghats.some(([x, z, ux, uz, w]) => {
+    const dx = px - x, dz = pz - z;
+    return Math.abs(dx * uz - dz * ux) < 1.6 && Math.abs(dx * ux + dz * uz) < w / 2 - 1.0;
+  });
   // ghats: broad steps from the lower promenade down into the water
   const ghatCol = lin('#d6cfc1');
   for (const [x, z, ux, uz, w] of R.ghats) {
@@ -2386,8 +2795,11 @@ function buildRiverfront() {
   out.push(...W.tiles(RIVERMAT, [wy - 1, 1]));
   // railings: along the wall top (upper promenade) and the lower promenade's water edge
   const RL = new TGeo();
-  for (const P of R.walls) railStrip(RL, P, 0.0, 1.05, -0.15);
-  for (const P of R.edges) railStrip(RL, P, py, 1.0, -0.25);
+  // the wall-top railing opens onto each stair landing, the water-edge railing onto each ghat
+  for (const P of R.walls) railStrip(RL, densify(P, 0.8), 0.0, 1.05, -0.15, inStairGap);
+  for (const P of R.edges) railStrip(RL, densify(P, 0.8), py, 1.0, -0.25, inGhatGap);
+  RL.p.push(...RLs.p); RL.n.push(...RLs.n); RL.c.push(...RLs.c); RL.k.push(...RLs.k);
+  { const off = RL.p.length / 3 - RLs.p.length / 3; for (const i of RLs.i) RL.i.push(i + off); }
   const rails = RL.tiles(RAILING, [wy, 1.5], { shadow: false });
   out.push(...rails); RIVER_FINE.push(...rails);
   // lamp posts on the upper promenade
@@ -2792,8 +3204,6 @@ function frame(now) {
   if (whereDirty) {
     const [x, z] = mouse.in && !drag ? screenToGround(mouse.x, mouse.y) : [view.tx, view.tz];
     updateWhere(x, z); whereDirty = false;
-    const hov = mouse.in && !drag && view.mpp < 3 ? deckUnder(mouse.x, mouse.y) : -1;
-    if (hov !== U.uHover.value) { U.uHover.value = hov; dirty = true; renderer.shadowMap.needsUpdate = true; }
   }
   const idle = now - lastInteract > 1500 && todT >= 1;
   const minGap = idle ? (U.uNight.value > 0.5 ? 66 : 80) : 0;
@@ -2825,7 +3235,7 @@ async function boot() {
   buildGround();
   setProgress(0.6, `Paving ${META.counts.roads.toLocaleString()} road segments…`); await tick();
   buildRoads();
-  buildAirport(); buildPolExtras(); buildDarwajas();
+  buildAirport(); buildPolExtras(); buildDarwajas(); buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
   buildRiverfront(); buildMetro();
   await buildFarBuildings(0.62, 0.36);

@@ -83,6 +83,87 @@ def airfield():
     return dict(L=L, x0=x0, y0=y0, x1=x1, y1=y1, u=(ux, uy), v=(vx, vy), w=RWY_W, twy=twy, apron=apron, P=P, TO=TO, links=links)
 
 
+# Patang tower centre (projected m): the VEDAS shaft trace centroid, 2 m from Wikipedia's 23.026389 N 72.572167 E
+PATANG = (-289.5, -955.5)
+
+# Bespoke landmark models. c = centre (projected m), u = unit vector of the long / front axis, clear = footprints whose
+# centroid falls in this frame-aligned rectangle (u0, u1, v0, v1) are replaced by the model.
+#  iskcon: Sri Sri Radha Govind Dham (1997): 25,000 sq ft temple, three 50 ft shikharas rising over 100 ft. Site is the
+#          2,354 m2 Google footprint + the two ~14 m tall traces west of it; front (u) faces SG Highway (east).
+#  taj:    Sankalp Square III / Taj Skyline (ARK Reza Kabul, 2020): two towers on one podium; 41 x 31 m and 76 x 20 m
+#          tall traces at the west end of Sindhu Bhavan Road. u runs along the slab (north).
+#  pinnacle: Pinnacle Business Park, Corporate Road opposite Prahladnagar (AUDA) Garden: its own footprint is kept.
+LANDMARK_3D = {
+    'patang': dict(c=PATANG),
+    'iskcon': dict(c=(-7000.0, -908.0), u=(0.998, -0.063), clear=(-66, 56, -36, 36)),
+    'taj': dict(c=(-9518.0, 1002.0), u=(0.1426, 0.9898), clear=(-72, 62, -27, 52), ghost=[(-9605.0, 939.5)]),
+    'pinnacle': dict(c=(-7029.0, -2627.0)),
+}
+
+
+def airport_wall(G, bpolys):
+    """Perimeter wall: the boundary of the open airside land around the runway. Inside a runway-frame envelope,
+    everything not taken by (non-airport) buildings, through roads or water is airfield; the component holding the
+    runway, opened and closed to drop alleys and notches, is the fenced area. Terminal / hangar blocks next to the apron
+    are inside the fence and their own facades close the perimeter, so no wall runs in front of them. Small gates
+    (boom barrier, barricades, guard booth) sit where the fence comes closest to the public roads.
+    Returns (outline polygon, wall polylines, gates [(x, y, ux, uy)])."""
+    import shapely as _s
+    AF = airfield(); P = AF['P']; L = AF['L']
+    rect = lambda s0, s1, d0, d1: _s.Polygon([P(s0, d0), P(s1, d0), P(s1, d1), P(s0, d1)])
+    env = _s.union_all([rect(0, L, -550, 950), rect(-650, 0, -400, 450), rect(L, L + 550, -400, 400)])
+    bp = bpolys[_s.intersects(bpolys, env.buffer(50))]
+    apron = _s.Polygon(AF['apron'])
+    term = (_s.area(bp) > 2500) & (_s.distance(bp, apron) < 350)            # terminals / hangars
+    big_t = _s.union_all(list(bp[term])) if term.any() else _s.Polygon()
+    aport = term | (_s.distance(bp, apron) < 220) | (_s.distance(bp, big_t) < 150)   # the whole terminal complex
+    rds = [r for r in G['roads'] if r['cls'] >= 2 and not r['bridge'] and _s.intersects(_s.LineString(r['xy']), env.buffer(80))]
+    rd = [_s.LineString(r['xy']).buffer(r['hw'] + r['sw'] + 8, cap_style='flat') for r in rds]
+    wat = [w.buffer(10) for w in G['water'] if _s.intersects(w, env)]
+    blk = _s.union_all(list(_s.buffer(bp[~aport], 14, quad_segs=2)) + rd + wat)
+    free = env.difference(blk)
+    mid = _s.Point(*P(L / 2, 0))
+    comp = [g for g in _s.get_parts(free) if g.contains(mid)][0]
+    # a clean fence line: open (never grows into blocked land), straighten into long runs, keep only what stays inside
+    # the opened land, then a final light simplify (8 m < the 14 m building clearance, so no wall cuts a building)
+    s0 = comp.buffer(-60, join_style='mitre').buffer(60, join_style='mitre')
+    s0 = s0.intersection(comp)                                                       # mitred corners can overshoot
+    s0 = [g for g in _s.get_parts(s0) if g.geom_type == 'Polygon' and g.contains(mid)][0]
+    s0 = _s.Polygon(s0.exterior)
+    s1 = _s.simplify(s0, 40, preserve_topology=True).intersection(s0)
+    s1 = max(_s.get_parts(s1), key=lambda g: g.area if g.geom_type == 'Polygon' else 0)
+    s1 = s1.buffer(-12, join_style='mitre').buffer(12, join_style='mitre')       # snip slivers the cut leaves
+    s1 = max(_s.get_parts(s1.intersection(s0)), key=lambda g: g.area if g.geom_type == 'Polygon' else 0)
+    op = _s.Polygon(_s.simplify(s1, 8, preserve_topology=True).exterior)
+    ring = op.exterior
+    near = bpolys[_s.intersects(bpolys, op.buffer(20).boundary.buffer(30))]
+    ring = ring.difference(_s.union_all(list(_s.buffer(near, 4.0))))              # belt and braces: never through a building
+    if aport.any():   # the terminal complex closes the perimeter itself (forecourts stay open)
+        ring = ring.difference(_s.union_all(list(_s.buffer(bp[term], 90)) + list(_s.buffer(bp[aport & (_s.area(bp) > 300)], 25))))
+    # gates: where the fence passes closest to a public road (local minima < 45 m, >= 700 m apart, at most 4)
+    major = _s.union_all([_s.LineString(r['xy']) for r in rds if r['cls'] >= 3])
+    cand = []
+    for g in _s.get_parts(_s.line_merge(ring)):
+        if g.geom_type != 'LineString' or g.length < 60:
+            continue
+        for s in np.arange(25, g.length - 25, 10.0):
+            p = g.interpolate(s); d = p.distance(major)
+            if d < 45:
+                a, b = g.interpolate(max(0, s - 3)), g.interpolate(min(g.length, s + 3))
+                ux, uy = b.x - a.x, b.y - a.y; ul = math.hypot(ux, uy) or 1
+                cand.append((d, p.x, p.y, ux / ul, uy / ul))
+    gates = []
+    for d, x, y, ux, uy in sorted(cand):
+        if all(math.hypot(x - q[0], y - q[1]) > 700 for q in gates):
+            gates.append((x, y, ux, uy))
+        if len(gates) >= 4:
+            break
+    if gates:
+        ring = ring.difference(_s.union_all([_s.Point(x, y).buffer(4.5) for x, y, *_ in gates]))
+    lines = [list(g.coords) for g in _s.get_parts(_s.line_merge(ring)) if g.geom_type == 'LineString' and g.length > 25]
+    return op, lines, gates
+
+
 def airfield_detail():
     """Taxiway pavement with proper fillets, shoulders, markings (centrelines with curved lead-ins, double edge lines,
     runway-holding positions, stand lead-in lines) and aircraft stands, all as projected-metre geometry."""

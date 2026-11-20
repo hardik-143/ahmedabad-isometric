@@ -13,13 +13,16 @@ decks = [shapely.LineString(r['xy']).buffer(r['hw'] + r['sw'] + 3.5) for r in G[
 AF = airfield()   # no trees on the runway strip, taxiways or apron
 _rw = shapely.LineString([(AF['x0'] - AF['u'][0] * 300, AF['y0'] - AF['u'][1] * 300), (AF['x1'] + AF['u'][0] * 300, AF['y1'] + AF['u'][1] * 300)])
 airside = [_rw.buffer(300, cap_style='flat'), shapely.Polygon(AF['apron']).buffer(25)] + [shapely.LineString(t['xy']).buffer(45) for t in AF['twy']]
-gates_ = [shapely.Point(d['x'], d['y']).buffer(d['W'] / 2 + 6) for d in B.get('darw', [])]
+gates_ = [shapely.Point(d['x'], d['y']).buffer(d['W'] / 2 + 6) for d in B.get('darw', [])] + [shapely.Point(*PATANG).buffer(9)]
 import os as _os
 metro_ = []
 if _os.path.exists(f'{OUT}/transit.pkl'):   # riverfront channel, under the metro viaduct, stations
     _TX = pickle.load(open(f'{OUT}/transit.pkl', 'rb'))['excl']
     metro_ = [_TX['hole'].buffer(1.5), _TX['band'].buffer(1.0), _TX['stations'], _TX['piers']]
-water = shapely.union_all(list(G['water']) + [f.buffer(4) for f in B['fields']] + decks + airside + gates_ + metro_)
+APW, APW_LINES, APW_GATES = airport_wall(G, bpolys)
+print(f'airport wall: {APW.area / 1e6:.2f} km2 inside, {len(APW_GATES)} gates, {sum(shapely.LineString(l).length for l in APW_LINES) / 1e3:.1f} km of wall')
+wall_ = [shapely.LineString(l).buffer(3.0) for l in APW_LINES]
+water = shapely.union_all(wall_ + list(G['water']) + [f.buffer(4) for f in B['fields']] + decks + airside + gates_ + metro_)
 shapely.prepare(water)
 parks = G['parks']
 roads = G['roads']
@@ -116,5 +119,5 @@ print('nbhd trees', len(nb), round(time.time() - t0, 1))
 
 allp = np.concatenate([pk, st, nb])
 kind = np.concatenate([np.zeros(len(pk)), np.ones(len(st)), np.full(len(nb), 2)]).astype(np.uint8)
-pickle.dump(dict(pts=allp, kind=kind), open(f'{OUT}/trees.pkl', 'wb'))
+pickle.dump(dict(pts=allp, kind=kind, apwall=APW_LINES, apgates=APW_GATES), open(f'{OUT}/trees.pkl', 'wb'))
 print('total trees', len(allp), round(time.time() - t0, 1))

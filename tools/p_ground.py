@@ -107,6 +107,35 @@ for r, ln in zip(roads, lines):
             hw *= 0.62   # narrow pol lanes inside the walled city
         R2.append(dict(cls=r['cls'], name=r['name'], bridge=r['bridge'], hw=hw, sw=SW[r['cls']], xy=c))
 R2.sort(key=lambda r: (r['cls'], r['bridge']))
+
+# ---- Ellis Bridge: the 1892 steel bowstring bridge (433.41 m, 14 spans, 6.25 m wide) stands between the two 1997-99
+# concrete wings of the Swami Vivekananda Bridge. OSM's wing centrelines leave too narrow a slot for it, so push the
+# wings apart over the crossing (tapered to nothing at their ends so the approaches and Ellis Flyover still meet them).
+ELLIS = None
+_ex, _ey = proj_xy(72.57528, 23.02222)          # Wikipedia 23 01 20 N, 72 34 31 E
+_wing = [r for r in R2 if r['bridge'] and r['name'] in ('Swami Vivekananda Road', 'Swami Vivekananda Bridge')
+         and shapely.LineString(r['xy']).distance(shapely.Point(_ex, _ey)) < 120 and shapely.LineString(r['xy']).length > 300]
+if len(_wing) == 2:
+    _la, _lb = (shapely.LineString(r['xy']) for r in _wing)
+    _sep = np.mean([_lb.distance(shapely.Point(p)) for p in np.asarray(_la.coords)])
+    _need = 2 * (_wing[0]['hw'] + _wing[0]['sw']) + 9.0           # parapet-to-parapet slot for the old trusses
+    _push = max(0.0, (_need - _sep) / 2)
+    for r, other in ((_wing[0], _lb), (_wing[1], _la)):
+        c = np.asarray(r['xy'], float); L = shapely.LineString(c).length
+        s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))])
+        tw = np.clip(np.minimum(s, L - s) / 70.0, 0, 1); tw = tw * tw * (3 - 2 * tw)
+        for j in range(len(c)):
+            q = other.interpolate(other.project(shapely.Point(c[j])))
+            d = c[j] - np.array([q.x, q.y]); dl = np.hypot(*d) or 1.0
+            c[j] = c[j] + d / dl * _push * tw[j]
+        r['xy'] = c
+    _a0, _a1 = np.asarray(_wing[0]['xy']), np.asarray(_wing[1]['xy'])
+    _e0 = (_a0[0] + (_a1[0] if np.hypot(*(_a1[0] - _a0[0])) < np.hypot(*(_a1[-1] - _a0[0])) else _a1[-1])) / 2
+    _e1 = (_a0[-1] + (_a1[-1] if np.hypot(*(_a1[-1] - _a0[-1])) < np.hypot(*(_a1[0] - _a0[-1])) else _a1[0])) / 2
+    ELLIS = dict(p0=tuple(_e0), p1=tuple(_e1), slot=_need - 2 * (_wing[0]['hw'] + _wing[0]['sw']))
+    print(f'Ellis Bridge: wings {_sep:.1f} m apart, pushed out {_push:.2f} m each; midline {np.hypot(*(_e1 - _e0)):.0f} m')
+else:
+    print('Ellis Bridge: wings not found', len(_wing))
 print('road polylines', len(R2), 'pts', sum(len(r['xy']) for r in R2), round(time.time() - t0, 1))
 
 # junction discs: endpoints with max half-width
@@ -419,7 +448,7 @@ for g, p in zip(wd, wpp):
     wards.append(dict(name=nm, x=round(lab.x), y=round(lab.y), rings=rings, area=g.area))
 print('wards', len(wards))
 
-pickle.dump(dict(roads=R2, junctions=jun, road_labels=road_labels, search_roads=search_roads, atal=atal, piers=piers, deck_chain=chain_of,
+pickle.dump(dict(ellis=ELLIS, roads=R2, junctions=jun, road_labels=road_labels, search_roads=search_roads, atal=atal, piers=piers, deck_chain=chain_of,
                  water=water_polys, parks=park_polys, rail=rail, stations=stations, wards=wards,
                  HW=HW, SW=SW), open(f'{OUT}/ground.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))

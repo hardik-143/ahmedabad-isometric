@@ -290,15 +290,73 @@ for nm, x, y in raw_st:
     ST.append((n, x, y))
 stations = [dict(name=n + (' Jn' if n in ('Ahmedabad', 'Sabarmati') else ''), x=m2three(x, y)[0], z=m2three(x, y)[1]) for n, x, y in ST]
 
+# ---- Ellis Bridge: 14 bowstring spans centred on the river channel, deck level from the concrete wings beside it
+ELLIS3 = None
+if G.get('ellis'):
+    _e = G['ellis']; _p0, _p1 = np.array(_e['p0']), np.array(_e['p1'])
+    _ml = shapely.LineString([_p0, _p1])
+    _hole = TR['excl']['hole']
+    _ix = _ml.intersection(_hole)
+    _ix = max(shapely.get_parts(_ix), key=lambda g: g.length) if not _ix.is_empty else _ml
+    _mid = np.array(_ix.interpolate(0.5, normalized=True).coords[0])
+    _u = (_p1 - _p0) / np.hypot(*(_p1 - _p0))
+    _zs = []
+    for r in roads:
+        if r['bridge'] and r['name'] in ('Swami Vivekananda Road', 'Swami Vivekananda Bridge'):
+            c = np.asarray(r['xy']); z = np.asarray(r['z'])
+            near = np.hypot(c[:, 0] - _mid[0], c[:, 1] - _mid[1]) < 180
+            _zs += list(z[near])
+    _h = float(np.median(_zs)) if _zs else 7.0
+    _a, _b = _mid - _u * 433.41 / 2, _mid + _u * 433.41 / 2
+    ELLIS3 = dict(x0=m2three(*_a)[0], z0=m2three(*_a)[1], x1=m2three(*_b)[0], z1=m2three(*_b)[1], h=round(_h, 2), n=14,
+                  slot=round(_e['slot'], 2), wy=TR['river']['water_y'] if 'water_y' in TR['river'] else -5.6)
+    print(f'Ellis Bridge trusses: deck {_h:.1f} m, channel crossing {_ix.length:.0f} m')
+
+# ---- bespoke landmark buildings (their traced footprints were cleared in the buildings stage)
+LM3D = []
+for k_, d_ in LANDMARK_3D.items():
+    o = dict(kind=k_)
+    for kk, vv in d_.items():
+        if kk == 'c':
+            o['x'], o['z'] = m2three(*vv)
+        elif kk == 'u':
+            o['ux'], o['uz'] = round(vv[0], 4), round(-vv[1], 4)
+        elif kk in ('clear', 'ghost'):
+            continue
+        else:
+            o[kk] = vv
+    if k_ == 'pinnacle' and B.get('lm_fp', {}).get('pinnacle'):
+        _fp = shapely.Polygon(B['lm_fp']['pinnacle']); _rr = np.asarray(shapely.minimum_rotated_rectangle(_fp).exterior.coords)[:4]
+        _cr = shapely.union_all([shapely.LineString(r['xy']) for r in roads if r['cls'] >= 3 and not r['bridge']
+                                 and shapely.LineString(r['xy']).distance(_fp) < 120])
+        _best = None
+        for i_ in range(4):   # the front is a long side (two towers side by side), the one nearer a main road
+            a_, b_ = _rr[i_], _rr[(i_ + 1) % 4]; m_ = (a_ + b_) / 2
+            l_, o_ = np.hypot(*(b_ - a_)), np.hypot(*(_rr[(i_ + 2) % 4] - b_))
+            if l_ < o_ - 1:
+                continue
+            dd_ = _cr.distance(shapely.Point(*m_))
+            if _best is None or dd_ < _best[0]:
+                _best = (dd_, a_, b_, o_)
+        _, a_, b_, D_ = _best
+        e_ = (b_ - a_) / np.hypot(*(b_ - a_)); c_ = _rr.mean(0); m_ = (a_ + b_) / 2
+        if np.dot([-e_[1], e_[0]], m_ - c_) < 0:   # frame b-axis (left of u) must point at the road
+            e_ = -e_
+        o['x'], o['z'] = m2three(*c_); o['ux'], o['uz'] = round(float(e_[0]), 4), round(float(-e_[1]), 4)
+        o['W'], o['D'] = round(float(np.hypot(*(b_ - a_))), 1), round(float(D_), 1)
+    LM3D.append(o)
+
 LANDMARKS = [
     ('Kankaria Lake', 23.0063, 72.6010, 'lake'), ('Sabarmati Riverfront', 23.0330, 72.5770, 'river'),
     ('Sabarmati Ashram', 23.0607, 72.5806, 'monument'), ('Narendra Modi Stadium', 23.0919, 72.5975, 'stadium'),
+    ('Patang Hotel', 23.026389, 72.572167, 'tower'), ('ISKCON Temple', 23.02690, 72.50670, 'monument'),
+    ('Taj Skyline', 23.04401, 72.48199, 'tower'), ('Pinnacle Business Park', 23.01137, 72.50631, 'tower'),
     ('Sardar Patel Stadium', 23.0418, 72.5645, 'stadium'), ('SVPI Airport', 23.0745, 72.6290, 'airport'),
     ('IIM Ahmedabad', 23.0329, 72.5468, 'campus'), ('Law Garden', 23.0262, 72.5598, 'park'),
     ('Bhadra Fort', 23.0244, 72.5811, 'monument'), ('Sidi Saiyyed Mosque', 23.0268, 72.5810, 'monument'),
     ('Jama Masjid', 23.0236, 72.5878, 'monument'), ('Teen Darwaza', 23.0238, 72.5838, 'monument'),
     ('Hutheesing Jain Temple', 23.0369, 72.5918, 'monument'), ('Vastrapur Lake', 23.0389, 72.5293, 'lake'),
-    ('Chandola Lake', 22.9871, 72.5870, 'lake'), ('Atal Bridge', 23.01647, 72.57545, 'monument'),
+    ('Chandola Lake', 22.9871, 72.5870, 'lake'), ('Atal Bridge', 23.01647, 72.57545, 'monument'), ('Ellis Bridge', 23.02222, 72.57528, 'monument'),
 ]
 LANDMARKS += [(n, la, lo, 'gate') for n, la, lo, *_ in DARWAJAS if n != 'Teen Darwaza']
 lms = []
@@ -339,7 +397,12 @@ meta = dict(
                  apron=[list(m2three(*q)) for q in AF['apron']],
                  pave=tri_flat(AFD['pave']), shoulder=tri_flat(AFD['shoulder']),
                  lines=[[k, w, [c for q in pts for c in m2three(*q)]] for k, w, pts in AFD['lines']],
-                 stands=[[*m2three(*p), round(AFD['nose'][0], 4), round(-AFD['nose'][1], 4), 1 if atr else 0] for p, atr in AFD['stands']]),
+                 stands=[[*m2three(*p), round(AFD['nose'][0], 4), round(-AFD['nose'][1], 4), 1 if atr else 0] for p, atr in AFD['stands']],
+                 wall=[[c for q in l for c in m2three(*q)] for l in T.get('apwall', [])],
+                 gates=[[*m2three(x, y), round(ux, 4), round(-uy, 4)] for x, y, ux, uy in T.get('apgates', [])]),
+    patang=dict(x=m2three(*PATANG)[0], z=m2three(*PATANG)[1]),
+    ellis=ELLIS3,
+    lm3d=LM3D,
     darwajas=[dict(n=d['name'], x=m2three(d['x'], d['y'])[0], z=m2three(d['x'], d['y'])[1], ux=round(d['ux'], 4), uz=round(-d['uy'], 4),
                    cw=round(d['cw'], 2), ch=round(d['ch'], 2), sw=round(d['sw'], 2), sh=round(d['sh'], 2), dp=d['depth'], pr=d['pier'],
                    plat=[round(d['plat'][0], 2), round(d['plat'][1], 2)] if d['plat'] else None) for d in B['darw']],

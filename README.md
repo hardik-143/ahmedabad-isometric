@@ -7,6 +7,8 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 - Narendra Modi & Sardar Patel stadium bowls, Atal Bridge with its kite canopy
 - Ahmedabad Metro: Blue, Red, Yellow and Violet line viaducts, 43 stations (4 underground), tunnel portals, trains running to the GTFS timetable
 - Sabarmati Riverfront as a sunken channel from Vasna Barrage to the Acher barrage-cum-bridge: retaining walls, lower and upper promenades, stairs, ghats, lamps
+- Hand-built landmarks: Patang revolving restaurant, ISKCON temple, Taj Skyline, Pinnacle Business Park, and Ellis Bridge's 1892 steel spans between the Swami Vivekananda Bridge wings
+- Airport perimeter wall with anti-climb coil and watch towers; building outlines squared up from the traced data
 - Day / golden hour / night (lit windows, street lamps), Q/E rotation, search, radar and city map
 
 ## Layout
@@ -70,3 +72,24 @@ channel covers Phase 2 (under construction, ~82 % complete in Oct 2026) using th
 design line. A depth-only band around the channel lets the near bank hide the sunken parts while the ground layers
 stay flat.
 
+### Building outlines
+VEDAS outlines are traced from a surface model, so many come out jagged, spurred or slightly skewed. Each is turned
+to its own dominant axis; walls within 16 degrees of that axis are snapped onto it and corners re-intersected, and
+outlines that are still irregular after that are rebuilt on a 1.5-4 m grid aligned with the building (closing and
+opening remove notches and spurs). Procedural cells inside dense blocks are whole rectangles only, no clipped scraps.
+
+### Landmarks
+- **Patang** (Hasmukh Patel, 1980-84): concrete shaft with a chabutaro-style flared capital, the 62 ft revolving
+  ring (18 ft glazing) at 221 ft and the 68 ft umbrella roof. Placed on the traced shaft at 23.0264 N 72.5722 E.
+- **Ellis Bridge** (1892): 14 bowstring lattice-truss spans, 433.41 m long, 6.25 m wide, on paired piers, centred on
+  the channel between the two 1997-99 concrete wings, which are pushed apart over the river to leave room for it.
+- **ISKCON, Sri Sri Radha Govind Dham** (1997): stone platform, temple hall with mandapa domes and corner chhatris,
+  and the three ~50 ft shikharas with their sub-spires at the rear. Sited on the 2,354 m2 traced temple footprint.
+- **Taj Skyline / Sankalp Square III** (ARK Reza Kabul): two towers on one podium with the white box-frame façade.
+- **Pinnacle Business Park** (Corporate Road, opposite Prahladnagar Garden): its own footprint, glazed. Façade
+  treatment is approximate.
+
+### Airport wall
+The perimeter is the edge of the open airside land around runway 05/23: inside a runway-frame envelope, whatever no
+building, through road or water occupies is airfield; the part holding the runway, opened and closed by 70 m and
+30 m, is fenced. Terminal and hangar façades that form the boundary themselves get no wall.

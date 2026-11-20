@@ -146,10 +146,16 @@ def subdivide(P, hb):
     b = np.array(boxes)
     bx = shapely.box(b[:, 0], b[:, 1], b[:, 2], b[:, 3])
     cand = shapely.STRtree(bx).query(Q, predicate='intersects')
-    cells = shapely.intersection(bx[cand], Q)
-    cp = shapely.get_parts(cells)
-    cp = cp[(shapely.get_type_id(cp) == 3)]
-    cp = cp[shapely.area(cp) > 12]
+    bc = bx[cand]
+    inter = shapely.intersection(bc, Q)
+    fr = shapely.area(inter) / shapely.area(bc)
+    # every cell is a clean rectangle: whole plots where the block mostly covers them, the bounding box of the
+    # covered part along the edge, and nothing for scraps (no jagged slivers copied from the traced outline)
+    cp = list(bc[fr >= 0.72])
+    for g in inter[(fr >= 0.3) & (fr < 0.72)]:
+        e = shapely.envelope(g)
+        if e.area > 12 and g.area / e.area >= 0.72:
+            cp.append(e)
     out = [affinity.rotate(p, ang, origin=ctr) for p in cp]
     f = rng.uniform(0.8, 1.0, len(out))
     return out, hb * f
@@ -207,6 +213,30 @@ for k_, (p, h, t) in enumerate(stands):
 polys = np.array(polys, dtype=object); hs = np.array(hs); isfab = np.array(isfab); special = np.array(special); parent = np.array(parent)
 src = np.array(src)
 print('after subdivision', len(polys), round(time.time() - t0, 1))
+
+# ---- square up traced VEDAS outlines (DSM tracing leaves jagged, spurred, slightly skewed walls) ----
+from regularize import regularize, raster_ortho, squareness
+_np, _nh = [], []
+n_snap = n_grid = 0
+_nvx = shapely.get_num_coordinates(polys)
+for k in np.where((src == 0) & (parent == -1) & (special == 0) & (_nvx > 6))[0]:
+    P = polys[k]
+    r = regularize(P)
+    if squareness(r) >= 0.8:
+        polys[k] = r; n_snap += 1
+        continue
+    rs = raster_ortho(P, min_part=25.0 if isfab[k] != 1 else 60.0)
+    polys[k] = rs[0]; n_grid += 1
+    for g in rs[1:]:
+        _np.append(k); _nh.append(g)
+if _np:
+    _np = np.array(_np)
+    polys = np.concatenate([polys, np.array(_nh, dtype=object)])
+    hs = np.concatenate([hs, hs[_np]]); isfab = np.concatenate([isfab, isfab[_np]])
+    special = np.concatenate([special, special[_np]]); parent = np.concatenate([parent, parent[_np]])
+    src = np.concatenate([src, src[_np]])
+print(f'regularised footprints: {n_snap} edge-snapped, {n_grid} rebuilt on a grid (+{len(_nh)} split parts)',
+      round(time.time() - t0, 1))
 
 # ---- roads win: trim buildings back from the carriageway, drop ones mostly on it ----
 import pickle as _pk
@@ -317,7 +347,7 @@ for k in range(len(polys)):
 print(f'inset: {len(polys)} -> {len(P2)} footprints', round(time.time() - t0, 1))
 polys = np.array(P2, dtype=object); hs = np.array(H2); isfab = np.array(F2); special = np.array(S2); parent = np.array(R2_); src = np.array(C2)
 
-tol = np.where(isfab == 1, 1.2, np.where(src == 1, 0.2, 0.3))
+tol = np.where(isfab == 1, 0.6, np.where(src == 1, 0.2, 0.3))
 polys = shapely.simplify(polys, tol, preserve_topology=True)
 polys = shapely.orient_polygons(polys, exterior_cw=False)
 ok = (shapely.get_type_id(polys) == 3) & (~shapely.is_empty(polys)) & (shapely.area(polys) > 6)
@@ -374,6 +404,49 @@ _gz = shapely.union_all([shapely.Polygon([(d['x'] + d['ux'] * a_ * (d['depth'] /
 _okg = ~shapely.intersects(polys, _gz)
 print('darwajas', len(darw), 'cleared', int((~_okg).sum()), 'footprints')
 polys, hs, isfab, special, src = polys[_okg], hs[_okg], isfab[_okg], special[_okg], src[_okg]
+
+# ---- Patang (Neelkanth Patang revolving restaurant, Hasmukh Patel 1980-84): the tower is modelled on its own, so the
+# traced shaft / roof-disc footprints at its foot go and neighbours (Chinubhai Centre) give way around the shaft
+_pp = shapely.Point(*PATANG)
+_pc = shapely.centroid(polys)
+_okp = ~(shapely.distance(_pc, _pp) < 13.0)
+polys, hs, isfab, special, src = polys[_okp], hs[_okp], isfab[_okp], special[_okp], src[_okp]
+_hit = np.where(shapely.intersects(polys, _pp.buffer(6.5)))[0]
+for k in _hit:
+    g = polys[k].difference(_pp.buffer(6.5, quad_segs=6))
+    g = max(shapely.get_parts(g), key=lambda q: q.area) if not g.is_empty else g
+    polys[k] = g
+_okp2 = (shapely.get_type_id(polys) == 3) & (shapely.area(polys) > 6)
+polys, hs, isfab, special, src = polys[_okp2], hs[_okp2], isfab[_okp2], special[_okp2], src[_okp2]
+print('patang: cleared', int((~_okp).sum()), 'footprints, trimmed', len(_hit))
+
+# other bespoke landmarks: clear their traced outlines (the model replaces them)
+lm_fp = {}
+_pc = shapely.centroid(polys); _px, _py = shapely.get_x(_pc), shapely.get_y(_pc)
+_drop = np.zeros(len(polys), bool)
+for _k, _d in LANDMARK_3D.items():
+    if 'clear' in _d:
+        (_cx, _cy), (_ux, _uy) = _d['c'], _d['u']
+        _a = (_px - _cx) * _ux + (_py - _cy) * _uy; _b = -(_px - _cx) * _uy + (_py - _cy) * _ux
+        u0, u1, v0, v1 = _d['clear']
+        _m = (_a > u0) & (_a < u1) & (_b > v0) & (_b < v1)
+        _drop |= _m
+        print(f'{_k}: cleared {int(_m.sum())} footprints')
+        for _gx, _gy in _d.get('ghost', []):   # rooftop-parallax ghosts: tall slivers displaced off the real tower
+            _g = np.hypot(_px - _gx, _py - _gy) < 12
+            _drop |= _g
+            print(f'{_k}: removed {int(_g.sum())} parallax ghost footprint(s)')
+    elif _k == 'pinnacle':
+        _dd = shapely.distance(polys, shapely.Point(*_d['c']))
+        _cand = np.where((_dd < 8) & (shapely.area(polys) > 1500) & (isfab != 2))[0]
+        if len(_cand):
+            _i = _cand[np.argmax(shapely.area(polys[_cand]))]
+            _fp = polys[_i]
+            _m = shapely.contains_xy(_fp.buffer(2), _px, _py)
+            _drop |= _m
+            lm_fp[_k] = [tuple(map(float, q)) for q in np.asarray(_fp.exterior.coords)[:-1]]
+            print(f'{_k}: footprint {_fp.area:.0f} m2, h {hs[_i]:.1f} m, cleared {int(_m.sum())}')
+polys, hs, isfab, special, src = polys[~_drop], hs[~_drop], isfab[~_drop], special[~_drop], src[~_drop]
 
 # ---- nothing standing in water (lake-bed / riverbed footprints from older imagery)
 _wat = shapely.union_all(list(G['water']))
@@ -662,5 +735,5 @@ print('props', len(props), round(time.time() - t0, 1))
 
 pickle.dump(dict(polys=polys, hs=hsnap, style=style, recs=recs, props=props, palette=palette, fields=fields, pitches=pitches,
                  fabric=isfab, industrial=industrial, polT=polT, face=face, face2=face2, rr0=rr0, rr1=rr1, rise=rise,
-                 gates=gates, chab=chab, darw=darw), open(f'{OUT}/buildings.pkl', 'wb'))
+                 gates=gates, chab=chab, darw=darw, lm_fp=lm_fp), open(f'{OUT}/buildings.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))
