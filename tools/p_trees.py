@@ -14,7 +14,12 @@ AF = airfield()   # no trees on the runway strip, taxiways or apron
 _rw = shapely.LineString([(AF['x0'] - AF['u'][0] * 300, AF['y0'] - AF['u'][1] * 300), (AF['x1'] + AF['u'][0] * 300, AF['y1'] + AF['u'][1] * 300)])
 airside = [_rw.buffer(300, cap_style='flat'), shapely.Polygon(AF['apron']).buffer(25)] + [shapely.LineString(t['xy']).buffer(45) for t in AF['twy']]
 gates_ = [shapely.Point(d['x'], d['y']).buffer(d['W'] / 2 + 6) for d in B.get('darw', [])]
-water = shapely.union_all(list(G['water']) + [f.buffer(4) for f in B['fields']] + decks + airside + gates_)
+import os as _os
+metro_ = []
+if _os.path.exists(f'{OUT}/transit.pkl'):   # riverfront channel, under the metro viaduct, stations
+    _TX = pickle.load(open(f'{OUT}/transit.pkl', 'rb'))['excl']
+    metro_ = [_TX['hole'].buffer(1.5), _TX['band'].buffer(1.0), _TX['stations'], _TX['piers']]
+water = shapely.union_all(list(G['water']) + [f.buffer(4) for f in B['fields']] + decks + airside + gates_ + metro_)
 shapely.prepare(water)
 parks = G['parks']
 roads = G['roads']

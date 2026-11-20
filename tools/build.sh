@@ -16,6 +16,7 @@ $PY tools/fetch.py
 $PY tools/fetch_gobi.py
 cd tools
 echo "== ground";     $PY p_ground.py
+echo "== transit";    $PY p_transit.py
 echo "== buildings";  $PY p_buildings.py
 echo "== trees";      $PY p_trees.py
 echo "== pack";       $PY pack.py

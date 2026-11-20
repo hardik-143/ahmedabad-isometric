@@ -385,6 +385,24 @@ _okw = _wa < 0.35
 print('water: removed', int((~_okw).sum()), 'footprints standing in lakes / the river')
 polys, hs, isfab, special, src = polys[_okw], hs[_okw], isfab[_okw], special[_okw], src[_okw]
 
+# ---- metro & riverfront: nothing in the sunken riverfront channel, the station boxes / entrances / tunnel portals or
+# around viaduct piers, and nothing tall enough to hit the deck where the viaduct passes over a footprint
+import os as _os
+if _os.path.exists(f'{OUT}/transit.pkl'):
+    _TX = _pk.load(open(f'{OUT}/transit.pkl', 'rb'))['excl']
+    _bad = np.zeros(len(polys), bool)
+    _tr = shapely.STRtree(polys)
+    for _g, _amin, _hmin in ((_TX['hole'], 0.5, -1), (_TX['stations'], 2.0, -1), (_TX['piers'], 0.05, -1), (_TX['band'], 2.0, 6.0)):
+        _q = _tr.query(_g, predicate='intersects')
+        _q = np.unique(_q[1] if _q.ndim == 2 else _q)
+        if not len(_q):
+            continue
+        _a = shapely.area(shapely.intersection(polys[_q], _g))
+        _bad[_q[(_a > _amin) & (hs[_q] > _hmin)]] = True
+    print('metro / riverfront: removed', int(_bad.sum()), 'footprints')
+    _k = ~_bad
+    polys, hs, isfab, special, src = polys[_k], hs[_k], isfab[_k], special[_k], src[_k]
+
 # ---- nothing on the runway, taxiways or apron
 AF = airfield()
 _af = shapely.union_all([shapely.buffer(shapely.LineString([(AF['x0'], AF['y0']), (AF['x1'], AF['y1'])]), 80, cap_style='flat')]

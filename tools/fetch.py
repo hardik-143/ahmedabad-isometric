@@ -16,6 +16,8 @@ SOURCES = {
     'city-data.json': f'{RAW}/jayprajapati009/ahmedabad-map/14728db7f2aa84fb6096cb19251181f93a25dddd/data/city-data.json',
     # OpenStreetMap parks for the whole city
     'parks_ahmedabad.geojson': f'{RAW}/sandeshrajbhandari/urban-heat-ahmedabad/d360075f32290617e750906ae59ad3b632bd7a54/outputs/parks_ahmedabad.geojson',
+    # Ahmedabad Metro GTFS (alignments, stations, timetable) from croyla/amd-gtfs, ODbL
+    'amd_metro_gtfs.zip': f'{RAW}/croyla/amd-metro-navigator/98ca50f0db058141edc6eed6dbe6b96cf54b5559/static/metro.zip',
     # AMC ward boundaries (DataMeet)
     'wards.geojson': f'{RAW}/datameet/Municipal_Spatial_Data/9b4d1c2ece54cdeb6f5e8bad9ccad7844f783b17/Ahmedabad/Wards.geojson',
 }

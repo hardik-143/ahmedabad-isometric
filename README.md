@@ -5,6 +5,8 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 - ~150k real building footprints with surveyed heights, 73k road segments, the Sabarmati and lakes, parks, rail
 - Flyovers and river bridges lifted onto decks where roads actually cross roads, rail or water
 - Narendra Modi & Sardar Patel stadium bowls, Atal Bridge with its kite canopy
+- Ahmedabad Metro: Blue, Red, Yellow and Violet line viaducts, 43 stations (4 underground), tunnel portals, trains running to the GTFS timetable
+- Sabarmati Riverfront as a sunken channel from Vasna Barrage to the Acher barrage-cum-bridge: retaining walls, lower and upper promenades, stairs, ghats, lamps
 - Day / golden hour / night (lit windows, street lamps), Q/E rotation, search, radar and city map
 
 ## Layout
@@ -30,6 +32,8 @@ bash tools/build.sh   # needs Python 3.11+, downloads ~250 MB of open data, ~3 m
 | Rivers & lakes | India-WRIS, Swachh Bharat Mission (via ramSeraph/indian_water_features) |
 | Railways | Indian Railways (via ramSeraph/indian_transport) |
 | Ward boundaries | DataMeet Municipal_Spatial_Data |
+| Metro alignments, stations, timetable | GTFS feed from [croyla/amd-gtfs](https://github.com/croyla/amd-gtfs) (ODbL), pinned copy in croyla/amd-metro-navigator |
+| Riverfront channel | River outline above, cut at Vasna Barrage (Wikipedia coordinates) and the OSM barrage-cum-bridge at Acher; widths and levels from SRFDCL descriptions |
 
 Procedural (not surveyed): trees, rooftop water tanks and stair rooms, the house-by-house split of merged old-city / industrial blocks, stadium tiers, flyover deck heights.
 
@@ -45,3 +49,24 @@ lane), a Mangalore-tile gable roof with the ridge parallel to the street (about 
 a recessed ground floor behind an otla with wooden posts, carved/louvred upper windows and occasional jharokha
 balconies. Pol gates with guard rooms sit at lane mouths on bigger streets; chabutros (bird feeders) stand in the lane
 chowks. These are a typological reconstruction, not surveyed facades.
+
+### Metro
+Alignments are the GTFS shapes (smoothed, resampled every 4 m), so the viaduct follows the real route rather than
+roads between stations. Rail level is about 9 m between stations and 12 m at stations (GMRC DPR: 8.5 m between
+stations, 12 m where a concourse sits below), lifted to clear road flyovers by 7.5 m and railways, with 3 % ramps.
+The Blue Line runs underground for ~6.5 km from a portal just east of the river to one before Apparel Park; the four
+underground stations show only street entrances. At Old High Court the Red Line platforms sit above the Blue Line
+station (the stacking is a reconstruction). Twin single-track U-girders sit on single-column piers with hammerhead caps
+every ~28 m. Trains (3 cars) run on the left-hand track to the GTFS stop times: the timetable clock follows the
+time-of-day buttons (morning 08:30, noon 12:30, golden hour 18:15, night 21:00 IST) and today's weekday/weekend service.
+Zoomed out, line-coloured ribbons trace the routes (dashed underground).
+
+### Sabarmati Riverfront
+The river runs in a channel cut into the ground plane: water 5.6 m and the lower promenade 4.5 m below city level,
+retaining walls between, the upper promenade paved along the top. The wall follows the river outline offset by a
+10 m promenade, and steps back wherever a road runs closer, so the promenade narrows there. Stairs (~430 m apart),
+ghats (~640 m apart) and lamp posts are placed procedurally along the walls. North of the old Subhash Bridge the
+channel covers Phase 2 (under construction, ~82 % complete in Oct 2026) using the existing river edge, not the final
+design line. A depth-only band around the channel lets the near bank hide the sunken parts while the ground layers
+stay flat.
+

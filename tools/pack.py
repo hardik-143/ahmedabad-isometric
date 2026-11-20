@@ -199,6 +199,58 @@ for pl in (B['fields'], B['pitches']):
 b.pad(4)
 files['ground'] = b.b
 
+
+# ---------------- metro + riverfront channel (gzip JSON) ----------------
+TR = pickle.load(open(f'{OUT}/transit.pkl', 'rb'))
+RV, MT = TR['river'], TR['metro']
+_H = RV['H']; shapely.prepare(_H)
+
+
+def fl3(c):   # map metres -> flat three.js [x, z, ...] at 0.1 m
+    c = np.asarray(c, float)
+    return [round(float(v), 1) for p in c for v in (p[0], -p[1])]
+
+
+def tri_fl(g):
+    V, I = tri_polys([p for p in shapely.get_parts(g) if p.geom_type == 'Polygon' and p.area > 0.5])
+    return dict(v=[round(float(c), 2) for xy in V for c in (xy[0], -xy[1])], i=[int(t) for t in I])
+
+
+def rs(c, step, *vals):
+    c = np.asarray(c, float)
+    s = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))])
+    t = np.linspace(0, s[-1], max(2, int(math.ceil(s[-1] / step)) + 1))
+    out = [np.column_stack([np.interp(t, s, c[:, 0]), np.interp(t, s, c[:, 1])])]
+    out += [np.interp(t, s, np.asarray(v, float)) for v in vals]
+    return out
+
+
+transit = dict(
+    river=dict(wy=RV['water_y'], py=RV['prom_y'], water=tri_fl(RV['CHW']), prom=tri_fl(RV['PROMP']), lid=tri_fl(RV['LID']),
+               upper=tri_fl(RV['UPPER']), walls=[fl3(w) for w in RV['walls']], edges=[fl3(e) for e in RV['edges']],
+               stairs=[[round(x, 1), round(-y, 1), round(ux, 4), round(-uy, 4)] for x, y, ux, uy in RV['stairs']],
+               ghats=[[round(x, 1), round(-y, 1), round(ux, 4), round(-uy, 4), w] for x, y, ux, uy, w in RV['ghats']],
+               lamps=[[round(x, 1), round(-y, 1)] for x, y in RV['lamps']],
+               barrages=[dict(kind=b['kind'], a=[round(b['a'][0], 1), round(-b['a'][1], 1)], b=[round(b['b'][0], 1), round(-b['b'][1], 1)]) for b in RV['barrages']]),
+    metro=dict(
+        corr=[dict(k=k, col=MT['col'][k], pts=fl3(c), rl=[round(float(v), 2) for v in MT['rl'][k]], ug=[int(v) for v in MT['ug'][k]])
+              for k, c in MT['corr'].items()],
+        stations=[dict(n=s['name'], id=s['id'], x=round(s['x'], 1), z=round(-s['y'], 1), ux=round(s['ux'], 4), uz=round(-s['uy'], 4), rl=round(s['rl'], 2),
+                       ug=int(s['ug']), lines=s['lines'], corr=s['corr'], L=s['L'], W=s['W'],
+                       ent=[[round(x, 1), round(-y, 1)] for x, y in s.get('ent', [])]) for s in MT['stations']],
+        piers=[[round(x, 1), round(-y, 1), round(ux, 4), round(-uy, 4), round(top, 2), round(base, 2), k] for x, y, ux, uy, top, base, k in MT['piers']],
+        portals=[[round(x, 1), round(-y, 1), round(ux, 4), round(-uy, 4)] for x, y, ux, uy in MT['portals']],
+        routes=[], trips=[]),
+)
+for R in MT['routes']:
+    c, rl, ug, ib = rs(R['c'], 8.0, R['rl'], R['ug'].astype(float), R['inbox'].astype(float))
+    transit['metro']['routes'].append(dict(id=R['id'], line=R['line'], pts=fl3(c), rl=[round(float(v), 1) for v in rl],
+                                           ug=[int(v > 0.5) for v in ug], inb=[int(v > 0.5) for v in ib]))
+for rk, d, svc, ss, tt in MT['trips']:
+    transit['metro']['trips'].append([rk, d, svc, [round(v) for v in ss], [tt[0]] + [b_ - a_ for a_, b_ in zip(tt, tt[1:])]])
+files['transit'] = json.dumps(transit, separators=(',', ':')).encode()
+print('transit: corridors', len(MT['corr']), 'stations', len(MT['stations']), 'piers', len(MT['piers']), 'trips', len(MT['trips']))
+
 for k, v in files.items():
     raw = bytes(v)
     gz = gzip.compress(raw, 9)
@@ -278,7 +330,8 @@ meta = dict(
     bounds=dict(minX=round(x0), maxX=round(x1), minZ=round(-y1), maxZ=round(-y0)),
     chunks=chunks, palette=B['palette'], roadNames=names, roadLabels=rl, searchRoads=sr,
     wards=wards, stations=stations, landmarks=lms,
-    piers=[[round(x, 1), round(-y, 1), round(ux, 3), round(-uy, 3), round(h, 1), round(hc, 1), ch] for x, y, ux, uy, h, hc, ch in G['piers']],
+    piers=[[round(x, 1), round(-y, 1), round(ux, 3), round(-uy, 3), round(h, 1), round(hc, 1), ch,
+            round(RV['water_y'] - 0.6, 1) if shapely.contains_xy(_H, x, y) else 0] for x, y, ux, uy, h, hc, ch in G['piers']],
     deckChain=G['deck_chain'],
     gates=[[round(x, 1), round(-y, 1), round(math.cos(a), 3), round(-math.sin(a), 3), round(w, 1)] for x, y, a, w in B['gates']],
     chabutros=[[round(x, 1), round(-y, 1)] for x, y in B['chab']],
