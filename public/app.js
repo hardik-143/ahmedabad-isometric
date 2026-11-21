@@ -1996,6 +1996,8 @@ function buildProps(ch) {
     else { _e.set(0, (RO[i] / 255) * Math.PI, 0); _q.setFromEuler(_e); _s.set(1, 1, 1); _m.compose(_p, _q, _s); sol.setMatrixAt(c++, _m); }
   }
   for (const im of [tanks, mum, sol]) { im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; im.computeBoundingSphere(); group.near.add(im); ch.props.push(im); }
+  const life = rooftopLife(ch, X, Z, Y, T, RO, SC, n);   // washing lines, people and chairs on some terraces
+  if (life) { life.dispose = () => life.geometry.dispose(); group.near.add(life); ch.props.push(life); }
 }
 function disposeNear(ch) {
   for (const k of ['cells', 'trees', 'props']) {
@@ -2900,8 +2902,8 @@ function buildMetro() {
     }
     let j = 0;
     while (j < n) {
-      if (C.ug[j] || inSt[j] || C.rl[j] < 0.3) { j++; continue; }
-      let e = j; while (e < n && !C.ug[e] && !inSt[e] && C.rl[e] >= 0.3) e++;
+      if (C.ug[j] || inSt[j] || C.rl[j] < 1.3) { j++; continue; }   // below 1.3 m the line runs at grade (ballast track)
+      let e = j; while (e < n && !C.ug[e] && !inSt[e] && C.rl[e] >= 1.3) e++;
       // decimate straight, evenly graded stretches
       const keep = [j]; let last = j;
       for (let q = j + 1; q < e - 1; q++) {
@@ -2956,6 +2958,7 @@ function buildMetro() {
     mapCtx.stroke(); mapCtx.setLineDash([]);
   }
   buildCrossovers(XO);
+  buildDepot(M, pre);
   initTrains(M, pre);
   buildRouteOverlay(M);
 }
@@ -3309,7 +3312,7 @@ function buildCrossovers(XO) {
 // Median bus lanes with kerbs and railings on both sides (open at crossing streets), island stations in the middle
 // with glass walls, an arched roof and a ramp down to a zebra crossing, and buses running to the GTFS timetable.
 const BRTS_FINE = [];
-const BRTS_ST_LEN = 44, BRTS_ST_W = 4.6, BRTS_HW = 4.1;
+const BRTS_ST_LEN = 44, BRTS_ST_W = 4.6, BRTS_HW = 4.1, BRTS_BAY = 8, BRTS_DOORS = [-10.3, -5.7, 5.7, 10.3];   // bays at +-8 m; bus doors at +-2.3 m
 const BRTSMAT = groundMat(`
   float a = vR.x, s = vR.y, hw = vR.z, k = vR.w;
   float pa = fwidth(a), ps = fwidth(s), det = 1.0 - smoothstep(0.15, 0.6, pa);
@@ -3327,7 +3330,22 @@ const BRTSMAT = groundMat(`
   diffuseColor.rgb = pow(c, vec3(2.2));`, '', {
   vHead: 'attribute vec4 aR; varying vec4 vR;', vBody: 'vR = aR;', fHead: 'varying vec4 vR;',
 });
-let BUSES = null;
+let BUSES = null, BRTS_DOOR = null;
+function stepDoors(dt) {   // leaves slide apart (1.05 m each) in ~1.2 s while a bus is docked at that bay
+  const D = BRTS_DOOR; if (!D) return;
+  let moved = !D.init;
+  for (let k = 0; k < D.open.length; k++) { const v = D.open[k], t = D.tgt[k]; if (v !== t) { D.open[k] = t ? Math.min(1, v + dt / 1.2) : Math.max(0, v - dt / 1.2); moved = true; } }
+  if (!moved) return;
+  D.init = true;
+  const arr = D.im.instanceMatrix.array, W2 = BRTS_ST_W / 2;
+  for (let q = 0; q < D.base.length / 4; q++) {
+    const si = D.base[q * 4], sb = D.base[q * 4 + 1], ad = D.base[q * 4 + 2], lr = D.base[q * 4 + 3], st = D.st[si];
+    const o = D.open[si * 4 + (sb > 0 ? 0 : 2) + (ad > 0 ? 0 : 1)], e = o * o * (3 - 2 * o);
+    const a = ad + lr * (0.55 + 1.05 * e), b = sb * (W2 - 0.16), vx = st.uz, vz = -st.ux;
+    putYawS(arr, q, st.x + st.ux * a + vx * b, 1.92, st.z + st.uz * a + vz * b, st.ux, st.uz, 1.1, 2.0, 0.05);
+  }
+  flushInst(D.im.instanceMatrix, D.base.length / 4);
+}
 function buildBRTS() {
   const B = TR && TR.brts; if (!B) return;
   const PG = [], RG = [], IG = [];
@@ -3347,6 +3365,8 @@ function buildBRTS() {
       HW[j] = BRTS_HW + (BRTS_ST_W / 2 + 0.2) * f * f * (3 - 2 * f);
     }
     const inGap = (sv) => ln.gaps.some(([g0, g1]) => sv > g0 && sv < g1);
+    const zeb = stOn[li].flatMap((ss) => [ss - (BRTS_ST_LEN / 2 + 11), ss + (BRTS_ST_LEN / 2 + 11)]);
+    const atZebra = (sv) => zeb.some((zs) => Math.abs(sv - zs) < 2.6);   // kerb and railing open where a station's zebra crosses
     const b0 = PG.length / 2;
     for (let j = 0; j < n; j++) {            // lane surfacing stops at junctions (no paint through the crossing)
       const x = P[j * 2], z = P[j * 2 + 1], nx = N[j * 2], nz = N[j * 2 + 1], h = HW[j];
@@ -3367,16 +3387,16 @@ function buildBRTS() {
         run = [];
       };
       for (let j = 0; j < n; j++) {
-        if (inGap(S[j])) { flush(); continue; }
+        if (inGap(S[j]) || atZebra(S[j])) { flush(); continue; }
         const h = HW[j] - 0.2;
         run.push(P[j * 2] + N[j * 2] * h * sg, P[j * 2 + 1] + N[j * 2 + 1] * h * sg);
       }
       flush();
     }
   });
-  // zebra crossings at the ramp end of every station
-  for (const st of B.stations) {
-    const vx = st.uz, vz = -st.ux, cx = st.x + st.ux * (BRTS_ST_LEN / 2 + 11), cz = st.z + st.uz * (BRTS_ST_LEN / 2 + 11), W = 15, D = 2.2;
+  // zebra crossings at both ramp ends of every station
+  for (const st of B.stations) for (const se of [1, -1]) {
+    const vx = st.uz, vz = -st.ux, cx = st.x + st.ux * se * (BRTS_ST_LEN / 2 + 11), cz = st.z + st.uz * se * (BRTS_ST_LEN / 2 + 11), W = 15, D = 2.2;
     const b = PG.length / 2;
     for (const [aa, dd] of [[-W, -D], [W, -D], [W, D], [-W, D]]) { PG.push(cx + vx * aa + st.ux * dd, cz + vz * aa + st.uz * dd); RG.push(aa, dd, W, 1); }
     IG.push(b, b + 1, b + 2, b, b + 2, b + 3);
@@ -3392,9 +3412,17 @@ function buildBRTS() {
   for (const st of B.stations) {
     const F = lmFrame({ x: st.x, z: st.z, ux: st.ux, uz: st.uz }), L2 = BRTS_ST_LEN / 2, W2 = BRTS_ST_W / 2;
     fbox(G, F, -L2, L2, -W2, W2, 0, 0.9, conc, 0);
-    for (const sb of [-1, 1]) {
-      fbox(G, F, -L2 + 1, L2 - 1, sb * W2 - 0.06, sb * W2 + 0.06, 0.9, 3.0, white, 2, 0.9);          // glass walls with sliding doors
-      for (let a = -L2 + 1; a <= L2 - 1 + 0.01; a += 6) fbox(G, F, a - 0.12, a + 0.12, sb * W2 - 0.12, sb * W2 + 0.12, 0.9, 4.0, steel, 0);
+    for (const sb of [-1, 1]) {   // glass walls, open at the sliding doors of two bus bays (each bus has two doors)
+      let a0 = -L2 + 1;
+      for (const ad of BRTS_DOORS) {
+        fbox(G, F, a0, ad - 1.15, sb * W2 - 0.06, sb * W2 + 0.06, 0.9, 3.0, white, 2, 0.9);
+        fbox(G, F, ad - 1.25, ad - 1.13, sb * W2 - 0.1, sb * W2 + 0.1, 0.9, 3.0, steel, 0); fbox(G, F, ad + 1.13, ad + 1.25, sb * W2 - 0.1, sb * W2 + 0.1, 0.9, 3.0, steel, 0);
+        fbox(G, F, ad - 1.15, ad + 1.15, sb * W2 - 0.08, sb * W2 + 0.08, 2.95, 3.0, steel, 0);                                  // header
+        fbox(G, F, ad - 1.1, ad + 1.1, sb * W2 + 0.02, sb * W2 + 0.2, 0.9, 0.93, C255(230, 196, 40), 0);                       // yellow edge strip at the door
+        a0 = ad + 1.15;
+      }
+      fbox(G, F, a0, L2 - 1, sb * W2 - 0.06, sb * W2 + 0.06, 0.9, 3.0, white, 2, 0.9);
+      for (let a = -L2 + 1; a <= L2 - 1 + 0.01; a += 6) if (!BRTS_DOORS.some((ad) => Math.abs(a - ad) < 1.5)) fbox(G, F, a - 0.12, a + 0.12, sb * W2 - 0.12, sb * W2 + 0.12, 0.9, 4.0, steel, 0);
     }
     const arch = [[-W2 - 0.7, 3.95], [-W2 * 0.55, 4.4], [0, 4.6], [W2 * 0.55, 4.4], [W2 + 0.7, 3.95]];
     for (let k = 0; k < arch.length - 1; k++) {
@@ -3404,16 +3432,29 @@ function buildBRTS() {
       lq(G, F(-L2 - 1, b0, y0 - 0.12), F(L2 + 1, b0, y0 - 0.12), F(L2 + 1, b1, y1 - 0.12), F(-L2 - 1, b1, y1 - 0.12), n.map((q) => -q), [0, 0, 0, 0], white);
     }
     for (const sb of [-1, 1]) fbox(G, F, -L2 - 1, L2 + 1, sb * (W2 + 0.7) - 0.08, sb * (W2 + 0.7) + 0.08, 3.6, 3.98, fascia, 0);   // fascia band
-    // ramp down to the zebra crossing, with handrails
-    const r0 = L2, r1 = L2 + 9.5;
-    lq(G, F(r0, -1.2, 0.9), F(r1, -1.2, 0.02), F(r1, 1.2, 0.02), F(r0, 1.2, 0.9), [0, 1, 0], [0, 0, 0, 0], conc);
-    for (const sb of [-1, 1]) {
-      lq(G, F(r0, sb * 1.2, 0.0), F(r1, sb * 1.2, 0.0), F(r1, sb * 1.2, 0.02), F(r0, sb * 1.2, 0.9), [F.vx * sb, 0, F.vz * sb], [0, 0, 0, 0], conc);
-      beam(G, F(r0, sb * 1.15, 1.9), F(r1, sb * 1.15, 1.0), 0.06, 0.06, steel, 0);
+    // a ramp down to a zebra crossing at each end, with handrails
+    for (const se of [1, -1]) {
+      const r0 = se * L2, r1 = se * (L2 + 9.5);
+      lq(G, F(r0, -1.2, 0.9), F(r1, -1.2, 0.02), F(r1, 1.2, 0.02), F(r0, 1.2, 0.9), [0, 1, 0], [0, 0, 0, 0], conc);
+      for (const sb of [-1, 1]) {
+        lq(G, F(r0, sb * 1.2, 0.0), F(r1, sb * 1.2, 0.0), F(r1, sb * 1.2, 0.02), F(r0, sb * 1.2, 0.9), [F.vx * sb, 0, F.vz * sb], [0, 0, 0, 0], conc);
+        beam(G, F(r0, sb * 1.15, 1.9), F(r1, sb * 1.15, 1.0), 0.06, 0.06, steel, 0);
+      }
+      fbox(G, F, Math.min(r1, r1 - se * 0.3), Math.max(r1, r1 - se * 0.3), -1.25, 1.25, 0, 0.03, conc, 0);   // landing pad at the foot
     }
-    fbox(G, F, -L2 + 1.5, -L2 + 4.5, -1.3, 1.3, 0.9, 3.0, dark, 0);                                  // ticket / control booth
+    fbox(G, F, -L2 + 1.5, -L2 + 4.5, -W2 + 0.25, -1.0, 0.9, 3.0, dark, 0);                            // ticket / control booth, clear of the ramp door
   }
   const sm = G.mesh(LMK); group.ground.add(sm);
+  {
+    const nL = B.stations.length * 16, base = new Float32Array(nL * 4);
+    let q = 0;
+    B.stations.forEach((st, si) => { for (const sb of [1, -1]) for (const ad of BRTS_DOORS) for (const lr of [-1, 1]) { base.set([si, sb, ad, lr], q * 4); q++; } });
+    const dm = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ color: 0x9fbcc6 }), nL);
+    dm.instanceMatrix.setUsage(THREE.DynamicDrawUsage); dm.frustumCulled = false; dm.castShadow = false;
+    group.ground.add(dm); BRTS_FINE.push(dm);
+    BRTS_DOOR = { im: dm, base, open: new Float32Array(B.stations.length * 4), tgt: new Uint8Array(B.stations.length * 4), st: B.stations, init: false };
+    stepDoors(0);
+  }
   // buses: 12 m AC Janmarg bus, 2.2 m doors on the right (station) side, LED destination board, roof units
   const BG = new Geo(true), C = VCOL;
   const body = C255(242, 242, 238), skirt = C255(28, 92, 160), roofu = C255(200, 204, 206);
@@ -3436,12 +3477,15 @@ function buildBRTS() {
     for (let j = 1; j < n; j++) s[j] = s[j - 1] + Math.hypot(p[j * 3] - p[j * 3 - 3], p[j * 3 + 1] - p[j * 3 - 2]);
     return { p, o: lg.o, s, L: s[n - 1] };
   });
-  const trips = B.trips.map((row) => {
+  const seen = new Set(), trips = [];
+  for (const row of B.trips) {   // the feed repeats trips for several service calendars: one bus per run
+    const key = row.join(','); if (seen.has(key)) continue; seen.add(key);
     const t = [row[0]], lg = [];
     for (let k = 1; k + 1 < row.length; k += 2) { lg.push(row[k]); t.push(t[t.length - 1] + row[k + 1]); }
-    return { t, lg };
-  });
+    trips.push({ t, lg });
+  }
   BUSES = { im, legs, trips, clock: TOD_CLOCK[todName] || 12.5 * 3600, last: todName };
+  busSchedule(B);
 }
 const _bp = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bs = new THREE.Vector3(1, 1, 1), _by = new THREE.Vector3(0, 1, 0), _bm = new THREE.Matrix4();
 function legAt(L, rev, sv) {   // position on a bus path (rev = driven the other way), with left-lane offset
@@ -3454,30 +3498,107 @@ function legAt(L, rev, sv) {   // position on a bus path (rev = driven the other
   const off = L.o[lo] + (L.o[hi] - L.o[lo]) * f;
   return [x + dz * off, y, z - dx * off, dx, dz];   // map-left of travel is (dz, -dx)
 }
+// Which station (and which side / travel sense) every stop of every trip is at, then a schedule built in arrival order:
+// a bus docks in the front bay if the stop is empty, in the rear bay if only the front is taken (and leaves after the
+// bus ahead), otherwise it waits behind; runs average at most ~9 m/s (32 km/h) and never catch up the bus ahead on a leg.
+function busSchedule(B) {
+  const BS = BUSES, legs = BS.legs, sts = B.stations, cache = new Map();
+  const at = (ref, end) => { const L = legs[ref < 0 ? -ref - 1 : ref]; return legAt(L, ref < 0, end ? L.L : 0); };
+  const stopInfo = (ref, end) => {
+    const key = ref * 2 + end; if (cache.has(key)) return cache.get(key);
+    const [x, , z, dx, dz] = at(ref, end); let bi = -1, bd = 900;
+    sts.forEach((st, i) => { const d = (st.x - x) ** 2 + (st.z - z) ** 2; if (d < bd) { bd = d; bi = i; } });
+    let info = null;
+    if (bi >= 0) { const st = sts[bi], ts = dx * st.ux + dz * st.uz >= 0 ? 1 : -1, b = (x - st.x) * st.uz + (z - st.z) * -st.ux; info = { si: bi, ts, side: b >= 0 ? 0 : 1 }; }
+    cache.set(key, info); return info;
+  };
+  const DW = 20, VAVG = 9, heap = [];
+  const push = (e) => { heap.push(e); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = i * 2 + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+  BS.trips.forEach((tr, ti) => { const n = tr.t.length; tr.A = new Float64Array(n); tr.D = new Float64Array(n); tr.off = new Float32Array(n); tr.bay = new Int16Array(n).fill(-1); tr.A[0] = tr.t[0]; push([tr.t[0], ti, 0]); });
+  const occ = new Map(), legLast = new Map();
+  while (heap.length) {
+    let [A0, ti, k] = pop(); const tr = BS.trips[ti], n = tr.t.length, last = k === n - 1;
+    const info = last ? stopInfo(tr.lg[n - 2], 1) : stopInfo(tr.lg[k], 0);
+    const dw = last ? DW : Math.min(DW, Math.max(8, (tr.t[k + 1] - tr.t[k]) * 0.3));
+    let dep = A0 + dw, off = 0;
+    if (info) {
+      const key = info.si * 2 + (info.ts > 0 ? 0 : 1); let o = occ.get(key); if (!o) occ.set(key, (o = []));
+      for (let q = o.length - 1; q >= 0; q--) if (o[q].dep < A0 - 14) o.splice(q, 1);   // a bus pulling out still blocks the stop for ~14 s
+      if (k === 0 && o.length) { A0 = Math.max(...o.map((q) => q.dep + 3)); dep = A0 + dw; o.length = 0; }   // a trip starts once its stop is clear
+      if (last) {   // the final stop has no leg beyond it: rear bay, or wait behind
+        if (!o.length) off = -BRTS_BAY; else { off = -22 - 14 * o.filter((q) => q.off <= -22).length; dep = Math.max(dep, ...o.map((q) => q.dep + 3)); }
+      } else if (!o.length) off = BRTS_BAY;
+      else if (o.length === 1 && o[0].off === BRTS_BAY) { off = -BRTS_BAY; dep = Math.max(dep, o[0].dep + 6); }
+      else { off = -22 - 14 * o.filter((q) => q.off <= -22).length; dep = Math.max(dep, ...o.map((q) => q.dep + 3)); }   // queue up behind the bays
+      o.push({ dep, off });
+      if (off > -20) tr.bay[k] = info.si * 4 + info.side * 2 + (info.ts * off > 0 ? 0 : 1);
+    }
+    tr.A[k] = A0; tr.D[k] = dep; tr.off[k] = off;
+    if (!last) {
+      const ref = tr.lg[k], L = legs[ref < 0 ? -ref - 1 : ref];
+      let arr = Math.max(tr.t[k + 1], dep + Math.max(20, (L ? L.L : 0) / VAVG));
+      const prev = legLast.get(ref);   // never faster than, nor arriving within 10 s of, the bus ahead on this leg
+      if (prev && prev[0] > dep - 120) arr = Math.max(arr, prev[1] + 10, dep + (prev[1] - prev[0]));
+      legLast.set(ref, [dep, arr]);
+      push([arr, ti, k + 1]);
+    }
+  }
+}
+function busPos(tr, k, s, out) {   // distance s along leg k, spilling onto the neighbouring legs
+  const BS = BUSES, n = tr.lg.length;
+  let ref = tr.lg[k], L = BS.legs[ref < 0 ? -ref - 1 : ref];
+  if (s < 0 && k > 0) { ref = tr.lg[k - 1]; L = BS.legs[ref < 0 ? -ref - 1 : ref]; s += L.L; }
+  else if (s > L.L && k + 1 < n) { s -= L.L; ref = tr.lg[k + 1]; L = BS.legs[ref < 0 ? -ref - 1 : ref]; }
+  return legAt(L, ref < 0, clamp(s, 0, L.L));
+}
 function stepBuses(dt) {
   if (!BUSES) return false;
   const BS = BUSES;
-  if (BS.last !== todName) { BS.clock = TOD_CLOCK[todName] || BS.clock; BS.last = todName; }
+  if (BS.last !== todName) { BS.clock = TOD_CLOCK[todName] || BS.clock; BS.last = todName; for (const tr of BS.trips) tr.dl = 0; }
   BS.clock += dt;
   const show = view.mpp < 6;
   BS.im.visible = show; if (!show) return false;
-  const T = BS.clock % 86400; let c = 0;
-  const DW = 20;
+  const T0 = BS.clock % 86400; let c = 0;
+  const DR = BRTS_DOOR; if (DR) DR.tgt.fill(0);
+  const act = BS.act || (BS.act = []); act.length = 0;
   for (const tr of BS.trips) {
-    const t = tr.t, n = t.length;
-    if (T < t[0] || T > t[n - 1] + DW) continue;
-    let k = 0; while (k < n - 2 && T >= t[k + 1]) k++;
-    const span = t[k + 1] - t[k], dw = Math.min(DW, span * 0.35), u = clamp((T - t[k] - dw) / Math.max(1, span - dw), 0, 1);
-    const e = u * u * (3 - 2 * u);
-    const ref = tr.lg[k], rev = ref < 0, L = BS.legs[rev ? -ref - 1 : ref];
-    if (!L) continue;
+    const A = tr.A, Dp = tr.D, n = A.length, T = T0 - (tr.dl || 0);   // a bus held up by the one ahead runs that much late
+    if (T < A[0] || T > Dp[n - 1]) continue;
+    let k = 0; while (k < n - 1 && T >= A[k + 1]) k++;
+    let kl = Math.min(k, n - 2), sv;
+    const Lk = BS.legs[tr.lg[kl] < 0 ? -tr.lg[kl] - 1 : tr.lg[kl]]; if (!Lk) continue;
+    if (T <= Dp[k]) {   // docked (or waiting behind the bays)
+      sv = k === n - 1 ? Lk.L + Math.min(0, tr.off[k]) : tr.off[k];
+      if (DR && tr.bay[k] >= 0 && T - A[k] > 0.8 && Dp[k] - T > 2.2) DR.tgt[tr.bay[k]] = 1;
+    } else {            // between stops: accelerate / cruise / brake (peak ~1.25x the average)
+      const u = clamp((T - Dp[k]) / Math.max(1, A[k + 1] - Dp[k]), 0, 1), f = 0.2;
+      const e = u < f ? u * u / (2 * f * (1 - f)) : u > 1 - f ? 1 - (1 - u) ** 2 / (2 * f * (1 - f)) : (u - f / 2) / (1 - f);
+      const s0 = tr.off[k], s1 = Lk.L + (k + 1 === n - 1 ? Math.min(0, tr.off[k + 1]) : tr.off[k + 1]);
+      sv = s0 + (s1 - s0) * e;
+    }
     if (c >= BS.im.instanceMatrix.count) break;
-    const sv = clamp(e * L.L, 0, L.L), [fx, fy, fz] = legAt(L, rev, Math.min(L.L, sv + 3.6)), [bx, by, bz] = legAt(L, rev, Math.max(0, sv - 3.6));
+    const [fx, fy, fz] = busPos(tr, kl, sv + 3.6), [bx, by, bz] = busPos(tr, kl, sv - 3.6), L = Lk, rev = tr.lg[kl] < 0;
     let hx = fx - bx, hz = fz - bz; const hl = Math.hypot(hx, hz);
-    if (hl < 0.5) { const q = legAt(L, rev, sv); hx = q[3]; hz = q[4]; } else { hx /= hl; hz /= hl; }   // heading from the two axles: no snapping at vertices
+    if (hl < 0.5) { const q = legAt(L, rev, clamp(sv, 0, L.L)); hx = q[3]; hz = q[4]; } else { hx /= hl; hz /= hl; }   // heading from the two axles: no snapping at vertices
     putYaw(BS.im.instanceMatrix.array, c++, (fx + bx) / 2, (fy + by) / 2, (fz + bz) / 2, hx, hz, 1);
+    act.push(tr, (fx + bx) / 2, (fz + bz) / 2, hx, hz);
   }
   BS.im.count = c; flushInst(BS.im.instanceMatrix, c);
+  // keep a gap: a bus closing on the one ahead in its lane eases off (its clock slows), stopping a couple of metres short
+  const H = BS.hash || (BS.hash = new Map()); H.clear();
+  for (let q = 0; q < act.length; q += 5) { const key = hk(Math.floor(act[q + 1] / 20), Math.floor(act[q + 2] / 20)); let l = H.get(key); if (!l) H.set(key, (l = [])); l.push(q); }
+  for (let q = 0; q < act.length; q += 5) {
+    const x = act[q + 1], z = act[q + 2], hx = act[q + 3], hz = act[q + 4]; let gap = 1e9;
+    const gx = Math.floor(x / 20), gz = Math.floor(z / 20);
+    for (let u = gx - 1; u <= gx + 1; u++) for (let w = gz - 1; w <= gz + 1; w++) for (const o of H.get(hk(u, w)) || []) {
+      if (o === q) continue; const rx = act[o + 1] - x, rz = act[o + 2] - z, al = rx * hx + rz * hz;
+      if (al <= 0 || al > 30 || Math.abs(rx * hz - rz * hx) > 2.4 || hx * act[o + 3] + hz * act[o + 4] < 0.6) continue;
+      gap = Math.min(gap, al - 12);
+    }
+    if (gap < 6) { const tr = act[q]; tr.dl = (tr.dl || 0) + dt * clamp((6 - gap) / 4, 0, 1); }
+  }
+  if (DR && view.mpp < 2.6) stepDoors(dt);
   return c > 0;
 }
 
@@ -4314,8 +4435,8 @@ function stepPeds(dt) {
 function stepStreet(dt) {
   updateSignalLamps(false);
   if (SIGS) { const sv = view.mpp < 3.2; SIGS.mesh.visible = sv; SIGS.lamps.visible = sv; }
-  const a = stepTraffic(dt), b = stepPeds(dt);
-  return a || b;
+  const a = stepTraffic(dt), b = stepPeds(dt), c = stepPlay();
+  return a || b || c;
 }
 
 // ---------------------------------------------------------------- road works and construction sites
@@ -4433,6 +4554,159 @@ function buildSites() {
   const m = G.mesh(POLX); m.castShadow = true; m.receiveShadow = true; group.ground.add(m);
 }
 
+// ---------------------------------------------------------------- Gyaspur depot (yard fan, stabled trains) and at-grade track
+function railRun(G, pts, y, ballast, steel) {   // pts: [x,z,...] centreline of one track laid at grade
+  for (let k = 0; k + 3 < pts.length; k += 2) {
+    const ax = pts[k], az = pts[k + 1], bx = pts[k + 2], bz = pts[k + 3], L = Math.hypot(bx - ax, bz - az); if (L < 0.05) continue;
+    const ux = (bx - ax) / L, uz = (bz - az) / L, mx = (ax + bx) / 2, mz = (az + bz) / 2, vx = -uz, vz = ux;
+    cbox(G, mx, mz, ux, uz, L / 2 + 0.05, 1.5, y, y + 0.22, ballast, true);
+    for (const g of [-0.7175, 0.7175]) cbox(G, mx + vx * g, mz + vz * g, ux, uz, L / 2 + 0.03, 0.035, y + 0.22, y + 0.36, steel, true);
+  }
+}
+function buildDepot(M, pre) {
+  const D = M.depot; if (!D) return;
+  const G = new Geo(false), ballast = C255(146, 136, 124), steel = C255(84, 80, 76);
+  // the at-grade end of the depot line (the viaduct stops where the rail level comes down to the ground)
+  for (const C of M.corr) {
+    const P = C.pts, n = P.length / 2; if (n < 2) continue;
+    const [N] = lnormals(P);
+    for (const sg of [1, -1]) {
+      let run = [];
+      const flush = () => { if (run.length >= 4) railRun(G, run, 0.02, ballast, steel); run = []; };
+      for (let j = 0; j < n; j++) {
+        if (C.ug[j] || C.rl[j] >= 1.3) { flush(); continue; }
+        run.push(P[j * 2] + N[j * 2] * TRACK * sg, P[j * 2 + 1] + N[j * 2 + 1] * TRACK * sg);
+      }
+      flush();
+    }
+  }
+  // yard: from the throat the two running lines fan out into ten stabling roads that run into the shed's open face
+  const [fx, fz] = D.face, [ux, uz] = D.u, vx = -uz, vz = ux, [tx, tz] = D.throat;
+  const aT = (tx - fx) * ux + (tz - fz) * uz, lT = (tx - fx) * vx + (tz - fz) * vz;
+  const W = (pt) => [fx + ux * pt[0] + vx * pt[1], fz + uz * pt[0] + vz * pt[1]];
+  const tracks = [];
+  for (let k = 0; k < 10; k++) {
+    const L = clamp(lT + (k - 4.5) * 5.2, -D.W / 2 + 6, D.W / 2 - 6), dv = Math.abs(L - lT), a1 = aT - 12, a2 = a1 - Math.max(8, dv * 5.5);
+    const pts = [[aT, lT], [a1, lT], [a2, L], [-2, L]].flatMap((p) => W(p));
+    railRun(G, pts, 0.02, ballast, steel); tracks.push(L);
+  }
+  // shed doors: a dark opening over every road
+  for (const L of tracks) { const [x, z] = W([0.2, L]); cbox(G, x, z, ux, uz, 0.25, 2.3, 0, 5.2, C255(40, 42, 44), true); }
+  const m = G.mesh(POLX); m.castShadow = false; m.receiveShadow = true; group.ground.add(m);
+  // stabled trains (three cars) on a few roads
+  const im = new THREE.InstancedMesh(carGeo(), TRAINMAT, 15), col = new THREE.Color(COLS.red); let c = 0;
+  for (const k of [1, 3, 4, 6, 8]) for (let q = 0; q < 3; q++) {
+    const [x, z] = W([14 + 11.3 + q * 22.6 + (k % 3) * 9, tracks[k]]);
+    putYaw(im.instanceMatrix.array, c, x, 0.38, z, ux, uz, 1); im.setColorAt(c, col); c++;
+  }
+  im.count = c; im.castShadow = true; im.receiveShadow = true; group.ground.add(im);
+}
+
+// ---------------------------------------------------------------- rooftop life: washing lines, people, plastic chairs
+const CLOTH_COLS = ['#d0262e', '#f2b705', '#f07d1a', '#1e63c8', '#2f9a55', '#e85a9a', '#f4f1ea', '#7a3fb2', '#16a3a3', '#b8322a'].map(lin);
+function personBox(G, x, z, y, ux, uz, shirt, pants, skin, seated) {
+  const vx = -uz, vz = ux;
+  if (seated) {
+    cbox(G, x + ux * 0.15, z + uz * 0.15, ux, uz, 0.25, 0.16, y + 0.42, y + 0.56, pants, true);                  // thighs
+    cbox(G, x + ux * 0.4, z + uz * 0.4, ux, uz, 0.07, 0.15, y, y + 0.44, pants, true);                          // shins
+    cbox(G, x - ux * 0.08, z - uz * 0.08, ux, uz, 0.11, 0.19, y + 0.56, y + 1.12, shirt, true);                  // torso
+    cbox(G, x - ux * 0.08, z - uz * 0.08, ux, uz, 0.1, 0.09, y + 1.12, y + 1.36, skin, true);                   // head
+  } else {
+    cbox(G, x, z, ux, uz, 0.08, 0.15, y, y + 0.84, pants, true);
+    cbox(G, x, z, ux, uz, 0.11, 0.2, y + 0.84, y + 1.42, shirt, true);
+    cbox(G, x, z, ux, uz, 0.1, 0.09, y + 1.42, y + 1.68, skin, true);
+    cbox(G, x + ux * 0.18 + vx * 0.2, z + uz * 0.18 + vz * 0.2, ux, uz, 0.05, 0.05, y + 1.2, y + 1.85, skin, true);   // arm up to the line
+  }
+}
+function rooftopLife(ch, X, Z, Y, T, RO, SC, n) {
+  const G = new Geo(false), pole = C255(120, 120, 118), line = C255(40, 40, 40), chairW = C255(236, 236, 232), chairR = C255(180, 40, 36), skin = C255(150, 104, 76);
+  let any = false;
+  for (let i = 0; i < n; i++) {
+    if (T[i] === 2 || SC[i] / 20 > 1.2) continue;                     // beside stair rooms and water tanks on ordinary house roofs
+    const h = hash1(i * 31 + ch.cx * 97 + ch.cy * 57); if (h > (T[i] === 1 ? 0.3 : 0.045)) continue;
+    const th = (RO[i] / 255) * Math.PI, ux = Math.cos(th), uz = -Math.sin(th), vx = -uz, vz = ux;
+    const x = X[i] * 0.1, z = Z[i] * 0.1, y = Y[i] * 0.1, sd = hash1(i * 7 + 3);
+    // washing line beside the stair room
+    const cx = x + ux * 3.2, cz = z + uz * 3.2;
+    for (const s of [-1.3, 1.3]) cbox(G, cx + vx * s, cz + vz * s, ux, uz, 0.03, 0.03, y, y + 1.75, pole, true);
+    cbox(G, cx, cz, vx, vz, 1.3, 0.012, y + 1.72, y + 1.74, line, true);
+    const nc = 3 + Math.floor(sd * 3);
+    for (let k = 0; k < nc; k++) {
+      const f = -1.05 + (k + 0.5) * 2.1 / nc, w = 0.18 + hash1(i + k * 5) * 0.14, hh = 0.45 + hash1(i * 3 + k) * 0.5;
+      cbox(G, cx + vx * f, cz + vz * f, vx, vz, w, 0.015, y + 1.72 - hh, y + 1.72, CLOTH_COLS[Math.floor(hash1(i * 11 + k * 7) * CLOTH_COLS.length)], true);
+    }
+    const sh = CLOTH_COLS[Math.floor(sd * 10) % CLOTH_COLS.length];
+    personBox(G, cx + ux * 0.45 + vx * (sd - 0.5) * 1.6, cz + uz * 0.45 + vz * (sd - 0.5) * 1.6, y, -ux, -uz, sh, C255(46, 52, 74), skin, false);
+    // a plastic chair and somebody sitting out on half of them
+    if (sd > 0.45) {
+      const px = x - ux * 3.0 + vx * 1.2, pz = z - uz * 3.0 + vz * 1.2, cc = sd > 0.75 ? chairR : chairW;
+      cbox(G, px, pz, ux, uz, 0.24, 0.24, y + 0.4, y + 0.45, cc, true);
+      cbox(G, px - ux * 0.24, pz - uz * 0.24, ux, uz, 0.03, 0.24, y + 0.45, y + 0.95, cc, true);
+      for (const [a, b] of [[-0.2, -0.2], [0.2, -0.2], [-0.2, 0.2], [0.2, 0.2]]) cbox(G, px + ux * a + vx * b, pz + uz * a + vz * b, ux, uz, 0.02, 0.02, y, y + 0.42, cc, true);
+      personBox(G, px + ux * 0.02, pz + uz * 0.02, y, ux, uz, CLOTH_COLS[Math.floor(sd * 37) % CLOTH_COLS.length], C255(60, 58, 64), skin, true);
+    }
+    any = true;
+  }
+  if (!any) return null;
+  const m = G.mesh(POLX); m.position.set(ch.ox, 0, ch.oz); m.castShadow = true; m.receiveShadow = true; m.renderOrder = 10; m.geometry.computeBoundingSphere();
+  return m;
+}
+
+// ---------------------------------------------------------------- kids playing street cricket in the parks
+let PLAY = null;
+function initPlay() {
+  const S = META.play; if (!S || !S.length || !PEDS) return;
+  const geo = PEDS.im.geometry, MAXK = S.length * 9;
+  const shirt = new THREE.InstancedBufferAttribute(new Float32Array(MAXK * 3), 3), pants = new THREE.InstancedBufferAttribute(new Float32Array(MAXK * 3), 3), ph = new THREE.InstancedBufferAttribute(new Float32Array(MAXK), 1);
+  const g2 = new THREE.BufferGeometry();
+  for (const k of ['position', 'normal', 'color', 'aR']) if (geo.attributes[k]) g2.setAttribute(k, geo.attributes[k]);
+  g2.setIndex(geo.index); g2.setAttribute('iShirt', shirt); g2.setAttribute('iPants', pants); g2.setAttribute('iPhase', ph);
+  const im = new THREE.InstancedMesh(g2, PEDMAT, MAXK); im.count = 0; im.frustumCulled = false; im.castShadow = false; im.renderOrder = 10; im.visible = false;
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage); group.ground.add(im);
+  // pitch, stumps and bats: one static mesh
+  const G = new Geo(false), dirt = C255(176, 150, 112), wood = C255(214, 190, 140);
+  const kids = [];
+  S.forEach(([x, z, ux, uz, sd], pi) => {
+    const vx = -uz, vz = ux, P = (a, b) => [x + ux * a + vx * b, z + uz * a + vz * b];
+    cbox(G, x, z, ux, uz, 10.5, 1.4, 0.02, 0.05, dirt, true);
+    for (const e of [-9.5, 9.5]) for (const b of [-0.1, 0, 0.1]) { const [sx, sz] = P(e, b); cbox(G, sx, sz, ux, uz, 0.02, 0.02, 0.05, 0.75, wood, true); }
+    // roles: bowler (runs in, back), batsman (shuffles), keeper, fielders jogging small loops, two kids running round
+    const roles = [['bowl', 6], ['bat', -8.6], ['keep', -11.2], ['field', 0], ['field', 0], ['field', 0], ['field', 0], ['run', 0], ['run', 0]];
+    roles.forEach(([r, a0], k) => {
+      const ang = (k * 2.399 + sd * 6.28), rad = 7 + (k % 3) * 3.5;
+      kids.push({ pi, r, x, z, ux, uz, a0, cx: r === 'field' ? Math.cos(ang) * rad * 1.2 : 0, cz: r === 'field' ? Math.sin(ang) * rad * 0.8 : 0,
+        rad: r === 'run' ? 9 + k : 1.2 + (k % 2), ph: sd * 40 + k * 3.1, sp: 0.6 + ((k * 0.37 + sd) % 0.5),
+        shirt: SHIRTS[(k * 5 + pi) % SHIRTS.length], pants: PANTS[(k + pi * 3) % PANTS.length] });
+    });
+  });
+  const m = G.mesh(POLX); m.castShadow = false; m.receiveShadow = true; group.ground.add(m);
+  PLAY = { im, kids, shirt, pants, phA: ph, deco: m, set: false };
+}
+function stepPlay() {
+  const P = PLAY; if (!P) return false;
+  const show = view.mpp < 0.9 && VBOX; P.im.visible = show; P.deco.visible = view.mpp < 2.6; if (!show) return false;
+  const t = U.uTime.value, arr = P.im.instanceMatrix.array, V = VBOX; let c = 0;
+  for (const k of P.kids) {
+    if (!inBox(V, k.x, k.z, 40)) continue;
+    let a, b, hx, hz;
+    if (k.r === 'bowl') { const u = (t * 0.16 + k.ph) % 1, f = u < 0.5 ? u * 2 : 2 - u * 2; a = k.a0 + 8 * f; b = 0.6; hx = u < 0.5 ? 1 : -1; hz = 0; }   // walks back, runs in
+    else if (k.r === 'bat') { a = k.a0 + Math.sin(t * 1.3 + k.ph) * 0.25; b = 0.5; hx = 1; hz = 0; }
+    else if (k.r === 'keep') { a = k.a0 + Math.sin(t * 0.9 + k.ph) * 0.2; b = Math.sin(t * 0.7 + k.ph) * 0.4; hx = 1; hz = 0; }
+    else { const w = t * k.sp / k.rad + k.ph; a = k.cx + Math.cos(w) * k.rad; b = k.cz + Math.sin(w) * k.rad * 0.7; hx = -Math.sin(w); hz = Math.cos(w) * 0.7; }
+    const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
+    const vx = -k.uz, vz = k.ux, x = k.x + k.ux * a + vx * b, z = k.z + k.uz * a + vz * b;
+    const wx = k.ux * hx + vx * hz, wz = k.uz * hx + vz * hz;   // heading from the pitch frame to the world
+    putYaw(arr, c, x, 0.05, z, wx, wz, 0.72);
+    if (!P.set) { P.shirt.setXYZ(c, k.shirt.r, k.shirt.g, k.shirt.b); P.pants.setXYZ(c, k.pants.r, k.pants.g, k.pants.b); P.phA.setX(c, k.ph); }
+    c++;
+  }
+  // instance slots follow the visible kids: refresh their colours whenever the visible set changes
+  const sig = c * 7919 + Math.round(V.x0 / 50) * 31 + Math.round(V.z0 / 50);
+  if (sig !== P.sig) { P.sig = sig; let q = 0; for (const k of P.kids) { if (!inBox(V, k.x, k.z, 40)) continue; P.shirt.setXYZ(q, k.shirt.r, k.shirt.g, k.shirt.b); P.pants.setXYZ(q, k.pants.r, k.pants.g, k.pants.b); P.phA.setX(q, k.ph); q++; } P.shirt.needsUpdate = P.pants.needsUpdate = P.phA.needsUpdate = true; }
+  P.im.count = c; flushInst(P.im.instanceMatrix, c);
+  return c > 0;
+}
+
 // ---------------------------------------------------------------- main loop
 let lastT = performance.now(), lastRender = 0, ready = false, simAcc = 0, liveLvl = 0;
 function frame(now) {
@@ -4494,7 +4768,7 @@ async function boot() {
   buildRoads();
   buildAirport(); buildPolExtras(); buildDarwajas(); buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
-  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites();
+  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites(); initPlay();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
@@ -4512,7 +4786,7 @@ async function boot() {
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
   later('cells').then(() => later('trees')).then(() => later('props')).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
-window.AMD = { STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);

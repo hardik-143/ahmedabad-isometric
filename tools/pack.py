@@ -361,7 +361,9 @@ transit = dict(
                        ent=[[round(x, 1), round(-y, 1)] for x, y in s.get('ent', [])]) for s in MT['stations']],
         piers=[[round(x, 1), round(-y, 1), round(ux, 4), round(-uy, 4), round(top, 2), round(base, 2), k] for x, y, ux, uy, top, base, k in MT['piers']],
         portals=[[round(x, 1), round(-y, 1), round(ux, 4), round(-uy, 4)] for x, y, ux, uy in MT['portals']],
-        routes=[], trips=[]),
+        routes=[], trips=[],
+        depot=dict(face=[*_m3(*MT['depot']['face'])], u=[round(MT['depot']['u'][0], 4), round(-MT['depot']['u'][1], 4)],
+                   throat=[*_m3(*MT['depot']['throat'])], W=MT['depot']['W'], L=MT['depot']['L'], shed=[*_m3(*MT['depot']['shed'])]) if MT.get('depot') else None),
 )
 for R in MT['routes']:
     c, rl, ug, ib = rs(R['c'], 8.0, R['rl'], R['ug'].astype(float), R['inbox'].astype(float))
@@ -482,7 +484,7 @@ LANDMARKS = [
     ('Bhadra Fort', 23.0244, 72.5811, 'monument'), ('Sidi Saiyyed Mosque', 23.0268, 72.5810, 'monument'),
     ('Jama Masjid', 23.0236, 72.5878, 'monument'), ('Teen Darwaza', 23.0238, 72.5838, 'monument'),
     ('Hutheesing Jain Temple', 23.0369, 72.5918, 'monument'), ('Vastrapur Lake', 23.0389, 72.5293, 'lake'),
-    ('Chandola Lake', 22.9871, 72.5870, 'lake'), ('Atal Bridge', 23.01647, 72.57545, 'monument'), ('Ellis Bridge', 23.02222, 72.57528, 'monument'),
+    ('Chandola Lake', 22.9871, 72.5870, 'lake'), ('Gyaspur Metro Depot', LAT0 + (-4136.6 - 1464.0) / KY, LON0 + (-3878.7 - 1042.0) / KX, 'campus'), ('Atal Bridge', 23.01647, 72.57545, 'monument'), ('Ellis Bridge', 23.02222, 72.57528, 'monument'),
 ]
 LANDMARKS += [(n, la, lo, 'gate') for n, la, lo, *_ in DARWAJAS if n != 'Teen Darwaza']
 lms = []
@@ -542,6 +544,27 @@ import hashlib
 _h = hashlib.sha1()
 for k in sorted(files):
     _h.update(open(f'{SITE}/data/{k}.{FMT}', 'rb').read())
+# playgrounds: parks with room for a game of street cricket (a 26 x 12 m patch inside the park), spread out
+_pl, _taken = [], []
+for _g in sorted([g for g in G['parks'] if 1500 < g.area < 90000], key=lambda g: -g.area):
+    if len(_pl) >= 140:
+        break
+    _c = _g.representative_point()
+    if any((_c.x - a) ** 2 + (_c.y - b_) ** 2 < 650 ** 2 for a, b_ in _taken):
+        continue
+    _rr = np.asarray(shapely.minimum_rotated_rectangle(_g).exterior.coords)[:4]
+    _e0, _e1 = _rr[1] - _rr[0], _rr[2] - _rr[1]
+    if np.hypot(*_e1) > np.hypot(*_e0):
+        _e0 = _e1
+    _u = _e0 / np.hypot(*_e0); _v = np.array([-_u[1], _u[0]])
+    _cc = np.array([_c.x, _c.y])
+    _patch = shapely.Polygon([_cc + _u * a + _v * b_ for a, b_ in ((-13, -6), (13, -6), (13, 6), (-13, 6))])
+    if not _g.contains(_patch):
+        continue
+    _taken.append((_c.x, _c.y))
+    _pl.append([*m2three(_c.x, _c.y), round(float(_u[0]), 4), round(float(-_u[1]), 4), round(len(_pl) * 0.618 % 1, 3)])
+meta['play'] = _pl
+print('playgrounds', len(_pl))
 meta['sites'] = [[*m2three(x, y), round(ux, 4), round(-uy, 4), round(W, 1), round(D, 1), fl, round(sd, 3)] for x, y, ux, uy, W, D, fl, sd in B.get('sites', [])]
 print('construction sites', len(meta['sites']))
 meta['build'] = _h.hexdigest()[:12]   # bins are fetched as ?v=<build> so a cached copy can never mix with a new meta.json

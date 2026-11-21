@@ -303,6 +303,15 @@ CORR = {
     'yellow': clip_box(cut(RP[3], k3, chain(RP[3])[-1])),
     'violet': clip_box(extend(cut(RP[4], k4, chain(RP[4])[-1]), 0, TERM_EXT)),
 }
+# Gyaspur depot: past APMC the Red Line runs on south beside the 132 Ft Ring Road, crosses the Narol-Sarkhej
+# highway, comes down to grade and curves west along the canal into the depot yard. Traced from satellite imagery,
+# offsets in metres from the APMC station; the depot shed is the 172 x 188 m traced building at the west end.
+_APMC = np.array([-3878.7, -4136.6])
+_DEP = [(105, -592), (105, -1008), (58, -1119), (-11, -1216), (-109, -1285), (-219, -1341), (-358, -1383), (-498, -1410), (-635, -1431), (-774, -1445)]
+_red = np.vstack([np.array([_APMC + p for p in _DEP])[::-1], CORR['red']])
+CORR['red'] = clip_box(resample(smooth(_red, 60.0, 4), 4.0))
+_shc = _APMC + (-1042.0, -1464.0); _su = np.array([0.961, 0.276])
+DEPOT = dict(face=tuple(_shc + _su * 86.0), u=tuple(_su), throat=tuple(CORR['red'][0]), W=188.0, L=172.0, shed=tuple(_shc))
 COL = {'blue': '#1e63c8', 'red': '#d7262b', 'yellow': '#f2b705', 'violet': '#7d3cc2'}
 LINES_OF = {}   # stop -> set of line names
 for tid, tr in TRIPS.items():
@@ -374,6 +383,15 @@ ex = np.zeros(len(CORR['red']))
 sr = chain(CORR['red']); sx_ = s_of(CORR['red'], (xp.x, xp.y))
 ex[np.abs(sr - sx_) <= STA_HALF + 10] = 23.0   # red platforms sit above the blue station roof
 RL['red'] = base_profile(CORR['red'], STS['red'], ex)
+# depot line: level with the platforms over the tail tracks and across the highway, then 3 % down to grade
+_sr = chain(CORR['red']); _sap = dict(STS['red'])['GMRCL_APMC']
+_hw = shapely.union_all([shapely.LineString(r['xy']) for r in G['roads'] if r['cls'] >= 5 and 'Sarkhej' in (r['name'] or '')])
+_xs = shapely.LineString(CORR['red']).intersection(_hw)
+_sx = min([s_of(CORR['red'], (q.x, q.y)) for q in shapely.get_parts(_xs) if q.geom_type == 'Point' and s_of(CORR['red'], (q.x, q.y)) < _sap] or [_sap - 1100.0])
+_d = _sap - _sr; _m = _sr < _sap
+_dc = _sap - _sx + 40.0
+RL['red'][_m] = np.where(_d[_m] <= _dc, np.maximum(RL['red'][_m], STA_RL), np.maximum(1.05, STA_RL - (_d[_m] - _dc) * 0.03))
+print(f'depot line: {_sap:.0f} m from the yard throat to APMC, highway crossed {_sap - _sx:.0f} m south of APMC, at grade for the last {max(0.0, _sap - _dc - (STA_RL - 1.05) / 0.03):.0f} m')
 RL['yellow'] = base_profile(CORR['yellow'], STS['yellow'])
 RL['violet'] = base_profile(CORR['violet'], STS['violet'])
 RL['blue'] = base_profile(CORR['blue'], STS['blue'])
@@ -493,7 +511,12 @@ FAM = {1: ['blue'], 2: ['red', 'yellow', 'violet'], 3: ['red', 'yellow', 'violet
 routes = []
 for rk in (1, 2, 3, 4):
     c = RP[rk]
-    c = extend(c, TERM_EXT, TERM_EXT if rk in (1, 4) else 0.0)   # over the tail tracks at the terminals
+    if rk in (2, 3, 4):   # APMC tail tracks: follow the corridor exactly (it curves away towards the depot beyond them)
+        _s0 = s_of(CORR['red'], c[0]); _cc = cut(CORR['red'], max(0.0, _s0 - TERM_EXT), _s0)
+        c = resample(np.vstack([_cc[:-1], c]), 4.0)
+        c = extend(c, 0.0, TERM_EXT if rk == 4 else 0.0)
+    else:
+        c = extend(c, TERM_EXT, TERM_EXT)   # over the tail tracks at the terminals
     s = chain(c)
     P = shapely.points(c)
     best_d = np.full(len(c), 1e9); rl = np.zeros(len(c)); ug = np.zeros(len(c), bool)
@@ -568,7 +591,7 @@ STA_G = shapely.union_all(foot)
 pickle.dump(dict(
     river=dict(H=H, CHW=CHW, PROMP=PROMP, LID=LID, UPPER=UPPER, walls=walls, edges=edges, stairs=stairs, ghats=ghats,
                lamps=lamps, barrages=barrages, water_y=WATER_Y, prom_y=PROM_Y),
-    metro=dict(corr=CORR, rl=RL, ug=UGM, col=COL, stations=stations, piers=piers, portals=portals, routes=routes, trips=trips),
+    metro=dict(corr=CORR, rl=RL, ug=UGM, col=COL, stations=stations, piers=piers, portals=portals, routes=routes, trips=trips, depot=DEPOT),
     excl=dict(stations=STA_G, band=BAND, piers=PIERS_G, hole=H),
 ), open(f'{OUT}/transit.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))

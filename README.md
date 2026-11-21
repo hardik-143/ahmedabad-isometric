@@ -69,6 +69,10 @@ At a terminal a train unloads, runs on to the siding crossing to the other track
 other platform, loads and departs. Each service's round trip is padded (dwells off the shared trunk) to a whole number
 of headways, so trains never meet. Accelerate / cruise / brake runs, 25 s dwells; each car rides its two bogies, so
 it swings through the crossover diagonals.
+Past APMC the Red Line runs on to the Gyaspur depot as in the satellite view. It follows the 132 Ft Ring Road south
+at platform level, crosses the Narol-Sarkhej highway, comes down at 3 % to grade, and curves west beside the canal into
+a ten-road yard fanning into the depot shed. Five trains are stabled there. The line was traced from imagery and is
+accurate to roughly 50 m.
 Zoomed out, line-coloured ribbons trace the routes (dashed underground).
 
 ### Sabarmati Riverfront
@@ -107,7 +111,15 @@ graph (service roads penalised). On dual carriageways the corridor moves onto th
 12 m merge; corridors are smoothed so turns are arcs. Single carriageways that carry it are widened to 24 m. Lane paint
 and barriers stop at junctions; bridges and flyovers carry buses in mixed traffic (no lane paint). Each station is an
 island in the median (44 x 4.6 m, glass walls, arched roof, ramp to a zebra crossing); same-name stops within 300 m
-share one. Every road the corridor runs beside (dual-carriageway halves, partner carriageways, service roads) records
+share one. Each station has a ramp and a zebra crossing at both ends, the railing open where the zebra crosses. Each
+side has two bus bays, front and rear, with sliding doors that line up with a bus's two doors and open about 1 s
+after it docks.
+
+The timetable is turned into a schedule in arrival order. A bus takes the front bay if the stop is clear, the rear bay
+if only the front is taken (and leaves after the bus ahead), or queues behind. A bus pulling out blocks the stop for
+14 s. Runs average at most ~9 m/s with gentle acceleration, and a bus is never faster than the one ahead on the same
+leg. On top of that, a bus closing on the one ahead in its lane eases off and runs late rather than through it.
+Duplicate trips (same run under several service calendars) are dropped. Every road the corridor runs beside (dual-carriageway halves, partner carriageways, service roads) records
 how much width the busway and its barrier take from it and on which side, and traffic keeps out of that strip; the
 OSM busway pieces themselves are closed to cars and walkers. Limitation: Janmarg is ~160 km of routes but only ~89 km of dedicated corridor, and the routing paints
 ~144 km, so some stretches shown as busway run in mixed traffic in reality.
@@ -139,6 +151,10 @@ costs nothing on the CPU. On the route map, trains show as pills on the line rib
 
 Road works: 18 wide roads, chosen with a fixed seed, have the kerb lane of one direction dug up behind a cone taper,
 barricades, a sign, an excavator and two workers; traffic merges out of that lane in good time and only into a gap.
+Rooftop life: on some flat roofs, beside a stair room or a water tank, there is a washing line with clothes and
+somebody hanging them out, and often a plastic chair with someone sitting out. Street cricket: in 126 parks with
+room for it, nine kids play on a worn pitch with stumps. The bowler walks back and runs in, the batsman and keeper
+shuffle, and fielders and two others run about.
 Construction sites: 26 mid-size plots beside big roads (picked in the data build) show a concrete frame part-way up
 with brick infill below, a tower crane, tin hoarding and material heaps instead of the finished building.
 
