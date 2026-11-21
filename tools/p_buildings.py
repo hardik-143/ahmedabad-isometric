@@ -247,6 +247,23 @@ rbuf = shapely.buffer(np.array([shapely.LineString(r['xy']) for r in rl], dtype=
 jk = list(G['junctions'].keys())
 jbuf = shapely.buffer(shapely.points(np.array(jk, dtype=float)), np.array([G['junctions'][k][0] + 0.4 for k in jk]), quad_segs=4)
 rbuf = np.concatenate([rbuf, jbuf])
+# the Janmarg busway (lanes, kerbs, railings) and its island stations with their ramps and zebras are road too
+_BR = G.get('brts')
+if _BR:
+    _pieces = []
+    for _c in _BR['lines']:
+        _c = np.asarray(_c, float)
+        for _k in range(0, len(_c) - 1, 20):
+            _seg = _c[_k:_k + 21]
+            if len(_seg) >= 2:
+                _pieces.append(shapely.LineString(_seg))
+    _bb = shapely.buffer(np.array(_pieces, dtype=object), 4.9, quad_segs=3)
+    _sq = []
+    for _st in _BR['stations']:
+        _ux, _uy = _st['ux'], _st['uy']; _vx, _vy = -_uy, _ux
+        _sq.append(shapely.Polygon([(_st['x'] + _ux * a + _vx * w, _st['y'] + _uy * a + _vy * w) for a, w in ((-36, -7.2), (36, -7.2), (36, 7.2), (-36, 7.2))]))
+    rbuf = np.concatenate([rbuf, _bb, np.array(_sq, dtype=object)])
+    print(f'busway: {len(_bb)} lane pieces and {len(_sq)} stations kept clear of buildings')
 bi, ri = shapely.STRtree(rbuf).query(polys, predicate='intersects')
 hits = defaultdict(list)
 for b_, r_ in zip(bi, ri):
