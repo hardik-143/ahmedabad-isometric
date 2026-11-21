@@ -261,7 +261,7 @@ for b_, rs in hits.items():
     P = polys[b_]
     cut = shapely.difference(P, shapely.union_all(rbuf[rs]))
     a0, a1 = P.area, shapely.area(cut)
-    if a1 > a0 * 0.97:
+    if a0 - a1 < 0.5:          # any real bite out of a carriageway or footpath is trimmed, however big the building
         continue
     keep[b_] = False
     if a1 < a0 * 0.45:

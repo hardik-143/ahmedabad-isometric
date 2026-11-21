@@ -8,6 +8,7 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 - Ahmedabad Metro: Blue, Red, Yellow and Violet line viaducts, 43 stations (4 underground), tunnel portals, trains running to the GTFS timetable
 - Sabarmati Riverfront as a sunken channel from Vasna Barrage to the Acher barrage-cum-bridge: retaining walls, lower and upper promenades, stairs, ghats, lamps
 - Janmarg BRTS: median busways with kerbs and railings (open at junctions), 183 island stations with ramps and zebra crossings, buses running to the GTFS timetable
+- Street life: signals at 288 big crossroads (two-phase cycles, zebras, stop lines), cars, SUVs, autos, scooters, bikes, tempos and trucks that keep lanes, queue and stop on red, and pedestrians on the footpaths
 - Hand-built landmarks: Patang revolving restaurant, ISKCON temple, Taj Skyline, Pinnacle Business Park, and Ellis Bridge's 1892 steel spans between the Swami Vivekananda Bridge wings
 - Airport perimeter wall with anti-climb coil and watch towers; building outlines squared up from the traced data
 - Day / golden hour / night (lit windows, street lamps), Q/E rotation, search, radar and city map
@@ -108,3 +109,12 @@ share one. Limitation: Janmarg is ~160 km of routes but only ~89 km of dedicated
 ### Road paint
 Wherever a road's edge line or lane paint would land on another carriageway (junctions, overlapping dual
 carriageways, slip roads) the paint fades out; continuations of the same road through a node are not masked.
+
+### Street life
+Signals go only where secondary-and-bigger roads meet from three or more directions (288 junctions; dual-carriageway
+node clusters within 40 m count as one). Each inbound arm gets a zebra, a stop line and a pole on its left kerb, with a
+cantilever head over roads wider than 10 m; arms run in two phases on a 72 s cycle. Traffic is ambient: vehicles spawn
+around the camera on the real road graph, keep left in lanes (outside the BRTS lanes, with the flow on one-way
+carriageways), follow the car ahead, yield at merges and stop on red. The mix leans on autos, scooters and bikes on
+smaller streets. Pedestrians walk the footpaths of longer streets and are hidden where a footpath runs across another
+carriageway. Moving things cast no shadows (the shadow map only refreshes when the camera moves).

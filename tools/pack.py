@@ -178,14 +178,15 @@ for lst in _ends.values():
             if np.dot(da, db) < -0.9:      # outgoing directions opposite: one road carries on into the other
                 _cont.add((ka, kb)); _cont.add((kb, ka))
 _off = np.zeros(len(roads) + 1, np.int64); _off[1:] = np.cumsum([len(r['xy']) for r in roads])
-_PL, _PR, _own = [], [], []
+_PL, _PR, _own, _SL, _SR = [], [], [], [], []
 for k, r in enumerate(roads):
     c = np.asarray(r['xy'], float); n_ = len(c)
     t = np.zeros_like(c); t[1:-1] = c[2:] - c[:-2]; t[0] = c[1] - c[0]; t[-1] = c[-1] - c[-2]
     t /= np.maximum(np.hypot(t[:, 0], t[:, 1]), 1e-9)[:, None]
-    nl = np.column_stack([-t[:, 1], t[:, 0]]); h = max(r['hw'] - 0.35, 0.2)
-    _PL.append(c + nl * h); _PR.append(c - nl * h); _own.append(np.full(n_, k))
+    nl = np.column_stack([-t[:, 1], t[:, 0]]); h = max(r['hw'] - 0.35, 0.2); hs_ = r['hw'] + max(r['sw'], 0.3) * 0.5
+    _PL.append(c + nl * h); _PR.append(c - nl * h); _own.append(np.full(n_, k)); _SL.append(c + nl * hs_); _SR.append(c - nl * hs_)
 _PL, _PR, _own = np.concatenate(_PL), np.concatenate(_PR), np.concatenate(_own)
+_SL, _SR = np.concatenate(_SL), np.concatenate(_SR)
 _atk = np.array(_at)
 MASK = np.zeros((len(_own), 2), np.uint8)
 for side, PP in ((0, _PL), (1, _PR)):
@@ -193,10 +194,90 @@ for side, PP in ((0, _PL), (1, _PR)):
     other = _atk[gi]; mine = _own[pi]
     keep = (other != mine) & ~np.array([(m_, o_) in _cont for m_, o_ in zip(mine, other)], bool) & ~np.array([roads[m_]['bridge'] for m_ in mine], bool)
     MASK[pi[keep], side] = 1
-print(f'road paint mask: {int(MASK.any(axis=1).sum())} of {len(MASK)} ribbon points sit on another carriageway')
+for side, PP in ((0, _SL), (1, _SR)):     # bit 2: this side's footpath lies on another carriageway (no walking there)
+    pi, gi = _tree.query(shapely.points(PP), predicate='within')
+    other = _atk[gi]; mine = _own[pi]
+    keep = (other != mine) & ~np.array([(m_, o_) in _cont for m_, o_ in zip(mine, other)], bool)
+    MASK[pi[keep], side] |= 2
+print(f'road paint mask: {int(((MASK & 1) > 0).any(axis=1).sum())} of {len(MASK)} ribbon points sit on another carriageway; footpath blocked at {int(((MASK & 2) > 0).any(axis=1).sum())}')
 b.arr(MASK.ravel())
+# per-road flags for the traffic simulation: bit0 one-way (drawn direction), bit1 BRTS lanes down the middle
+b.arr(np.array([(1 if r.get('ow') else 0) | (2 if r.get('brts') else 0) for r in roads], np.uint8))
 b.pad(4)
 files['roads'] = b.b
+
+_m3 = lambda x, y: (round(float(x), 1), round(float(-y), 1))
+# ---- traffic signals: only at big at-grade crossroads (three or more arms of tertiary-and-up roads, at least two
+# of them secondary-and-up, with a real crossing angle); dual-carriageway node clusters within 40 m are one junction
+MAJ = {3, 5, 6, 8, 9}
+_ends = defaultdict(list)
+for k, r in enumerate(roads):
+    c = np.asarray(r['xy'], float)
+    if len(c) < 2:
+        continue
+    for e in (0, 1):
+        if r['bridge'] and float(np.asarray(r['z'])[0 if e == 0 else -1]) > 0.3:
+            continue
+        p0 = c[0] if e == 0 else c[-1]
+        sv = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))]); L = sv[-1]
+        t = min(8.0, L)
+        q = np.array([np.interp(t if e == 0 else L - t, sv, c[:, 0]), np.interp(t if e == 0 else L - t, sv, c[:, 1])])
+        d = q - p0; d = d / (np.hypot(*d) or 1)
+        _ends[(round(p0[0]), round(p0[1]))].append((k, e, d, r))
+cand = []
+for key, arms in _ends.items():
+    big = [a for a in arms if a[3]['cls'] in MAJ]
+    if len(big) < 3 or sum(1 for a in big if a[3]['cls'] >= 5) < 2:
+        continue
+    if not any(abs(float(np.dot(a[2], b[2]))) < 0.72 for i_, a in enumerate(big) for b in big[i_ + 1:]):
+        continue
+    cand.append((np.array(key, float), arms))
+# cluster
+_used = [False] * len(cand); SIG = []
+_ct = shapely.STRtree(shapely.points([c[0] for c in cand])) if cand else None
+for i_, (pc, arms) in enumerate(cand):
+    if _used[i_]:
+        continue
+    grp = [j for j in _ct.query(shapely.Point(*pc), predicate='dwithin', distance=40) if not _used[j]]
+    for j in grp:
+        _used[j] = True
+    pts = np.array([cand[j][0] for j in grp]); C = pts.mean(0)
+    keys = {(round(q[0]), round(q[1])) for q in pts}
+    allarms = []
+    for j in grp:
+        for (k, e, d, r) in cand[j][1]:
+            c = np.asarray(r['xy']); other = c[-1] if e == 0 else c[0]
+            if (round(other[0]), round(other[1])) in keys:      # internal link between the carriageways
+                continue
+            allarms.append((k, e, d, r, cand[j][0]))
+    if len(allarms) < 3:
+        continue
+    _gs = []                                   # big crossroads only: secondary-and-up roads from 3+ directions
+    for a in allarms:
+        if a[3]['cls'] >= 5 and not any(float(np.dot(g, a[2])) > 0.85 for g in _gs):
+            _gs.append(a[2])
+    if len(_gs) < 3:
+        continue
+    reach = float(np.max(np.hypot(*(pts - C).T))) if len(pts) > 1 else 0.0
+    box = reach + max(a[3]['hw'] + a[3]['sw'] for a in allarms) + 1.5
+    d0 = allarms[0][2]; arms_out = []
+    for (k, e, d, r, node) in allarms:
+        inbound = (not r.get('ow')) or e == 1           # one-way roads only bring traffic in at their end
+        rz = max(box - float(np.dot(node - C, d)), 2.0)  # along the road from its node to the zebra
+        ph = 0 if abs(float(np.dot(d, d0))) > 0.6 else 1
+        arms_out.append(dict(k=k, e=e, d=d, node=node, rz=rz, ph=ph, inb=inbound, hw=r['hw'], sw=r['sw'], ow=bool(r.get('ow'))))
+    SIG.append((C, arms_out))
+_rng = np.random.default_rng(11)
+signals = []
+for C, arms in SIG:
+    A = []
+    for a in arms:
+        sp = a['node'] + a['d'] * a['rz']           # zebra start on the arm
+        A.append([a['k'], a['e'], round(a['rz'], 1), a['ph'], int(a['inb']), int(a['ow']), round(a['hw'], 1), round(a['sw'], 1),
+                  *_m3(*sp), round(float(a['d'][0]), 4), round(-float(a['d'][1]), 4)])
+    signals.append([*_m3(*C), int(_rng.integers(0, 72)), A])
+print(f'traffic signals: {len(signals)} junctions, {sum(len(s[3]) for s in signals)} arms')
+
 
 
 # ---------------- water / parks / rail ----------------
@@ -460,6 +541,7 @@ meta = dict(
                  wall=[[c for q in l for c in m2three(*q)] for l in T.get('apwall', [])],
                  gates=[[*m2three(x, y), round(ux, 4), round(-uy, 4)] for x, y, ux, uy in T.get('apgates', [])]),
     patang=dict(x=m2three(*PATANG)[0], z=m2three(*PATANG)[1]),
+    signals=signals,
     ellis=ELLIS3,
     lm3d=LM3D,
     darwajas=[dict(n=d['name'], x=m2three(d['x'], d['y'])[0], z=m2three(d['x'], d['y'])[1], ux=round(d['ux'], 4), uz=round(-d['uy'], 4),

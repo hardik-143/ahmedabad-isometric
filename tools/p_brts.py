@@ -233,6 +233,7 @@ def build_brts(R2, log=print):
         if r['bridge'] or i in twin_of or r['cls'] < 3:
             continue
         if c > 0.4 * lines[i].length or c > 60:
+            r['brts'] = True
             if r['hw'] < ROAD_HW:
                 r['hw'] = ROAD_HW; nw += 1
     log(f'brts: widened {nw} road pieces to {ROAD_HW * 2:.0f} m carriageways')

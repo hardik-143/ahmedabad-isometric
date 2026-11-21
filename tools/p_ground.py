@@ -105,7 +105,7 @@ for r, ln in zip(roads, lines):
         mx, my = c[len(c) // 2]
         if r['cls'] <= 2 and ((mx - OC_X) / OC_RX) ** 2 + ((my - OC_Y) / OC_RY) ** 2 < 1.0:
             hw *= 0.62   # narrow pol lanes inside the walled city
-        R2.append(dict(cls=r['cls'], name=r['name'], bridge=r['bridge'], hw=hw, sw=SW[r['cls']], xy=c))
+        R2.append(dict(cls=r['cls'], name=r['name'], bridge=r['bridge'], hw=hw, sw=SW[r['cls']], xy=c, ow=bool(r['oneway'])))
 R2.sort(key=lambda r: (r['cls'], r['bridge']))
 
 # ---- Ellis Bridge: the 1892 steel bowstring bridge (433.41 m, 14 spans, 6.25 m wide) stands between the two 1997-99
