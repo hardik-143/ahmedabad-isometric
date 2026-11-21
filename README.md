@@ -5,11 +5,11 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 - ~150k real building footprints with surveyed heights, 73k road segments, the Sabarmati and lakes, parks, rail
 - Flyovers and river bridges lifted onto decks where roads actually cross roads, rail or water
 - Narendra Modi & Sardar Patel stadium bowls, Atal Bridge with its kite canopy
-- Ahmedabad Metro: Blue, Red, Yellow and Violet line viaducts, 43 stations (4 underground), tunnel portals, trains running to the GTFS timetable
+- Ahmedabad Metro: Blue, Red, Yellow and Violet line viaducts, 43 stations (4 underground), tunnel portals, a train every few stations that turns back over a scissors crossover beyond each terminal
 - Sabarmati Riverfront as a sunken channel from Vasna Barrage to the Acher barrage-cum-bridge: retaining walls, lower and upper promenades, stairs, ghats, lamps
 - Janmarg BRTS: median busways with kerbs and railings (open at junctions), 183 island stations with ramps and zebra crossings, buses running to the GTFS timetable
-- Street life: signals at 288 big crossroads (two-phase cycles, zebras, stop lines), cars, SUVs, autos, scooters, bikes, tempos and trucks that keep lanes, queue and stop on red, and pedestrians on the footpaths
-- Hand-built landmarks: Patang revolving restaurant, ISKCON temple, Taj Skyline, Pinnacle Business Park, and Ellis Bridge's 1892 steel spans between the Swami Vivekananda Bridge wings
+- Street life: signals at 288 big crossroads (two-phase cycles, zebras, stop lines), cars, SUVs, autos, scooters, bikes, tempos and trucks that keep their lanes, follow, turn on curves and take turns through junctions (never through the BRTS lanes), and pedestrians who keep left and step round each other
+- Hand-built landmarks: Patang revolving restaurant, ISKCON temple, Taj Skyline, and Ellis Bridge's 1892 steel spans between the Swami Vivekananda Bridge wings
 - Airport perimeter wall with anti-climb coil and watch towers; building outlines squared up from the traced data
 - Day / golden hour / night (lit windows, street lamps), Q/E rotation, search, radar and city map
 
@@ -36,7 +36,7 @@ bash tools/build.sh   # needs Python 3.11+, downloads ~250 MB of open data, ~3 m
 | Rivers & lakes | India-WRIS, Swachh Bharat Mission (via ramSeraph/indian_water_features) |
 | Railways | Indian Railways (via ramSeraph/indian_transport) |
 | Ward boundaries | DataMeet Municipal_Spatial_Data |
-| Metro alignments, stations, timetable | GTFS feed from [croyla/amd-gtfs](https://github.com/croyla/amd-gtfs) (ODbL), pinned copy in croyla/amd-metro-navigator |
+| Metro alignments, stations | GTFS feed from [croyla/amd-gtfs](https://github.com/croyla/amd-gtfs) (ODbL), pinned copy in croyla/amd-metro-navigator |
 | Riverfront channel | River outline above, cut at Vasna Barrage (Wikipedia coordinates) and the OSM barrage-cum-bridge at Acher; widths and levels from SRFDCL descriptions |
 
 Procedural (not surveyed): trees, rooftop water tanks and stair rooms, the house-by-house split of merged old-city / industrial blocks, stadium tiers, flyover deck heights.
@@ -61,8 +61,14 @@ stations, 12 m where a concourse sits below), lifted to clear road flyovers by 7
 The Blue Line runs underground for ~6.5 km from a portal just east of the river to one before Apparel Park; the four
 underground stations show only street entrances. At Old High Court the Red Line platforms sit above the Blue Line
 station (the stacking is a reconstruction). Twin single-track U-girders sit on single-column piers with hammerhead caps
-every ~28 m. Trains (3 cars) run on the left-hand track to the GTFS stop times: the timetable clock follows the
-time-of-day buttons (morning 08:30, noon 12:30, golden hour 18:15, night 21:00 IST) and today's weekday/weekend service.
+every ~28 m. The viaduct runs on ~210 m past each terminal platform (Vastral Gam, Thaltej Gam, APMC, GIFT City), where
+the two troughs open into one deck over a scissors crossover. Trains (3 cars, left-hand running) are a synthetic
+service, not the GTFS timetable: the Blue Line runs a train every 2 stations; on the N-S line the Mahatma Mandir and
+GIFT City services each run every 4 stations, half a headway apart, so the shared APMC-GNLU trunk sees one every 2.
+At a terminal a train unloads, runs on to the siding crossing to the other track, changes ends, comes back into the
+other platform, loads and departs. Each service's round trip is padded (dwells off the shared trunk) to a whole number
+of headways, so trains never meet. Accelerate / cruise / brake runs, 25 s dwells; each car rides its two bogies, so
+it swings through the crossover diagonals.
 Zoomed out, line-coloured ribbons trace the routes (dashed underground).
 
 ### Sabarmati Riverfront
@@ -88,8 +94,6 @@ opening remove notches and spurs). Procedural cells inside dense blocks are whol
 - **ISKCON, Sri Sri Radha Govind Dham** (1997): stone platform, temple hall with mandapa domes and corner chhatris,
   and the three ~50 ft shikharas with their sub-spires at the rear. Sited on the 2,354 m2 traced temple footprint.
 - **Taj Skyline / Sankalp Square III** (ARK Reza Kabul): two towers on one podium with the white box-frame façade.
-- **Pinnacle Business Park** (Corporate Road, opposite Prahladnagar Garden): its own footprint, glazed. Façade
-  treatment is approximate.
 
 ### Airport wall
 The perimeter is the edge of the open airside land around runway 05/23: inside a runway-frame envelope, whatever no
@@ -103,7 +107,9 @@ graph (service roads penalised). On dual carriageways the corridor moves onto th
 12 m merge; corridors are smoothed so turns are arcs. Single carriageways that carry it are widened to 24 m. Lane paint
 and barriers stop at junctions; bridges and flyovers carry buses in mixed traffic (no lane paint). Each station is an
 island in the median (44 x 4.6 m, glass walls, arched roof, ramp to a zebra crossing); same-name stops within 300 m
-share one. Limitation: Janmarg is ~160 km of routes but only ~89 km of dedicated corridor, and the routing paints
+share one. Every road the corridor runs beside (dual-carriageway halves, partner carriageways, service roads) records
+how much width the busway and its barrier take from it and on which side, and traffic keeps out of that strip; the
+OSM busway pieces themselves are closed to cars and walkers. Limitation: Janmarg is ~160 km of routes but only ~89 km of dedicated corridor, and the routing paints
 ~144 km, so some stretches shown as busway run in mixed traffic in reality.
 
 ### Road paint
@@ -113,8 +119,34 @@ carriageways, slip roads) the paint fades out; continuations of the same road th
 ### Street life
 Signals go only where secondary-and-bigger roads meet from three or more directions (288 junctions; dual-carriageway
 node clusters within 40 m count as one). Each inbound arm gets a zebra, a stop line and a pole on its left kerb, with a
-cantilever head over roads wider than 10 m; arms run in two phases on a 72 s cycle. Traffic is ambient: vehicles spawn
-around the camera on the real road graph, keep left in lanes (outside the BRTS lanes, with the flow on one-way
-carriageways), follow the car ahead, yield at merges and stop on red. The mix leans on autos, scooters and bikes on
-smaller streets. Pedestrians walk the footpaths of longer streets and are hidden where a footpath runs across another
-carriageway. Moving things cast no shadows (the shadow map only refreshes when the camera moves).
+cantilever head over roads wider than 10 m; arms run in two phases on a 72 s cycle.
+
+Traffic is ambient and deliberately light (roughly 70-240 vehicles and 60-200 pedestrians around the view). Vehicles
+appear and disappear only just outside the screen (or grow in, if a jump leaves the view empty). Lane offsets follow
+per-vertex miter normals, so they bend smoothly instead of stepping at road joints. Speed follows the Intelligent
+Driver Model behind whatever is ahead (separate parameters for cars, two-wheelers and heavy vehicles), and vehicles
+slow for the bend ahead. Every move through a node is a cubic curve from lane to lane: left turns end in the kerb
+lane, right turns in the inner lane, U-turns at dead ends. At junctions of three or more roads a vehicle reserves the
+junction box before entering. It gets the box only if no vehicle inside, or waiting more than 4 s, has a path within a
+car's width of its own; signals still apply on top. Each vehicle owns a fixed instance slot, so only matrices are
+uploaded per frame.
+
+Roads drawn on top of another carriageway for most of their length, and slip links through the busway, are closed
+to traffic. At load, every road is also measured against the busway as drawn and gives up whatever width the bus
+lanes, kerbs and railings take (or closes if none is left). Zoomed out past where single vehicles read, traffic
+becomes moving dashes drawn by the road shader: lane-following, left-hand running, head and tail lights at night. It
+costs nothing on the CPU. On the route map, trains show as pills on the line ribbons.
+
+Road works: 18 wide roads, chosen with a fixed seed, have the kerb lane of one direction dug up behind a cone taper,
+barricades, a sign, an excavator and two workers; traffic merges out of that lane in good time and only into a gap.
+Construction sites: 26 mid-size plots beside big roads (picked in the data build) show a concrete frame part-way up
+with brick infill below, a tower crane, tin hoarding and material heaps instead of the finished building.
+
+People cross junction mouths only when no vehicle is on, or due to reach, the crossing (or after a long wait), and
+drivers stop for anyone on the carriageway ahead. Pedestrians keep left, sidestep oncoming walkers, overtake slower ones on the right or slow behind them, and are
+pushed apart when closer than 0.6 m. They cross junction mouths and turn back where a footpath would run along
+another carriageway for a long way.
+
+While nothing is being dragged the scene redraws at about 30 fps with traffic on screen, 20 fps with only trains or
+buses and 12-15 fps otherwise; the simulation steps only on drawn frames. Moving things cast no shadows (the shadow map
+only refreshes when the camera moves).

@@ -436,16 +436,6 @@ for _k, _d in LANDMARK_3D.items():
             _g = np.hypot(_px - _gx, _py - _gy) < 12
             _drop |= _g
             print(f'{_k}: removed {int(_g.sum())} parallax ghost footprint(s)')
-    elif _k == 'pinnacle':
-        _dd = shapely.distance(polys, shapely.Point(*_d['c']))
-        _cand = np.where((_dd < 8) & (shapely.area(polys) > 1500) & (isfab != 2))[0]
-        if len(_cand):
-            _i = _cand[np.argmax(shapely.area(polys[_cand]))]
-            _fp = polys[_i]
-            _m = shapely.contains_xy(_fp.buffer(2), _px, _py)
-            _drop |= _m
-            lm_fp[_k] = [tuple(map(float, q)) for q in np.asarray(_fp.exterior.coords)[:-1]]
-            print(f'{_k}: footprint {_fp.area:.0f} m2, h {hs[_i]:.1f} m, cleared {int(_m.sum())}')
 polys, hs, isfab, special, src = polys[~_drop], hs[~_drop], isfab[~_drop], special[~_drop], src[~_drop]
 
 # ---- nothing standing in water (lake-bed / riverbed footprints from older imagery)
@@ -682,6 +672,35 @@ for i in range(len(polys)):
 
 recs = None
 
+# ---- construction sites: a few mid-size plots beside big roads where a building is going up (concrete frame, tower
+# crane, hoarding). The building is kept in the data but not drawn; the site is drawn on its rotated rectangle.
+site = np.zeros(len(polys), bool)
+_maj = [shapely.LineString(r['xy']) for r in G['roads'] if r['cls'] >= 5 and r.get('z') is None]
+_mt = shapely.STRtree(_maj)
+_cc = shapely.centroid(polys); _cx, _cy = shapely.get_x(_cc), shapely.get_y(_cc)
+_ok = np.where((isfab == 0) & (special == 0) & ~industrial & (polT == 0) & ~np.asarray(terminal, bool) & ~inwc & (area > 450) & (area < 2400) & (hsnap >= 9))[0]
+_rng = np.random.default_rng(20261121)
+_rng.shuffle(_ok)
+sites, _taken = [], []
+for i in _ok:
+    if len(sites) >= 26:
+        break
+    if any((_cx[i] - x) ** 2 + (_cy[i] - y) ** 2 < 1100 ** 2 for x, y in _taken):
+        continue
+    if not len(_mt.query(polys[i], predicate='dwithin', distance=30)):
+        continue
+    rr = np.asarray(shapely.minimum_rotated_rectangle(polys[i]).exterior.coords)[:4]
+    e0, e1 = rr[1] - rr[0], rr[2] - rr[1]; W, D = np.hypot(*e0), np.hypot(*e1)
+    if polys[i].area / (W * D) < 0.85 or min(W, D) < 14 or max(W, D) / min(W, D) > 3:
+        continue
+    if W < D:
+        e0, e1, W, D = e1, e0, D, W
+    u = e0 / W; c = rr.mean(0)
+    site[i] = True; _taken.append((_cx[i], _cy[i]))
+    fl = int(np.clip(round(hsnap[i] / 3.2), 4, 14))
+    sites.append((float(c[0]), float(c[1]), float(u[0]), float(u[1]), float(W), float(D), fl, float(_rng.random())))
+print('construction sites', len(sites))
+
 # ---- rooftop props ----
 rp = shapely.point_on_surface(polys)
 rpx, rpy = shapely.get_x(rp), shapely.get_y(rp)
@@ -689,7 +708,7 @@ inner = shapely.buffer(polys, -1.1, quad_segs=1)
 props = []  # (x, y, base_h, type, rot, scale)
 rect_ang = np.zeros(len(polys))
 for i in range(len(polys)):
-    if isfab[i] == 1 or special[i] or industrial[i] or hsnap[i] < 3.5 or area[i] < 35 or polT[i] == 2 or terminal[i]:
+    if isfab[i] == 1 or special[i] or industrial[i] or hsnap[i] < 3.5 or area[i] < 35 or polT[i] == 2 or terminal[i] or site[i]:
         continue
     r = hv[i]
     if r > 0.88:
@@ -735,5 +754,5 @@ print('props', len(props), round(time.time() - t0, 1))
 
 pickle.dump(dict(polys=polys, hs=hsnap, style=style, recs=recs, props=props, palette=palette, fields=fields, pitches=pitches,
                  fabric=isfab, industrial=industrial, polT=polT, face=face, face2=face2, rr0=rr0, rr1=rr1, rise=rise,
-                 gates=gates, chab=chab, darw=darw, lm_fp=lm_fp), open(f'{OUT}/buildings.pkl', 'wb'))
+                 gates=gates, chab=chab, darw=darw, lm_fp=lm_fp, site=site, sites=sites), open(f'{OUT}/buildings.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))

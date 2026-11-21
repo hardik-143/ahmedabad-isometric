@@ -50,7 +50,10 @@ print('recoloured old-city sheds', int((_old & _ind).sum()))
 cen = shapely.centroid(polys)
 ccx, ccy = chunk_of(shapely.get_x(cen), shapely.get_y(cen))
 groups = defaultdict(lambda: {0: [], 1: []})
+_site = B.get('site', np.zeros(len(polys), bool))
 for i in range(len(polys)):
+    if _site[i]:
+        continue   # drawn as a construction site instead
     groups[(int(ccx[i]), int(ccy[i]))][1 if fab[i] == 2 else 0].append(i)
 
 
@@ -202,7 +205,8 @@ for side, PP in ((0, _SL), (1, _SR)):     # bit 2: this side's footpath lies on 
 print(f'road paint mask: {int(((MASK & 1) > 0).any(axis=1).sum())} of {len(MASK)} ribbon points sit on another carriageway; footpath blocked at {int(((MASK & 2) > 0).any(axis=1).sum())}')
 b.arr(MASK.ravel())
 # per-road flags for the traffic simulation: bit0 one-way (drawn direction), bit1 BRTS lanes down the middle
-b.arr(np.array([(1 if r.get('ow') else 0) | (2 if r.get('brts') else 0) for r in roads], np.uint8))
+b.arr(np.array([(1 if r.get('ow') else 0) | (2 if r.get('brts') else 0) | (4 if r.get('bleft') else 0) for r in roads], np.uint8))
+b.arr(np.array([min(255, round(max(0.0, r.get('bclr', 0.0)) * 10)) for r in roads], np.uint8))   # busway clearance, dm
 b.pad(4)
 files['roads'] = b.b
 
@@ -361,10 +365,11 @@ transit = dict(
 )
 for R in MT['routes']:
     c, rl, ug, ib = rs(R['c'], 8.0, R['rl'], R['ug'].astype(float), R['inbox'].astype(float))
+    L0, L1 = shapely.LineString(R['c']), shapely.LineString(c)
+    st = sorted((round(float(L1.project(L0.interpolate(sv))), 1), sid) for sid, sv in R['stops'].items())
     transit['metro']['routes'].append(dict(id=R['id'], line=R['line'], pts=fl3(c), rl=[round(float(v), 1) for v in rl],
-                                           ug=[int(v > 0.5) for v in ug], inb=[int(v > 0.5) for v in ib]))
-for rk, d, svc, ss, tt in MT['trips']:
-    transit['metro']['trips'].append([rk, d, svc, [round(v) for v in ss], [tt[0]] + [b_ - a_ for a_, b_ in zip(tt, tt[1:])]])
+                                           ug=[int(v > 0.5) for v in ug], inb=[int(v > 0.5) for v in ib],
+                                           st=[[sv, sid] for sv, sid in st]))
 # ---- Janmarg BRTS: corridor lines (+ barrier gaps), median stations, bus paths (reverse paths shared), timetable
 BR = G.get('brts')
 if BR:
@@ -465,32 +470,13 @@ for k_, d_ in LANDMARK_3D.items():
             continue
         else:
             o[kk] = vv
-    if k_ == 'pinnacle' and B.get('lm_fp', {}).get('pinnacle'):
-        _fp = shapely.Polygon(B['lm_fp']['pinnacle']); _rr = np.asarray(shapely.minimum_rotated_rectangle(_fp).exterior.coords)[:4]
-        _cr = shapely.union_all([shapely.LineString(r['xy']) for r in roads if r['cls'] >= 3 and not r['bridge']
-                                 and shapely.LineString(r['xy']).distance(_fp) < 120])
-        _best = None
-        for i_ in range(4):   # the front is a long side (two towers side by side), the one nearer a main road
-            a_, b_ = _rr[i_], _rr[(i_ + 1) % 4]; m_ = (a_ + b_) / 2
-            l_, o_ = np.hypot(*(b_ - a_)), np.hypot(*(_rr[(i_ + 2) % 4] - b_))
-            if l_ < o_ - 1:
-                continue
-            dd_ = _cr.distance(shapely.Point(*m_))
-            if _best is None or dd_ < _best[0]:
-                _best = (dd_, a_, b_, o_)
-        _, a_, b_, D_ = _best
-        e_ = (b_ - a_) / np.hypot(*(b_ - a_)); c_ = _rr.mean(0); m_ = (a_ + b_) / 2
-        if np.dot([-e_[1], e_[0]], m_ - c_) < 0:   # frame b-axis (left of u) must point at the road
-            e_ = -e_
-        o['x'], o['z'] = m2three(*c_); o['ux'], o['uz'] = round(float(e_[0]), 4), round(float(-e_[1]), 4)
-        o['W'], o['D'] = round(float(np.hypot(*(b_ - a_))), 1), round(float(D_), 1)
     LM3D.append(o)
 
 LANDMARKS = [
     ('Kankaria Lake', 23.0063, 72.6010, 'lake'), ('Sabarmati Riverfront', 23.0330, 72.5770, 'river'),
     ('Sabarmati Ashram', 23.0607, 72.5806, 'monument'), ('Narendra Modi Stadium', 23.0919, 72.5975, 'stadium'),
     ('Patang Hotel', 23.026389, 72.572167, 'tower'), ('ISKCON Temple', 23.02690, 72.50670, 'monument'),
-    ('Taj Skyline', 23.04401, 72.48199, 'tower'), ('Pinnacle Business Park', 23.01137, 72.50631, 'tower'),
+    ('Taj Skyline', 23.04401, 72.48199, 'tower'),
     ('Sardar Patel Stadium', 23.0418, 72.5645, 'stadium'), ('SVPI Airport', 23.0745, 72.6290, 'airport'),
     ('IIM Ahmedabad', 23.0329, 72.5468, 'campus'), ('Law Garden', 23.0262, 72.5598, 'park'),
     ('Bhadra Fort', 23.0244, 72.5811, 'monument'), ('Sidi Saiyyed Mosque', 23.0268, 72.5810, 'monument'),
@@ -556,6 +542,8 @@ import hashlib
 _h = hashlib.sha1()
 for k in sorted(files):
     _h.update(open(f'{SITE}/data/{k}.{FMT}', 'rb').read())
+meta['sites'] = [[*m2three(x, y), round(ux, 4), round(-uy, 4), round(W, 1), round(D, 1), fl, round(sd, 3)] for x, y, ux, uy, W, D, fl, sd in B.get('sites', [])]
+print('construction sites', len(meta['sites']))
 meta['build'] = _h.hexdigest()[:12]   # bins are fetched as ?v=<build> so a cached copy can never mix with a new meta.json
 json.dump(meta, open(f'{SITE}/data/meta.json', 'w'), separators=(',', ':'))
 print('meta KB', os.path.getsize(f'{SITE}/data/meta.json') // 1024, 'stations', [s['name'] for s in stations])

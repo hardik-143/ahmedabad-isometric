@@ -294,7 +294,7 @@ def clip_box(c):
     return resample(np.asarray(max(parts, key=lambda p: p.length).coords), 4.0)
 
 
-TERM_EXT = 75.0
+TERM_EXT = 285.0     # tail tracks beyond the terminal platforms: scissors crossover + turnback siding
 k3 = s_of(RP[3], STOP['GMRCL_KOTESHWAR_ROAD'][:2])
 k4 = s_of(RP[4], STOP['GMRCL_GNLU'][:2])
 CORR = {
@@ -343,6 +343,12 @@ def base_profile(c, sts, extra_min=None):
             continue
         m = np.abs(s - ss) <= STA_HALF
         rl[m] = np.maximum(rl[m], STA_RL)
+    live = [ss for sid, ss in sts if sid not in UG]
+    if live:   # terminal tail tracks stay level with the platforms
+        if live[0] < TERM_EXT + 40:
+            rl[s <= live[0]] = np.maximum(rl[s <= live[0]], STA_RL)
+        if s[-1] - live[-1] < TERM_EXT + 40:
+            rl[s >= live[-1]] = np.maximum(rl[s >= live[-1]], STA_RL)
     # clear road flyovers by 7.5 m (5.5 m clearance + girder), railways by 10.5 m rail level
     q = dtree.query(shapely.points(c), predicate='dwithin', distance=14.0)
     if len(q[0]):
@@ -487,10 +493,7 @@ FAM = {1: ['blue'], 2: ['red', 'yellow', 'violet'], 3: ['red', 'yellow', 'violet
 routes = []
 for rk in (1, 2, 3, 4):
     c = RP[rk]
-    if rk == 1:
-        c = extend(c, 40.0, 40.0)
-    elif rk in (2, 3, 4):
-        c = extend(c, 40.0, 40.0 if rk == 4 else 0.0)
+    c = extend(c, TERM_EXT, TERM_EXT if rk in (1, 4) else 0.0)   # over the tail tracks at the terminals
     s = chain(c)
     P = shapely.points(c)
     best_d = np.full(len(c), 1e9); rl = np.zeros(len(c)); ug = np.zeros(len(c), bool)

@@ -236,7 +236,52 @@ def build_brts(R2, log=print):
             r['brts'] = True
             if r['hw'] < ROAD_HW:
                 r['hw'] = ROAD_HW; nw += 1
-    log(f'brts: widened {nw} road pieces to {ROAD_HW * 2:.0f} m carriageways')
+    # every road the finished corridor runs along: down its middle -> a BRTS road (general lanes outside the bus
+    # lanes); beside it (dual-carriageway medians, partner carriageways, service roads) -> record how much width the
+    # busway and its barrier take from the carriageway, and on which side of the drawn direction, so traffic keeps out
+    ctr = shapely.STRtree(cl)
+    nb = nc = 0
+    for i, r in enumerate(R2):
+        if r['bridge'] or r.get('brts') or r['cls'] in (0, 7):
+            continue
+        g = shapely.LineString(r['xy'])
+        if g.length < 8:
+            continue
+        reach = r['hw'] + LANE_HW + 0.6
+        cand = ctr.query(g, predicate='dwithin', distance=reach)
+        if not len(cand):
+            continue
+        n = max(3, int(g.length // 8)); hits = []
+        for f in (np.arange(n) + 0.5) / n:
+            sp = f * g.length; p = g.interpolate(sp)
+            q0, q1 = g.interpolate(max(0, sp - 3)), g.interpolate(min(g.length, sp + 3))
+            t = _unit((q1.x - q0.x, q1.y - q0.y)); nl = (-t[1], t[0]); best = None
+            for j in cand:
+                o = cl[j]; so = o.project(p); pp = o.interpolate(so)
+                v = (pp.x - p.x, pp.y - p.y); lat = v[0] * nl[0] + v[1] * nl[1]
+                if abs(v[0] * t[0] + v[1] * t[1]) > 6 or abs(lat) > reach:
+                    continue
+                pa, pb = o.interpolate(max(0, so - 3)), o.interpolate(min(o.length, so + 3))
+                to = _unit((pb.x - pa.x, pb.y - pa.y))
+                if abs(to[0] * t[0] + to[1] * t[1]) < 0.85:
+                    continue
+                if best is None or abs(lat) < abs(best):
+                    best = lat
+            if best is not None:
+                hits.append(best)
+        if len(hits) < max(2, 0.35 * n):
+            continue
+        m = float(np.median(hits))
+        if abs(m) < 2.5:
+            r['brts'] = True; nc += 1
+            if r['hw'] < ROAD_HW:
+                r['hw'] = ROAD_HW; nw += 1
+        else:
+            intr = LANE_HW + 0.6 - (abs(m) - r['hw'])
+            if intr > 0.05:
+                r['bclr'] = float(min(intr, 2 * r['hw'] - 2.6)); r['bleft'] = m > 0; nb += 1
+    log(f'brts: widened {nw} road pieces to {ROAD_HW * 2:.0f} m carriageways ({nc} found by geometry); '
+        f'{nb} pieces beside the busway give up width to it')
 
     # ---- barrier gaps where streets cross or join the corridor
     ctree = shapely.STRtree(cl)

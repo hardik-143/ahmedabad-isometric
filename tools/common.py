@@ -92,12 +92,10 @@ PATANG = (-289.5, -955.5)
 #          2,354 m2 Google footprint + the two ~14 m tall traces west of it; front (u) faces SG Highway (east).
 #  taj:    Sankalp Square III / Taj Skyline (ARK Reza Kabul, 2020): two towers on one podium; 41 x 31 m and 76 x 20 m
 #          tall traces at the west end of Sindhu Bhavan Road. u runs along the slab (north).
-#  pinnacle: Pinnacle Business Park, Corporate Road opposite Prahladnagar (AUDA) Garden: its own footprint is kept.
 LANDMARK_3D = {
     'patang': dict(c=PATANG),
     'iskcon': dict(c=(-7000.0, -908.0), u=(0.998, -0.063), clear=(-66, 56, -36, 36)),
     'taj': dict(c=(-9518.0, 1002.0), u=(0.1426, 0.9898), clear=(-72, 62, -27, 52), ghost=[(-9605.0, 939.5)]),
-    'pinnacle': dict(c=(-7029.0, -2627.0)),
 }
 
 

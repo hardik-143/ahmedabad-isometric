@@ -25,6 +25,7 @@ $('ltip').innerHTML = 'TIP: ' + TIPS[Math.floor(Math.random() * TIPS.length)];
 // ---------------------------------------------------------------- helpers
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 function hash1(i) { let x = (i | 0) * 2654435761; x ^= x >>> 15; x = Math.imul(x, 2246822519); x ^= x >>> 13; return ((x >>> 0) % 10000) / 10000; }
 function srgbToLin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
@@ -116,7 +117,7 @@ composer.setSize(innerWidth, innerHeight);
 // shared uniforms
 const U = {
   uTime: { value: 0 }, uNight: { value: 0 }, uDay: { value: 1 },
-  uSunCol: { value: new THREE.Color(1, 1, 1) }, uHover: { value: -1 },
+  uSunCol: { value: new THREE.Color(1, 1, 1) }, uHover: { value: -1 }, uFlow: { value: 0 },
 };
 
 // ---------------------------------------------------------------- shaders
@@ -404,16 +405,16 @@ function roadMat(pass) {
   return hook(m, {
     flatGround: true,
     vHead: 'attribute vec4 aR; attribute float aM; varying vec4 vR; varying float vM;', vBody: 'vR = aR; vM = aM;',
-    fHead: `varying vec4 vR; varying float vM; uniform vec3 uAsph[10];`,
+    fHead: `varying vec4 vR; varying float vM; uniform vec3 uAsph[10]; uniform float uFlow;`,
     uniforms: { uAsph: { value: ASPH } },
     fColor: pass === 0 ? `
-      float a = abs(vR.x); float hw = vR.z; float cls = mod(vR.w, 16.0); float br = step(15.5, vR.w);
+      float a = abs(vR.x); float hw = vR.z; float cls = mod(vR.w, 16.0); float br = step(15.5, mod(vR.w, 32.0));
       vec3 c = vec3(0.80,0.77,0.71) * (0.92 + 0.12*vnoise(mod(vWPos.xz*1.3, 1024.0)));
       c = mix(c, vec3(0.92,0.90,0.86), (1.0 - smoothstep(0.18, 0.32, a-hw)) * step(hw, a));
       c = mix(c, vec3(0.70,0.69,0.67), br*0.6);
       c = mix(c, vec3(0.95,0.94,0.91), smoothstep(2.0, 9.0, length(fwidth(vWPos.xz))) * 0.8);
       diffuseColor.rgb = pow(c, vec3(2.2));` : `
-      float a = abs(vR.x); float s = vR.y; float hw = vR.z; float cls = mod(vR.w, 16.0); float br = step(15.5, vR.w);
+      float a = abs(vR.x); float s = vR.y; float hw = vR.z; float cls = mod(vR.w, 16.0); float br = step(15.5, mod(vR.w, 32.0));
       if (a > hw) discard;
       int ci = int(cls + 0.5);
       vec3 c = pow(uAsph[ci], vec3(1.0/2.2));
@@ -441,8 +442,34 @@ function roadMat(pass) {
           c = mix(c, vec3(0.93), ed*det*0.85);
         }
       }
+      float flw = 0.0, fhd = 0.0, ftl = 0.0; vec3 fcol = vec3(0.0);
+      if (uFlow > 0.002 && cls > 2.5 && cls != 7.0 && s >= 0.0 && vM < 0.5) {
+        float ow = step(31.5, vR.w);
+        float inner = ow > 0.5 ? 0.0 : (cls > 5.5 && hw > 5.8 ? 1.0 : 0.3);
+        float span = ow > 0.5 ? 2.0 * hw - 0.8 : hw - 0.4 - inner;
+        float u = ow > 0.5 ? (vR.x + hw - 0.4) / span : (a - inner) / span;
+        float dirv = ow > 0.5 ? -1.0 : (vR.x < 0.0 ? 1.0 : -1.0);   // ribbon +x is right of the drawn direction
+        if (span > 1.4 && u > 0.0 && u < 1.0) {
+          float nl = max(1.0, floor(span / 3.2)), lu = u * nl, li = floor(lu), lc = abs(fract(lu) - 0.5) * span / nl;
+          // dashes keep a few pixels of size however far out (a streak of traffic rather than individual cars)
+          float pxs = fwidth(s), pxa = fwidth(a);
+          float Lc = max(4.4, pxs * 6.0), hwd = min(span / nl * 0.42, max(0.8, pxa * 1.1));
+          float spd = 6.0 + cls * 1.3, spc = max(36.0 - cls * 2.0, Lc * 3.2);
+          float q = (s - dirv * uTime * spd) / spc + li * 0.37 + dirv * 0.25;
+          float cell = floor(q), f = fract(q) * spc, rk = h21(vec2(cell, li * 3.1 + dirv + hw * 1.7));
+          float keep = step(rk, 0.4 + cls * 0.05); Lc *= 1.0 + 0.6 * step(0.93, rk);
+          float fs = pxs * 0.6 + 0.05, fa = pxa * 0.6 + 0.03;
+          flw = keep * (1.0 - smoothstep(hwd - fa, hwd + fa, lc)) * (smoothstep(-fs, fs, f) - smoothstep(Lc - fs, Lc + fs, f)) * uFlow;
+          float fr = (dirv > 0.0 ? f : Lc - f) / Lc;   // 0 at the tail end .. 1 at the nose
+          fhd = flw * smoothstep(0.55, 0.75, fr); ftl = flw * (1.0 - smoothstep(0.25, 0.45, fr));
+          float ck = fract(rk * 13.7);
+          fcol = ck < 0.38 ? vec3(0.93) : ck < 0.58 ? vec3(0.66, 0.68, 0.70) : ck < 0.7 ? vec3(0.65, 0.12, 0.10) : ck < 0.8 ? vec3(0.13, 0.25, 0.52) : ck < 0.92 ? vec3(0.95, 0.78, 0.10) : vec3(0.12);
+          c = mix(c, mix(fcol, vec3(0.08), uNight * 0.85), flw);
+        }
+      }
       diffuseColor.rgb = pow(c, vec3(2.2));`,
     fEmissive: pass === 0 ? '' : `
+      xEm += (vec3(1.0, 0.93, 0.78) * 2.6 * fhd + vec3(1.0, 0.08, 0.04) * 1.8 * ftl) * uNight;
       if (cls > 2.5 && s >= 0.0) {
         float da = mod(s + 16.0*step(0.0, vR.x), 32.0) - 16.0;
         float dx = hw - a;
@@ -1227,7 +1254,7 @@ function buildAircraft(A) {
   group.ground.add(G.mesh(POLX));
 }
 
-// ---------------------------------------------------------------- bespoke landmarks (Patang, ISKCON, Taj Skyline, Pinnacle, Ellis Bridge)
+// ---------------------------------------------------------------- bespoke landmarks (Patang, ISKCON, Taj Skyline, Ellis Bridge)
 // aR.x = surface kind: 0 concrete / render, 1 glass behind white box frames, 2 curtain wall, 3 carved sandstone,
 // 4 revolving-restaurant glazing (aR.y = angle), 5 lamp ring, 6 steel, 7 floodlit concrete. aR.z = floor-line origin.
 const LMK = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
@@ -1434,60 +1461,11 @@ function buildTaj(o) {
   }
   group.ground.add(G.mesh(LMK));
 }
-// Pinnacle Business Park: U-plan around a landscaped forecourt; each wing ends in white-rimmed "sail" blocks whose
-// glazed roofs sweep down to the ground, the outer sails stepped back; central atrium block under a tensile cone
-function sailBlock(G, F, ai, ao, b0, b1, Ht, glassK, white, stone) {
-  const sg = Math.sign(ao - ai), w = Math.abs(ao - ai), N = 14, U = [F.ux, 0, F.uz], V = [F.vx, 0, F.vz], ng = (q) => q.map((x) => -x);
-  const cv = []; for (let k = 0; k <= N; k++) { const d = w * Math.sin((k / N) * Math.PI / 2); cv.push([ai + sg * d, Ht * Math.sqrt(Math.max(0, 1 - (d / w) ** 2)), d]); }
-  const e2 = [glassK, 0, 0, 0];
-  for (let k = 0; k < N; k++) {
-    const [a0, y0] = cv[k], [a1, y1] = cv[k + 1];
-    lq(G, F(ai, b1, 0), F(a0, b1, y0), F(a1, b1, y1), F(a1, b1, y1), V, e2, white);       // front elevation (fan)
-    lq(G, F(ai, b0, 0), F(a0, b0, y0), F(a1, b0, y1), F(a1, b0, y1), ng(V), e2, white);   // back elevation
-    const dm = (cv[k][2] + cv[k + 1][2]) / 2, ym = (y0 + y1) / 2;
-    let na = sg * dm / (w * w), ny = ym / (Ht * Ht); const nl = Math.hypot(na, ny) || 1; na /= nl; ny /= nl;
-    const n = [F.ux * na, ny, F.uz * na];
-    lq(G, F(a0, b0, y0), F(a1, b0, y1), F(a1, b1, y1), F(a0, b1, y0), n, e2, white);      // glazed sweep
-    // white rim along the front edge of the sail, standing proud of the face
-    const o0 = [na * 0.45, ny * 0.45], p0 = F(a0 + sg * 0, b1 + 0.35, y0), p1 = F(a1, b1 + 0.35, y1);
-    beam(G, [p0[0] + F.ux * o0[0], p0[1] + o0[1], p0[2] + F.uz * o0[0]], [p1[0] + F.ux * o0[0], p1[1] + o0[1], p1[2] + F.uz * o0[0]], 1.5, 0.9, white, 0, V);
-  }
-  lq(G, F(ai, b0, 0), F(ai, b1, 0), F(ai, b1, Ht), F(ai, b0, Ht), sg > 0 ? ng(U) : U, e2, white);   // inner wall
-  beam(G, F(ai, b1 + 0.35, 0), F(ai, b1 + 0.35, Ht + 2.2), 1.5, 0.9, white, 0, V);                  // rim up the inner edge to the tip
-  const d1 = 1.6, d2 = 3.8, yt = Ht * Math.sqrt(1 - (d2 / w) ** 2) - 0.8;                             // perforated stone strip
-  fbox(G, F, Math.min(ai + sg * d1, ai + sg * d2), Math.max(ai + sg * d1, ai + sg * d2), b1, b1 + 0.3, 0, yt, stone, 0);
-}
-function buildPinnacle(o) {
-  if (!o.W) return;
-  const G = new Geo(true), F = lmFrame(o), hw = o.W / 2, hd = o.D / 2;
-  const white = C255(240, 240, 236), stone = C255(186, 186, 182), green = C255(92, 138, 66), paving = C255(214, 204, 186), water = C255(70, 132, 172);
-  const H = 40, hc = 0.12 * o.W, ti = 0.45 * (hw - hc), rec = 8;
-  for (const sg of [-1, 1]) {                                     // the two towers: flat-roofed block + one sail at the outer end
-    const a0 = sg * hc, a1 = sg * (hc + ti), lo = Math.min(a0, a1), hi = Math.max(a0, a1);
-    fbox(G, F, lo, hi, -hd, hd, 0, H, white, 2, 0);
-    fbox(G, F, lo - 0.2, hi + 0.2, -hd - 0.2, hd + 0.2, H, H + 0.8, white, 0);
-    sailBlock(G, F, a1, sg * hw, -hd, hd, H + 5, 2, white, stone);
-    for (const [s0, s1] of [[hc, hc + 2.6], [hc + ti - 3.2, hc + ti]]) fbox(G, F, Math.min(sg * s0, sg * s1), Math.max(sg * s0, sg * s1), hd, hd + 0.45, 0, H + 1.4, stone, 0);
-  }
-  fbox(G, F, -hc, hc, -hd, hd - rec, 0, H - 1.5, white, 2, 0);   // internal link block, set back
-  fbox(G, F, -hc, hc, -hd, hd - rec, H - 1.5, H - 0.8, white, 0);
-  fbox(G, F, -4.2, 4.2, hd - rec, hd - rec + 1.2, 0, H - 4, white, 2, 0);   // glazed atrium
-  const cc = F(0, (-hd + hd - rec) / 2, 0);
-  lathe(G, cc[0], cc[2], [[6.2, H - 0.8], [6.0, H - 0.2], [1.3, H + 4.6], [0.55, H + 5.0], [0.0, H + 5.1]], 28, white, 0);   // tensile cone
-  fbox(G, F, -hc + 0.3, hc - 0.3, hd - rec + 1.3, hd + 6, 0, 0.16, paving, 0);              // forecourt garden in the recess
-  fbox(G, F, -hc + 2, hc - 2, hd - rec + 3, hd + 4, 0.16, 0.3, green, 0);
-  const fc = F(0, hd - rec / 2 + 1.5, 0);
-  lathe(G, fc[0], fc[2], [[2.6, 0.3], [2.6, 0.85], [2.25, 0.85], [2.25, 0.66], [0.0, 0.66]], 24, stone, 0);
-  lathe(G, fc[0], fc[2], [[2.2, 0.68], [0.0, 0.68]], 24, water, 0);
-  lathe(G, fc[0], fc[2], [[0.4, 0.68], [0.28, 1.5], [0.0, 1.6]], 8, white, 0);
-  group.ground.add(G.mesh(LMK));
-}
 function buildLandmarks3D() {
   for (const o of META.lm3d || []) {
     if (o.kind === 'patang') buildPatang(o);
     else if (o.kind === 'iskcon') buildIskcon(o);
     else if (o.kind === 'taj') buildTaj(o);
-    else if (o.kind === 'pinnacle') buildPinnacle(o);
   }
   if (META.ellis) buildEllis(META.ellis);
 }
@@ -1804,9 +1782,9 @@ function buildRoads() {
   let nz = 0; for (let i = 0; i < n; i++) if (br[i]) nz += lens[i];
   const zz = r.arr(Uint8Array, nz);
   const pmask = r.arr(Uint8Array, np * 2);
-  const rflag = r.arr(Uint8Array, n);
+  const rflag = r.arr(Uint8Array, n), bclr = r.arr(Uint8Array, n);
   const zp = new Float32Array(np); { let zo2 = 0; for (let i = 0; i < n; i++) if (br[i]) { for (let j = 0; j < lens[i]; j++) zp[start[i] + j] = zz[zo2 + j] / 10; zo2 += lens[i]; } }
-  ROADS = { n, cls, br, hw, sw, name, lens, xy, start, flag: rflag, zp, pmask };
+  ROADS = { n, cls, br, hw, sw, name, lens, xy, start, flag: rflag, bclr, zp, pmask };
   const SEG = 12;
   let nv = np * 2 + nj * (SEG + 1), ni = 0;
   for (let i = 0; i < n; i++) ni += (lens[i] - 1) * 6;
@@ -1838,7 +1816,7 @@ function buildRoads() {
       const x = xy[(p + j) * 2] * 0.5, z = xy[(p + j) * 2 + 1] * 0.5;
       if (j > 0) s += Math.hypot(x - xy[(p + j - 1) * 2] * 0.5, z - xy[(p + j - 1) * 2 + 1] * 0.5);
       const [nx, nz, ml] = miter(xy, p, L, j, 0.5);
-      const w = c + (br[i] ? 16 : 0);
+      const w = c + (br[i] ? 16 : 0) + (rflag[i] & 1 ? 32 : 0);
       pos[v * 2] = x + nx * O * ml; pos[v * 2 + 1] = z + nz * O * ml; aR[v * 4] = O; aR[v * 4 + 1] = s; aR[v * 4 + 2] = H; aR[v * 4 + 3] = w; aM[v] = pmask[(p + j) * 2] & 1; v++;
       pos[v * 2] = x - nx * O * ml; pos[v * 2 + 1] = z - nz * O * ml; aR[v * 4] = -O; aR[v * 4 + 1] = s; aR[v * 4 + 2] = H; aR[v * 4 + 3] = w; aM[v] = pmask[(p + j) * 2 + 1] & 1; v++;
     }
@@ -2898,13 +2876,20 @@ function nearestIdx(P, x, z) {
 }
 function buildMetro() {
   const M = TR && TR.metro; if (!M) return;
-  const T = new TGeo();
+  const T = new TGeo(), pre = prepTrains(M), XO = metroCrossovers(pre);
   const conc = lin('#cdc7bc'), concD = lin('#bdb7ac');
   const ELEV = M.stations.filter((s) => !s.ug);
   const stOf = (s) => (s.corr === 'red' && s.id === 'GMRCL_OLD_HIGH_COURT') ? 'over' : 'full';
   // ---- viaduct
   for (const C of M.corr) {
     const P = C.pts, n = P.length / 2, s = corridorS(C);
+    // crossover zones on this corridor (corridor distance): the twin troughs open into one deck there
+    const gaps = [];
+    for (const [r, s0, s1] of XO) {
+      const a0 = routeAt(r, s0 - 5, { ..._ta }), a1 = routeAt(r, s1 + 5, { ..._ta });
+      const [i0, d0] = nearestIdx(P, a0.x, a0.z), [i1, d1] = nearestIdx(P, a1.x, a1.z);
+      if (d0 < 8 && d1 < 8) gaps.push([Math.min(s[i0], s[i1]), Math.max(s[i0], s[i1])]);
+    }
     // points inside an elevated station on this level are left to the station structure
     const inSt = new Uint8Array(n);
     for (const st of ELEV) {
@@ -2924,12 +2909,13 @@ function buildMetro() {
         const h1 = Math.atan2(P[q * 2 + 3] - P[q * 2 + 1], P[q * 2 + 2] - P[q * 2]);
         let dh = Math.abs(h1 - h0); if (dh > Math.PI) dh = 2 * Math.PI - dh;
         const curv = Math.abs(C.rl[q + 1] - 2 * C.rl[q] + C.rl[q - 1]);
-        if (dh > 0.008 || curv > 2e-3 || s[q] - s[last] > 24) { keep.push(q); last = q; }
+        const edge = gaps.some(([g0, g1]) => (s[last] < g0) !== (s[q + 1] < g0) || (s[last] < g1) !== (s[q + 1] < g1));
+        if (dh > 0.008 || curv > 2e-3 || s[q] - s[last] > 24 || edge) { keep.push(q); last = q; }
       }
       if (e - 1 > j) keep.push(e - 1);
       const Q = new Float32Array(keep.length * 2), rl = keep.map((q) => C.rl[q]), ss = keep.map((q) => s[q]);
       keep.forEach((q, i) => { Q[i * 2] = P[q * 2]; Q[i * 2 + 1] = P[q * 2 + 1]; });
-      viaductRun(T, Q, rl, ss, conc, concD);
+      viaductRun(T, Q, rl, ss, conc, concD, gaps);
       j = e;
     }
   }
@@ -2969,7 +2955,8 @@ function buildMetro() {
     }
     mapCtx.stroke(); mapCtx.setLineDash([]);
   }
-  initTrains(M);
+  buildCrossovers(XO);
+  initTrains(M, pre);
   buildRouteOverlay(M);
 }
 // city-scale route map: line-coloured ribbons over the viaducts (dashed where the Blue Line runs underground),
@@ -3006,7 +2993,7 @@ function buildRouteOverlay(M) {
 }
 const COLS = { blue: '#1e63c8', red: '#d7262b', yellow: '#f2b705', violet: '#7d3cc2' };
 // one elevated run of the twin U-girder viaduct
-function viaductRun(T, Q, rl, ss, conc, concD) {
+function viaductRun(T, Q, rl, ss, conc, concD, gaps = []) {
   const n = Q.length / 2; if (n < 2) return;
   const [N, ML] = lnormals(Q);
   const at = (j, v, y) => [Q[j * 2] + N[j * 2] * v * ML[j], y, Q[j * 2 + 1] + N[j * 2 + 1] * v * ML[j]];
@@ -3026,6 +3013,7 @@ function viaductRun(T, Q, rl, ss, conc, concD) {
     for (let j = 0; j < n; j++) {
       const low = rl[j] - SOFF < 1.4;
       if (nk === 'd' && low) { prev = null; continue; }
+      if (Math.abs(v0) < 0.5 && Math.abs(v1) < 0.5 && gaps.some(([g0, g1]) => ss[j] > g0 && ss[j] < g1)) { prev = null; continue; }   // no centre walls over a crossover
       const y0 = h0 === 'g' ? (low ? 0 : rl[j] - SOFF) : rl[j] + h0, y1 = rl[j] + h1;
       const A = at(j, v0, y0), B = at(j, v1, y1);
       let nrm;
@@ -3126,23 +3114,97 @@ function portal(T, x, z, ux, uz) {
 // night 21:00, India Standard Time) at real speed; the service pattern (weekday / Saturday / Sunday) follows today's date.
 const TOD_CLOCK = { morning: 8.5 * 3600, noon: 12.5 * 3600, golden: 18.25 * 3600, night: 21 * 3600 };
 let TRAINS = null;
-function initTrains(M) {
+// ---- metro service: a train every few stations, each terminal turned back over a scissors crossover on the tail
+// tracks beyond the platforms (arrive, run on to the siding while crossing to the other track, change ends, come
+// back into the other platform, board, depart). Times are built so trains never meet: every service's round trip is
+// a whole number of headways and the two N-S services share the trunk half a headway apart.
+const MET_SYN = { 'GMRCL_LINE-1': { h: 2 }, 'GMRCL_LINE-3': { h: 4, ph: 0, ns: true }, 'GMRCL_LINE-4': { h: 4, ph: 0.5, ns: true } };
+const TV = 22, TA = 1.0, TVY = 8, TAY = 0.6, TDW = 25, TLAY = 40, TREV = 15, TTAIL = 230, XO0 = 80, XO1 = 125, CAR = 22.6;
+function runTime(D, V, a) { const da = V * V / (2 * a); return D >= 2 * da ? D / V + V / a : 2 * Math.sqrt(D / a); }
+function runPos(t, D, V, a) {   // distance covered t seconds into an accelerate / cruise / brake run of length D
+  const ta = V / a, da = V * V / (2 * a);
+  if (D >= 2 * da) {
+    const tc = (D - 2 * da) / V, T = 2 * ta + tc; t = clamp(t, 0, T);
+    if (t <= ta) return 0.5 * a * t * t; if (t <= ta + tc) return da + V * (t - ta); const r = T - t; return D - 0.5 * a * r * r;
+  }
+  const tp = Math.sqrt(D / a); t = clamp(t, 0, 2 * tp);
+  if (t <= tp) return 0.5 * a * t * t; const r = 2 * tp - t; return D - 0.5 * a * r * r;
+}
+function metroService(routes) {
+  const R3 = routes.find((r) => r.id === 'GMRCL_LINE-3'), R4 = routes.find((r) => r.id === 'GMRCL_LINE-4');
+  let div = 0;   // last station the two N-S services share (from APMC)
+  if (R3 && R4) while (div + 1 < R3.st.length && div + 1 < R4.st.length && R3.st[div + 1][1] === R4.st[div + 1][1]) div++;
+  const secT = (S, k) => runTime(Math.abs(S[k + 1] - S[k]), TV, TA) + TDW;
+  let Hns = 0;
+  if (R4 && div > 0) { const S = R4.st.map((q) => q[0]); let t = 0; for (let k = 0; k < div; k++) t += secT(S, k); Hns = MET_SYN['GMRCL_LINE-4'].h * t / div; }
+  const svc = [];
+  for (const r of routes) {
+    const cfg = MET_SYN[r.id]; if (!cfg || !r.st || r.st.length < 2) continue;
+    const S = r.st.map((q) => q[0]), n = S.length, Lr = r.s[r.n - 1], dv = cfg.ns ? div : 0, T = TRACK;
+    const tA = Math.max(40, S[0] - TTAIL), tB = Math.min(Lr - 40, S[n - 1] + TTAIL);
+    const xA = [S[0] - Math.min(XO0, (S[0] - tA) * 0.35), S[0] - Math.min(XO1, (S[0] - tA) * 0.55)];
+    const xB = [S[n - 1] + Math.min(XO0, (tB - S[n - 1]) * 0.35), S[n - 1] + Math.min(XO1, (tB - S[n - 1]) * 0.55)];
+    const segs = [], pad = []; let t = 0;
+    const dwell = (s, d, v, p) => { if (p) pad.push(segs.length); segs.push({ t0: t, d, s0: s, v, run: false }); t += d; };
+    const run = (s0, s1, V, a, v, x) => { const D = Math.abs(s1 - s0), d = runTime(D, V, a); segs.push({ t0: t, d, s0, sg: Math.sign(s1 - s0), D, V, a, v, x, run: true }); t += d; };
+    dwell(S[0], TLAY, T, false);
+    for (let k = 0; k < n - 1; k++) { run(S[k], S[k + 1], TV, TA, T); if (k + 1 < n - 1) dwell(S[k + 1], TDW, T, k + 1 > dv); }
+    dwell(S[n - 1], TDW, T, false);
+    run(S[n - 1], tB, TVY, TAY, T, [xB[0], xB[1], T, -T]);
+    dwell(tB, TREV, -T, false);
+    run(tB, S[n - 1], TVY, TAY, -T);
+    dwell(S[n - 1], TLAY, -T, true);
+    for (let k = n - 1; k > 0; k--) { run(S[k], S[k - 1], TV, TA, -T); if (k - 1 > 0) dwell(S[k - 1], TDW, -T, k - 1 > dv); }
+    dwell(S[0], TDW, -T, false);
+    run(S[0], tA, TVY, TAY, -T, [xA[0], xA[1], -T, T]);
+    dwell(tA, TREV, T, false);
+    run(tA, S[0], TVY, TAY, T);
+    let H = Hns && cfg.ns ? Hns : 0;
+    if (!H) { let q = 0; for (let k = 0; k < n - 1; k++) q += secT(S, k); H = cfg.h * q / (n - 1); }
+    const N = Math.max(1, Math.ceil(t / H)), slack = N * H - t;
+    if (slack > 0) { for (const q of pad) segs[q].d += slack / pad.length; let tt = 0; for (const sg of segs) { sg.t0 = tt; tt += sg.d; } t = tt; }
+    svc.push({ r, segs, Tc: t, H, N, ph: (cfg.ph || 0) * H, ends: [[S[0], xA, tA], [S[n - 1], xB, tB]] });
+  }
+  return svc;
+}
+function prepTrains(M) {
   const routes = M.routes.map((r) => {
     const P = r.pts, n = P.length / 2, s = new Float32Array(n);
     for (let j = 1; j < n; j++) s[j] = s[j - 1] + Math.hypot(P[j * 2] - P[j * 2 - 2], P[j * 2 + 1] - P[j * 2 - 1]);
-    const [N] = lnormals(P);
-    return { ...r, s, N, n, col: new THREE.Color(COLS[r.line]) };
+    const [N, ML] = lnormals(P);
+    return { ...r, s, N, ML, n, col: new THREE.Color(COLS[r.line]) };
   });
-  const trips = M.trips.map(([ri, dir, svc, ss, dt]) => { const t = [dt[0]]; for (let k = 1; k < dt.length; k++) t.push(t[k - 1] + dt[k]); return { ri, dir, svc, ss, t }; });
-  const geo = carGeo(), MAXC = 240;
+  return { routes, svc: metroService(routes) };
+}
+const _ta = { x: 0, y: 0, z: 0, nx: 0, nz: 0, ug: 0, inb: 0 }, _tb = { x: 0, y: 0, z: 0, nx: 0, nz: 0, ug: 0, inb: 0 };
+function routeAt(r, sv, o) {   // centreline point, rail level and (miter-scaled, interpolated) normal on a route
+  const s = r.s; let lo = 0, hi = r.n - 1;
+  sv = clamp(sv, 0, s[hi]);
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m] <= sv) lo = m; else hi = m; }
+  const f = (sv - s[lo]) / Math.max(1e-6, s[hi] - s[lo]), g = 1 - f, P = r.pts;
+  o.x = P[lo * 2] * g + P[hi * 2] * f; o.z = P[lo * 2 + 1] * g + P[hi * 2 + 1] * f; o.y = r.rl[lo] * g + r.rl[hi] * f;
+  o.nx = r.N[lo * 2] * r.ML[lo] * g + r.N[hi * 2] * r.ML[hi] * f; o.nz = r.N[lo * 2 + 1] * r.ML[lo] * g + r.N[hi * 2 + 1] * r.ML[hi] * f;
+  o.ug = (r.ug[lo] || r.ug[hi]) ? 1 : 0; o.inb = (r.inb[lo] && r.inb[hi]) ? 1 : 0;
+  return o;
+}
+function trackOff(sg, s) {   // lateral track position at route distance s during a schedule segment (crossover moves change it)
+  if (!sg.x) return sg.v;
+  const [x0, x1, vA, vB] = sg.x, u = clamp((s - x0) / (x1 - x0), 0, 1);
+  return vA + (vB - vA) * u * u * (3 - 2 * u);
+}
+function initTrains(M, pre) {
+  const { routes, svc } = pre;
+  const geo = carGeo(), MAXC = 300;
   const im = new THREE.InstancedMesh(geo, TRAINMAT, MAXC);
   im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  im.setColorAt(0, new THREE.Color(1, 1, 1));
+  for (let k = 0; k < MAXC; k++) im.setColorAt(k, _vc.set(1, 1, 1));
   im.frustumCulled = false; im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; im.count = 0;
   group.ground.add(im);
-  const ist = new Date(Date.now() + 5.5 * 3600e3), wd = ist.getUTCDay();
-  const svcOk = (v) => v === 0 || (v === 1 && wd >= 1 && wd <= 5) || (v === 2 && wd === 6) || (v === 3 && wd === 0);
-  TRAINS = { routes, trips: trips.filter((t) => svcOk(t.svc)), im, clock: TOD_CLOCK[todName] || TOD_CLOCK.noon, last: todName };
+  const bg = new THREE.BoxGeometry(1, 1, 1), mkm = (col, ro) => {
+    const q = new THREE.InstancedMesh(bg, new THREE.MeshBasicMaterial({ color: col, depthTest: false, depthWrite: false }), 120);
+    q.instanceMatrix.setUsage(THREE.DynamicDrawUsage); q.frustumCulled = false; q.renderOrder = ro; q.count = 0; q.visible = false; group.ground.add(q); return q;
+  };
+  TRAINS = { routes, svc, im, mk: mkm(0xffffff, 22), mko: mkm(0x15181d, 21), colOf: new Array(MAXC).fill(null), clock: TOD_CLOCK[todName] || TOD_CLOCK.noon, last: todName };
 }
 function carGeo() {
   const T = new TGeo(), c = [1, 1, 1], k = [0, 0, 0, 0];
@@ -3157,51 +3219,90 @@ function carGeo() {
   g.setAttribute('position', new THREE.Float32BufferAttribute(T.p, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(T.n, 3));
   g.setIndex(T.i); return g;
 }
-const _tm = new THREE.Matrix4(), _tq = new THREE.Quaternion(), _tp = new THREE.Vector3(), _ts = new THREE.Vector3(1, 1, 1), _ty = new THREE.Vector3(0, 1, 0);
-function routeAt(r, sv) {
-  const s = r.s; let lo = 0, hi = r.n - 1;
-  if (sv <= 0) sv = 0; if (sv >= s[hi]) sv = s[hi];
-  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m] <= sv) lo = m; else hi = m; }
-  const f = (sv - s[lo]) / Math.max(1e-6, s[hi] - s[lo]), P = r.pts;
-  return [P[lo * 2] + (P[hi * 2] - P[lo * 2]) * f, P[lo * 2 + 1] + (P[hi * 2 + 1] - P[lo * 2 + 1]) * f, r.rl[lo] + (r.rl[hi] - r.rl[lo]) * f,
-    P[hi * 2] - P[lo * 2], P[hi * 2 + 1] - P[lo * 2 + 1], r.N[lo * 2], r.N[lo * 2 + 1], (r.ug[lo] || r.ug[hi]) ? 1 : 0, (r.inb[lo] && r.inb[hi]) ? 1 : 0];
+function putYawS(arr, k, x, y, z, hx, hz, sx, sy, sz) {
+  const o = k * 16;
+  arr[o] = hx * sx; arr[o + 1] = 0; arr[o + 2] = hz * sx; arr[o + 3] = 0; arr[o + 4] = 0; arr[o + 5] = sy; arr[o + 6] = 0; arr[o + 7] = 0;
+  arr[o + 8] = -hz * sz; arr[o + 9] = 0; arr[o + 10] = hx * sz; arr[o + 11] = 0; arr[o + 12] = x; arr[o + 13] = y; arr[o + 14] = z; arr[o + 15] = 1;
 }
 function stepTrains(dt) {
   if (!TRAINS) return false;
   const TT = TRAINS;
   if (TT.last !== todName) { TT.clock = TOD_CLOCK[todName] || TT.clock; TT.last = todName; }
   TT.clock += dt;
-  const show = view.mpp < 9;
-  TT.im.visible = show;
-  if (!show) return false;
-  const T = TT.clock; let c = 0;
-  const DWELL = 25, CAR = 22.6;
-  for (const tr of TT.trips) {
-    const t = tr.t, n = t.length;
-    if (T < t[0] - 40 || T > t[n - 1] + 40) continue;
-    let sv;
-    if (T <= t[0]) sv = tr.ss[0]; else if (T >= t[n - 1]) sv = tr.ss[n - 1];
-    else {
-      let k = 0; while (k < n - 2 && T >= t[k + 1]) k++;
-      const span = t[k + 1] - t[k], dw = Math.min(DWELL, span * 0.3), u = clamp((T - t[k] - dw) / Math.max(1, span - dw), 0, 1);
-      const e = u * u * (3 - 2 * u);
-      sv = tr.ss[k] + (tr.ss[k + 1] - tr.ss[k]) * e;
-    }
-    const r = TT.routes[tr.ri], sg = tr.dir === 0 ? 1 : -1;
-    for (let q = 0; q < 3; q++) {
-      if (c >= TT.im.instanceMatrix.count) break;
-      const sc = sv - sg * (q * CAR + CAR / 2);
-      const [x, z, y, dx, dz, nx, nz, ug, inb] = routeAt(r, sc);
-      if (ug || !inb) continue;
-      _tp.set(x + nx * TRACK * sg, y, z + nz * TRACK * sg);
-      _tq.setFromAxisAngle(_ty, Math.atan2(-dz * sg, dx * sg));
-      _tm.compose(_tp, _tq, _ts);
-      TT.im.setMatrixAt(c, _tm); TT.im.setColorAt(c, r.col); c++;
+  const show = view.mpp < 9, mk = view.mpp > 2.2 && settings.labels;   // zoomed out: train "pills" on the route ribbons
+  TT.im.visible = show; TT.mk.visible = mk; TT.mko.visible = mk;
+  if (!show && !mk) return false;
+  const arr = TT.im.instanceMatrix.array, cap = TT.im.instanceMatrix.count, ma = TT.mk.instanceMatrix.array, mo = TT.mko.instanceMatrix.array;
+  const uW = ROUTE_U.uW.value, Lm = Math.max(68, view.mpp * 18);
+  let c = 0, m = 0, cd = false;
+  for (const sv of TT.svc) {
+    const r = sv.r, G = sv.segs;
+    for (let k = 0; k < sv.N; k++) {
+      let tau = (TT.clock + sv.ph + k * sv.H) % sv.Tc; if (tau < 0) tau += sv.Tc;
+      let lo = 0, hi = G.length - 1; while (lo < hi) { const q = (lo + hi + 1) >> 1; if (G[q].t0 <= tau) lo = q; else hi = q - 1; }
+      const sg = G[lo], sc = sg.run ? sg.s0 + sg.sg * runPos(tau - sg.t0, sg.D, sg.V, sg.a) : sg.s0;
+      if (mk && m < 120) {
+        const a = routeAt(r, sc + 10, _ta), b = routeAt(r, sc - 10, _tb);
+        if (a.inb && b.inb) {
+          let hx = a.x - b.x, hz = a.z - b.z; const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
+          const x = (a.x + b.x) / 2, z = (a.z + b.z) / 2, y = Math.max(1, (a.y + b.y) / 2 + 2);
+          putYawS(mo, m, x, y, z, hx, hz, Lm + uW * 1.4, 1, uW * 3.4); putYawS(ma, m, x, y + 0.1, z, hx, hz, Lm, 1, uW * 2.2); m++;
+        }
+      }
+      if (!show) continue;
+      for (let q = -1; q <= 1 && c < cap; q++) {
+        const s = sc + q * CAR, sa = s + 6.6, sb = s - 6.6;   // the two bogies of this car
+        const a = routeAt(r, sa, _ta), b = routeAt(r, sb, _tb);
+        if (a.ug || b.ug || !a.inb || !b.inb) continue;
+        const va = trackOff(sg, sa), vb = trackOff(sg, sb);
+        const ax = a.x + a.nx * va, az = a.z + a.nz * va, bx = b.x + b.nx * vb, bz = b.z + b.nz * vb;
+        let hx = ax - bx, hz = az - bz; const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
+        putYaw(arr, c, (ax + bx) / 2, (a.y + b.y) / 2, (az + bz) / 2, hx, hz, 1);
+        if (TT.colOf[c] !== r.line) { TT.im.setColorAt(c, r.col); TT.colOf[c] = r.line; cd = true; }
+        c++;
+      }
     }
   }
-  TT.im.count = c;
-  TT.im.instanceMatrix.needsUpdate = true; if (TT.im.instanceColor) TT.im.instanceColor.needsUpdate = true;
-  return false;
+  TT.im.count = c; flushInst(TT.im.instanceMatrix, c);
+  if (cd) TT.im.instanceColor.needsUpdate = true;
+  TT.mk.count = m; TT.mko.count = m; flushInst(TT.mk.instanceMatrix, m); flushInst(TT.mko.instanceMatrix, m);
+  return c > 0 || m > 0;
+}
+// scissors crossovers on the tail tracks: [route, s0, s1] per terminal that is drawn (elevated, inside the map)
+function metroCrossovers(pre) {
+  const out = [], seen = [];
+  for (const sv of pre.svc) for (const [st, x] of sv.ends) {
+    const r = sv.r, a = routeAt(r, x[0], { ..._ta }), b = routeAt(r, x[1], { ..._tb }), m = routeAt(r, st, { ..._ta });
+    if (a.ug || b.ug || m.ug || !a.inb || !b.inb) continue;
+    const cx = (a.x + b.x) / 2, cz = (a.z + b.z) / 2;
+    if (seen.some(([x2, z2]) => Math.hypot(x2 - cx, z2 - cz) < 30)) continue;
+    seen.push([cx, cz]); out.push([r, Math.min(x[0], x[1]), Math.max(x[0], x[1])]);
+  }
+  return out;
+}
+function buildCrossovers(XO) {
+  if (!XO.length) return;
+  const G = new Geo(false), steel = C255(84, 80, 76);
+  for (const [r, s0, s1] of XO) {
+    const steps = Math.ceil((s1 - s0) / 2.5), P = { ..._ta };
+    // the two diagonals, each a pair of rails at standard gauge, laid on the trough floor
+    for (const [vA, vB] of [[TRACK, -TRACK], [-TRACK, TRACK]]) {
+      const sgm = { x: [s0, s1, vA, vB] };
+      for (const g of [-0.7175, 0.7175]) {
+        let px = null, pz = null, py = 0;
+        for (let k = 0; k <= steps; k++) {
+          const s = s0 + (s1 - s0) * k / steps; routeAt(r, s, P);
+          const v = trackOff(sgm, s) + g, x = P.x + P.nx * v, z = P.z + P.nz * v, y = P.y - 0.55;
+          if (px !== null) {
+            const dx = x - px, dz = z - pz, L = Math.hypot(dx, dz) || 1;
+            cbox(G, (x + px) / 2, (z + pz) / 2, dx / L, dz / L, L / 2 + 0.03, 0.035, py + 0.03, py + 0.16, steel, true);
+          }
+          px = x; pz = z; py = y;
+        }
+      }
+    }
+  }
+  const m = G.mesh(POLX); m.castShadow = false; group.ground.add(m);
 }
 
 // ---------------------------------------------------------------- Janmarg BRTS
@@ -3354,12 +3455,12 @@ function legAt(L, rev, sv) {   // position on a bus path (rev = driven the other
   return [x + dz * off, y, z - dx * off, dx, dz];   // map-left of travel is (dz, -dx)
 }
 function stepBuses(dt) {
-  if (!BUSES) return;
+  if (!BUSES) return false;
   const BS = BUSES;
   if (BS.last !== todName) { BS.clock = TOD_CLOCK[todName] || BS.clock; BS.last = todName; }
   BS.clock += dt;
   const show = view.mpp < 6;
-  BS.im.visible = show; if (!show) return;
+  BS.im.visible = show; if (!show) return false;
   const T = BS.clock % 86400; let c = 0;
   const DW = 20;
   for (const tr of BS.trips) {
@@ -3370,12 +3471,14 @@ function stepBuses(dt) {
     const e = u * u * (3 - 2 * u);
     const ref = tr.lg[k], rev = ref < 0, L = BS.legs[rev ? -ref - 1 : ref];
     if (!L) continue;
-    const [x, y, z, dx, dz] = legAt(L, rev, clamp(e * L.L, 0, L.L));
     if (c >= BS.im.instanceMatrix.count) break;
-    _bp.set(x, y, z); _bq.setFromAxisAngle(_by, Math.atan2(-dz, dx)); _bm.compose(_bp, _bq, _bs);
-    BS.im.setMatrixAt(c++, _bm);
+    const sv = clamp(e * L.L, 0, L.L), [fx, fy, fz] = legAt(L, rev, Math.min(L.L, sv + 3.6)), [bx, by, bz] = legAt(L, rev, Math.max(0, sv - 3.6));
+    let hx = fx - bx, hz = fz - bz; const hl = Math.hypot(hx, hz);
+    if (hl < 0.5) { const q = legAt(L, rev, sv); hx = q[3]; hz = q[4]; } else { hx /= hl; hz /= hl; }   // heading from the two axles: no snapping at vertices
+    putYaw(BS.im.instanceMatrix.array, c++, (fx + bx) / 2, (fy + by) / 2, (fz + bz) / 2, hx, hz, 1);
   }
-  BS.im.count = c; BS.im.instanceMatrix.needsUpdate = true;
+  BS.im.count = c; flushInst(BS.im.instanceMatrix, c);
+  return c > 0;
 }
 
 // ---------------------------------------------------------------- street life: signals, traffic, pedestrians
@@ -3465,7 +3568,7 @@ function sigState(si, ph) {   // 0 red, 1 amber, 2 green; 72 s cycle, two phases
 function buildSignals() {
   const S = META.signals; if (!S || !S.length) return;
   const G = new Geo(false), pole = C255(70, 74, 78), housing = C255(26, 28, 30);
-  const PG = [], RG = [], IG = [], heads = [], armKey = new Map(), off = [];
+  const PG = [], RG = [], IG = [], heads = [], armKey = new Map(), mouth = new Map(), off = [];
   const strip = (x0, z0, ux, uz, a0, a1, s0, s1, kind, W) => {   // ground quad: along u from s0..s1, across a0..a1
     const vx = -uz, vz = ux, b = PG.length / 2;
     for (const [a, sv] of [[a0, s0], [a1, s0], [a1, s1], [a0, s1]]) { PG.push(x0 + ux * sv + vx * a, z0 + uz * sv + vz * a); RG.push(a, sv, W, kind); }
@@ -3475,6 +3578,7 @@ function buildSignals() {
     off.push(of);
     for (const [k, e, rz, ph, inb, ow, hw, sw, sx, sz, dx, dz] of arms) {
       strip(sx, sz, dx, dz, -hw, hw, 0, 3.6, 1, hw);                                        // zebra crossing
+      mouth.set(k * 2 + e, rz + 4.7);                                                        // junction box edge on this arm
       if (!inb) continue;
       const Lx = -dz, Lz = dx;                                                               // left of incoming traffic
       if (ow) strip(sx, sz, dx, dz, -hw, hw, 4.2, 4.65, 2, hw); else strip(sx, sz, dx, dz, 0, hw, 4.2, 4.65, 2, hw);   // stop line
@@ -3511,7 +3615,7 @@ function buildSignals() {
     }
   });
   group.ground.add(lamps);
-  SIGS = { off, heads, lamps, armKey, mesh: m, paint, last: -1 };
+  SIGS = { off, heads, lamps, armKey, mouth, mesh: m, paint, last: -1 };
   updateSignalLamps(true);
 }
 const SIG_ON = [C255(255, 40, 30).map((v) => v * 4), C255(255, 170, 20).map((v) => v * 4), C255(40, 255, 110).map((v) => v * 4)], SIG_OFF = [C255(60, 18, 16), C255(62, 46, 14), C255(16, 52, 30)];
@@ -3525,155 +3629,512 @@ function updateSignalLamps(force) {
   SIGS.lamps.instanceColor.needsUpdate = true;
 }
 // ---- road graph for traffic and people
+// Per point: a smoothed tangent and a miter-scaled left normal (drawn direction), so lane offsets bend smoothly round
+// vertices instead of jumping; per node: how many road ends meet there and the widest carriageway (junction box size).
 function streetGraph() {
-  const R = ROADS, n = R.n, S = new Float32Array(R.xy.length / 2), ends = new Int32Array(n * 2), nodes = new Map(), list = [];
+  const R = ROADS, n = R.n, np = R.xy.length / 2, S = new Float32Array(np), L = new Float32Array(n), ends = new Int32Array(n * 2), nodes = new Map(), list = [];
+  const TX = new Float32Array(np), TZ = new Float32Array(np), MX = new Float32Array(np), MZ = new Float32Array(np);
   const key = (x, z) => (Math.round(x) + 60000) * 200000 + (Math.round(z) + 60000);
   for (let i = 0; i < n; i++) {
-    const p = R.start[i], L = R.lens[i];
-    S[p] = 0; for (let j = 1; j < L; j++) S[p + j] = S[p + j - 1] + Math.hypot(R.xy[(p + j) * 2] - R.xy[(p + j - 1) * 2], R.xy[(p + j) * 2 + 1] - R.xy[(p + j - 1) * 2 + 1]) * 0.5;
+    const p = R.start[i], c = R.lens[i];
+    S[p] = 0; for (let j = 1; j < c; j++) S[p + j] = S[p + j - 1] + Math.hypot(R.xy[(p + j) * 2] - R.xy[(p + j - 1) * 2], R.xy[(p + j) * 2 + 1] - R.xy[(p + j - 1) * 2 + 1]) * 0.5;
+    L[i] = S[p + c - 1];
+    for (let j = 0; j < c; j++) {
+      const q = p + j; let ix = 0, iz = 0, ox = 0, oz = 0;
+      if (j > 0) { ix = R.xy[q * 2] - R.xy[q * 2 - 2]; iz = R.xy[q * 2 + 1] - R.xy[q * 2 - 1]; const l = Math.hypot(ix, iz) || 1; ix /= l; iz /= l; }
+      if (j < c - 1) { ox = R.xy[q * 2 + 2] - R.xy[q * 2]; oz = R.xy[q * 2 + 3] - R.xy[q * 2 + 1]; const l = Math.hypot(ox, oz) || 1; ox /= l; oz /= l; }
+      if (j === 0) { ix = ox; iz = oz; } if (j === c - 1) { ox = ix; oz = iz; }
+      let tx = ix + ox, tz = iz + oz; const tl = Math.hypot(tx, tz);
+      if (tl < 1e-3) { tx = ox; tz = oz; } else { tx /= tl; tz /= tl; }
+      const ch = Math.max(0.55, tx * ox + tz * oz);
+      TX[q] = tx; TZ[q] = tz; MX[q] = tz / ch; MZ[q] = -tx / ch;
+    }
     for (const e of [0, 1]) {
-      const q = e ? p + L - 1 : p, k = key(R.xy[q * 2] * 0.5, R.xy[q * 2 + 1] * 0.5);
+      const q = e ? p + c - 1 : p, k = key(R.xy[q * 2] * 0.5, R.xy[q * 2 + 1] * 0.5);
       let id = nodes.get(k); if (id == null) { id = list.length; nodes.set(k, id); list.push([]); }
       ends[i * 2 + e] = id; list[id].push(i * 2 + e);
     }
   }
+  const deg = new Uint8Array(list.length), nodeH = new Float32Array(list.length), NX = new Float32Array(list.length), NZ = new Float32Array(list.length);
+  list.forEach((a, id) => {
+    deg[id] = Math.min(255, a.length);
+    for (const ke of a) nodeH[id] = Math.max(nodeH[id], R.hw[ke >> 1] / 10);
+    const ke = a[0], i = ke >> 1, q = ke & 1 ? R.start[i] + R.lens[i] - 1 : R.start[i]; NX[id] = R.xy[q * 2] * 0.5; NZ[id] = R.xy[q * 2 + 1] * 0.5;
+  });
+  // junction clusters: the nodes of one crossing (dual carriageways meet in 2-4 nodes) share one junction box
+  const jc = new Int32Array(list.length).map((_, k) => k), find = (k) => { while (jc[k] !== k) { jc[k] = jc[jc[k]]; k = jc[k]; } return k; };
+  const ng = new Map(), JC = 32;
+  for (let id = 0; id < list.length; id++) if (deg[id] >= 3) { const g = Math.floor(NX[id] / JC) * 65536 + Math.floor(NZ[id] / JC); let b = ng.get(g); if (!b) ng.set(g, (b = [])); b.push(id); }
+  for (let id = 0; id < list.length; id++) {
+    if (deg[id] < 3) continue; const gx = Math.floor(NX[id] / JC), gz = Math.floor(NZ[id] / JC);
+    for (let u = gx - 1; u <= gx + 1; u++) for (let w = gz - 1; w <= gz + 1; w++) for (const o of ng.get(u * 65536 + w) || []) {
+      if (o !== id && (NX[o] - NX[id]) ** 2 + (NZ[o] - NZ[id]) ** 2 < 28 * 28) { const ra = find(id), rb = find(o); if (ra !== rb) jc[ra] = rb; }
+    }
+  }
+  for (let id = 0; id < list.length; id++) jc[id] = find(id);
+  // roads drawn on top of another carriageway for most of their length (duplicate service ways, overlapping links):
+  // closed to traffic, or cars on the two would drive through each other
+  const ghost = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (L[i] < 25) continue; const p = R.start[i], c = R.lens[i]; let m = 0;
+    for (let j = 0; j < c; j++) if ((R.pmask[(p + j) * 2] & 1) && (R.pmask[(p + j) * 2 + 1] & 1)) m++;
+    if (m > c * 0.6) ghost[i] = 1;
+  }
   const CELL = 200, grid = new Map();
   for (let i = 0; i < n; i++) {
-    const p = R.start[i], L = R.lens[i];
-    for (let j = 0; j < L; j += 3) { const c = Math.floor(R.xy[(p + j) * 2] * 0.5 / CELL) * 4096 + Math.floor(R.xy[(p + j) * 2 + 1] * 0.5 / CELL); let a = grid.get(c); if (!a) grid.set(c, (a = [])); if (a[a.length - 1] !== i) a.push(i); }
+    const p = R.start[i], c = R.lens[i];
+    for (let j = 0; j < c; j += 3) { const g = Math.floor(R.xy[(p + j) * 2] * 0.5 / CELL) * 4096 + Math.floor(R.xy[(p + j) * 2 + 1] * 0.5 / CELL); let a = grid.get(g); if (!a) grid.set(g, (a = [])); if (a[a.length - 1] !== i) a.push(i); }
   }
-  R.S = S; R.ends = ends; R.nodes = list; R.grid = grid; R.CELL = CELL;
+  Object.assign(R, { S, L, ends, nodes: list, grid, CELL, TX, TZ, MX, MZ, deg, nodeH, jc, ghost });
+  busClear();
 }
-function roadAt(i, s, dir, off, out) {   // world position + heading at distance s along road i
-  const R = ROADS, p = R.start[i], L = R.lens[i], S = R.S, len = S[p + L - 1];
-  s = clamp(s, 0, len);
-  let lo = 0, hi = L - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S[p + m] <= s) lo = m; else hi = m; }
-  const f = clamp((s - S[p + lo]) / Math.max(1e-3, S[p + hi] - S[p + lo]), 0, 1);
-  const ax = R.xy[(p + lo) * 2] * 0.5, az = R.xy[(p + lo) * 2 + 1] * 0.5, bx = R.xy[(p + hi) * 2] * 0.5, bz = R.xy[(p + hi) * 2 + 1] * 0.5;
-  let dx = (bx - ax) * dir, dz = (bz - az) * dir; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l;
-  out.x = ax + (bx - ax) * f + dz * off; out.z = az + (bz - az) * f - dx * off;
-  out.y = R.br[i] ? R.zp[p + lo] + (R.zp[p + hi] - R.zp[p + lo]) * f + 0.06 : 0.03;
-  out.hx = dx; out.hz = dz; out.len = len;
+// Measured against the busway as drawn: every road the bus lanes run along gives up the width they (and their kerb and
+// railing) take; a road with the busway down its middle that wasn't widened for it is closed to cars.
+function busClear() {
+  const R = ROADS, B = TR && TR.brts; if (!B || !B.lines) return;
+  const C = 20, G = new Map(), S = []; R.bmid = new Int8Array(R.n);
+  for (const ln of B.lines) {
+    const p = ln.pts;
+    for (let k = 0; k + 3 < p.length; k += 2) {
+      const s = S.length; S.push(p[k], p[k + 1], p[k + 2], p[k + 3]);
+      for (let gx = Math.floor(Math.min(p[k], p[k + 2]) / C); gx <= Math.floor(Math.max(p[k], p[k + 2]) / C); gx++)
+        for (let gz = Math.floor(Math.min(p[k + 1], p[k + 3]) / C); gz <= Math.floor(Math.max(p[k + 1], p[k + 3]) / C); gz++) { const key = hk(gx, gz); let a = G.get(key); if (!a) G.set(key, (a = [])); a.push(s); }
+    }
+  }
+  let nc = 0, nx = 0;
+  for (let i = 0; i < R.n; i++) {
+    if (R.cls[i] === 7 || R.br[i]) continue;
+    const p0 = R.start[i], c = R.lens[i], H = R.hw[i] / 10, reach = H + 4.8, centre = R.flag[i] & 2, ms = [];
+    let cnt = 0, mid = 0, mL = 0, mR = 0, inside = 0;
+    for (let j = 0; j < c; j++) {
+      const q = p0 + j, x = R.xy[q * 2] * 0.5, z = R.xy[q * 2 + 1] * 0.5, tx = R.TX[q], tz = R.TZ[q];
+      let best = 1e9, bm = 0, near = 1e9;
+      for (let gx = Math.floor(x / C) - 1; gx <= Math.floor(x / C) + 1; gx++) for (let gz = Math.floor(z / C) - 1; gz <= Math.floor(z / C) + 1; gz++) {
+        const a = G.get(hk(gx, gz)); if (!a) continue;
+        for (const s of a) {
+          const ax = S[s], az = S[s + 1], dx = S[s + 2] - ax, dz = S[s + 3] - az, l2 = dx * dx + dz * dz; if (l2 < 1e-4) continue;
+          const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), ex = ax + dx * t - x, ez = az + dz * t - z, d = Math.hypot(ex, ez);
+          if (d < near) near = d;
+          const l = Math.sqrt(l2); if (Math.abs((dx * tx + dz * tz) / l) < 0.5) continue;           // only where the busway runs alongside
+          if (d < best && d < reach) { best = d; bm = ex * tz - ez * tx; }                          // + = busway left of the drawn direction
+        }
+      }
+      if (near < 4.3) inside++;
+      if (best > 1e8) continue;
+      cnt++; ms.push(bm); if (Math.abs(bm) < 2.5) mid++;
+      const intr = 4.8 - (Math.abs(bm) - H); if (intr > 0) { if (bm > 0) mL = Math.max(mL, intr); else mR = Math.max(mR, intr); }
+    }
+    if (!cnt && !(R.cls[i] === 4 && inside >= 2)) continue;
+    if (centre) {   // widened BRTS road: keep traffic outside the bus lanes wherever they actually run
+      ms.sort((p, q) => p - q); const m = ms[ms.length >> 1]; R.bmid[i] = clamp(Math.round(m * 10), -127, 127); continue;
+    }
+    if (mid > c * 0.3 || inside > c * 0.35 || (R.cls[i] === 4 && inside >= 2) || Math.min(mL, mR) > 0) { R.ghost[i] = 1; nx++; continue; }   // slip links through the busway too   // busway down the middle (or both sides): no room for cars
+    const v = Math.max(mL, mR); if (!v) continue;
+    if (v > 2 * H - 2.6) { R.ghost[i] = 1; nx++; continue; }
+    const cur = R.bclr[i] / 10; if (v > cur) { R.bclr[i] = Math.min(255, Math.round(v * 10)); R.flag[i] = (R.flag[i] & ~4) | (mL > mR ? 4 : 0); nc++; }
+  }
+  STATS.busClear = [nc, nx];
+}
+function roadAt(i, s, dir, off, out) {   // world position + heading at distance s along road i, `off` metres left of travel
+  const R = ROADS, p = R.start[i], c = R.lens[i], S = R.S, len = R.L[i];
+  s = s < 0 ? 0 : s > len ? len : s;
+  let lo = 0, hi = c - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S[p + m] <= s) lo = m; else hi = m; }
+  const f = clamp((s - S[p + lo]) / Math.max(1e-3, S[p + hi] - S[p + lo]), 0, 1), g = 1 - f, a = p + lo, b = p + hi, o = off * dir;
+  out.x = (R.xy[a * 2] * g + R.xy[b * 2] * f) * 0.5 + (R.MX[a] * g + R.MX[b] * f) * o;
+  out.z = (R.xy[a * 2 + 1] * g + R.xy[b * 2 + 1] * f) * 0.5 + (R.MZ[a] * g + R.MZ[b] * f) * o;
+  const hx = (R.TX[a] * g + R.TX[b] * f) * dir, hz = (R.TZ[a] * g + R.TZ[b] * f) * dir, hl = Math.hypot(hx, hz) || 1;
+  out.hx = hx / hl; out.hz = hz / hl;
+  out.y = R.br[i] ? R.zp[a] * g + R.zp[b] * f + 0.06 : 0.03;
   return out;
 }
-function laneOff(i, lane, two) {
-  const R = ROADS, H = R.hw[i] / 10, fl = R.flag[i];
-  if (fl & 1) { const nl = Math.max(1, Math.floor(2 * H / 3.2)), w = 2 * H / nl; return H - ((lane % nl) + 0.5) * w; }
-  const inner = fl & 2 ? 4.8 : 0.3, span = Math.max(1.4, H - inner), nl = Math.max(1, Math.floor(span / 3.2));
-  return inner + ((lane % nl) + 0.5) * span / nl;
+// usable band for traffic moving `dir` on road i, in metres left of travel: one-way roads use the whole carriageway,
+// two-way roads the left half (outside the bus lanes on BRTS roads), minus whatever the busway takes beside it
+const _ls = [0, 0];
+function laneSpan(i, dir, out) {
+  const R = ROADS, H = R.hw[i] / 10, fl = R.flag[i], bc = R.bclr[i] / 10;
+  let lo = -H, hi = H;
+  if (bc > 0) { if (fl & 4) hi -= bc; else lo += bc; }
+  const bm = R.bmid ? R.bmid[i] / 10 : 0;
+  if (fl & 1) {
+    if (fl & 2) { if (H - (bm + 4.8) >= (bm - 4.8) + H) { out[0] = bm + 4.8; out[1] = hi; } else { out[0] = lo; out[1] = bm - 4.8; } }   // the wider side of the bus lanes
+    else { out[0] = dir > 0 ? lo : -hi; out[1] = dir > 0 ? hi : -lo; }
+  } else if (fl & 2) { if (dir > 0) { out[0] = bm + 4.8; out[1] = hi; } else { out[0] = 4.8 - bm; out[1] = -lo; } }
+  else { out[0] = 0.3; out[1] = dir > 0 ? hi : -lo; }
+  return out[1] - out[0];
+}
+function laneCount(i, dir) { const w = laneSpan(i, dir, _ls); return w < 1.6 ? 0 : Math.max(1, Math.floor(w / 3.2)); }
+function laneOff(i, lane, dir) {   // lane 0 = kerb side
+  const w = laneSpan(i, dir, _ls); if (w < 1.6) return (_ls[0] + _ls[1]) / 2;
+  const nl = Math.max(1, Math.floor(w / 3.2)); return _ls[1] - (Math.min(lane, nl - 1) + 0.5) * w / nl;
 }
 function nextRoad(i, dir, walk) {   // pick the road to carry on onto at the node ahead
-  const R = ROADS, node = R.ends[i * 2 + (dir > 0 ? 1 : 0)], opts = [], wts = [];
-  const p = R.start[i], L = R.lens[i], q = dir > 0 ? p + L - 1 : p, q2 = dir > 0 ? Math.max(p, q - 1) : Math.min(p + L - 1, q + 1);
-  let tx = R.xy[q * 2] - R.xy[q2 * 2], tz = R.xy[q * 2 + 1] - R.xy[q2 * 2 + 1]; const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+  const R = ROADS, node = R.ends[i * 2 + (dir > 0 ? 1 : 0)], opts = [], wts = [], dots = [];
+  const q = dir > 0 ? R.start[i] + R.lens[i] - 1 : R.start[i], tx = R.TX[q] * dir, tz = R.TZ[q] * dir;
   for (const ke of R.nodes[node]) {
     const j = ke >> 1, e = ke & 1; if (j === i) continue;
     const d2 = e === 0 ? 1 : -1;
-    if (walk) { if (R.br[j] || R.sw[j] < 5) continue; }
-    else { if ((R.flag[j] & 1) && d2 < 0) continue; if (R.cls[j] === 0 && R.cls[i] > 2) continue; }
-    const pj = R.start[j], Lj = R.lens[j], a = e === 0 ? pj : pj + Lj - 1, b = e === 0 ? Math.min(pj + Lj - 1, pj + 1) : Math.max(pj, pj + Lj - 2);
-    let ux = R.xy[b * 2] - R.xy[a * 2], uz = R.xy[b * 2 + 1] - R.xy[a * 2 + 1]; const ul = Math.hypot(ux, uz) || 1; ux /= ul; uz /= ul;
-    const dot = tx * ux + tz * uz;
-    opts.push([j, d2]); wts.push((0.25 + Math.max(0, dot) ** 2 * 2.5) * (walk ? 1 : 0.6 + R.cls[j] * 0.25));
+    if (R.cls[j] === 7) continue;                                     // the busway is for buses (and nobody walks it)
+    if (walk) { if (R.br[j] || R.ghost[j] || R.sw[j] < 5) continue; }
+    else { if ((R.flag[j] & 1) && d2 < 0) continue; if (R.cls[j] === 0 && R.cls[i] > 2) continue; if (R.ghost[j] || !laneCount(j, d2)) continue; }
+    const a = e === 0 ? R.start[j] : R.start[j] + R.lens[j] - 1, dot = tx * R.TX[a] * d2 + tz * R.TZ[a] * d2;
+    opts.push(j, d2); wts.push((0.25 + Math.max(0, dot) ** 2 * 2.5) * (walk ? 1 : 0.6 + R.cls[j] * 0.25)); dots.push(dot);
   }
-  if (!opts.length) return null;
+  if (!wts.length) return null;
+  if (!walk && dots.some((d) => d >= -0.55)) dots.forEach((d, k) => { if (d < -0.55) wts[k] = 0; });   // no hairpins unless there is no other way
   let r = Math.random() * wts.reduce((a, b) => a + b, 0);
-  for (let k = 0; k < opts.length; k++) { r -= wts[k]; if (r <= 0) return opts[k]; }
-  return opts[opts.length - 1];
+  for (let k = 0; k < wts.length; k++) { r -= wts[k]; if (r <= 0) return [opts[k * 2], opts[k * 2 + 1]]; }
+  return [opts[opts.length - 2], opts[opts.length - 1]];
 }
+// visible ground box (bounding box of the view quad), refreshed whenever the view changes
+let VBOX = null;
+function setViewBox(Q) {
+  let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+  for (const [x, z] of Q) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (z < z0) z0 = z; if (z > z1) z1 = z; }
+  VBOX = { x0, x1, z0, z1 };
+}
+const inBox = (B, x, z, m = 0) => x > B.x0 - m && x < B.x1 + m && z > B.z0 - m && z < B.z1 + m;
+// writes a yaw-only instance transform (local +x forward) straight into an instance matrix array
+function putYaw(arr, k, x, y, z, hx, hz, sc) {
+  const o = k * 16;
+  arr[o] = hx * sc; arr[o + 1] = 0; arr[o + 2] = hz * sc; arr[o + 3] = 0;
+  arr[o + 4] = 0; arr[o + 5] = sc; arr[o + 6] = 0; arr[o + 7] = 0;
+  arr[o + 8] = -hz * sc; arr[o + 9] = 0; arr[o + 10] = hx * sc; arr[o + 11] = 0;
+  arr[o + 12] = x; arr[o + 13] = y; arr[o + 14] = z; arr[o + 15] = 1;
+}
+function flushInst(attr, n) {
+  attr.needsUpdate = true;
+  if (attr.clearUpdateRanges) { attr.clearUpdateRanges(); attr.addUpdateRange(0, Math.max(1, n) * attr.itemSize); }
+}
+
+// ---- vehicles: car-following (IDM), lane keeping, curved turns through junction boxes that are reserved before entry
 const TYPE_MIX = {   // by road class group: hatch sedan suv auto scooter bike tempo truck
   big: [0.21, 0.15, 0.14, 0.16, 0.15, 0.12, 0.055, 0.015], mid: [0.18, 0.1, 0.08, 0.21, 0.23, 0.15, 0.05, 0], small: [0.1, 0.04, 0.04, 0.2, 0.38, 0.2, 0.04, 0],
 };
 const CAR_COLS = [[0.34, '#f2f2ee'], [0.18, '#b9bdc2'], [0.1, '#6d7278'], [0.1, '#b3261e'], [0.08, '#1f4e9c'], [0.08, '#202226'], [0.05, '#7a2632'], [0.04, '#c99a3c'], [0.03, '#2e6b4a']];
 const TWO_COLS = [[0.25, '#e9e9e6'], [0.2, '#1c1c1f'], [0.15, '#a8221c'], [0.12, '#2b4f9e'], [0.1, '#9aa0a6'], [0.08, '#c08a2a'], [0.1, '#5c6066']];
 const pickCol = (tab) => { let r = Math.random(); for (const [w, c] of tab) { r -= w; if (r <= 0) return new THREE.Color(c); } return new THREE.Color(tab[0][1]); };
+const IDM = { car: { a: 1.5, b: 3.0, T: 1.2, s0: 1.8 }, two: { a: 2.2, b: 3.5, T: 0.8, s0: 1.2 }, heavy: { a: 0.9, b: 2.5, T: 1.6, s0: 2.5 } };
+const TR_CELL = 12, CAR_CAP = 160, SPAWN_W = [0.03, 0.12, 0.15, 0.45, 0.4, 0.9, 1, 0, 1, 1];
+const hk = (gx, gz) => (gx + 8192) * 16384 + (gz + 8192);
 function initTraffic() {
   streetGraph();
   const meshes = VTYPES.map((t) => {
     const G = new Geo(true); t.build(G);
-    const im = new THREE.InstancedMesh(G.mesh(VEHMAT).geometry, VEHMAT, 420);
-    im.count = 0; im.castShadow = false; im.receiveShadow = true; im.frustumCulled = false; im.renderOrder = 10;
-    im.setColorAt(0, _vc.set(1, 1, 1)); group.ground.add(im); return im;
+    const im = new THREE.InstancedMesh(G.mesh(VEHMAT).geometry, VEHMAT, CAR_CAP);
+    im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let k = 0; k < CAR_CAP; k++) im.setColorAt(k, _vc.set(1, 1, 1));
+    im.count = 0; im.castShadow = false; im.receiveShadow = true; im.frustumCulled = false; im.renderOrder = 10; im.visible = false;
+    group.ground.add(im); return im;
   });
-  TRAF = { cars: [], meshes, hash: new Map(), pos: {} };
+  planWorks(); buildWorks();
+  TRAF = { cars: [], fresh: [], meshes, slots: VTYPES.map(() => []), cdirty: VTYPES.map(() => false), H: new Map(), nxt: new Int32Array(2048),
+    box: new Map(), wait: new Map(), id: 0, shown: false, stat: [0, 0, 0] };
 }
-function spawnCar(cx, cz, R) {
-  const RD = ROADS;
-  for (let tries = 0; tries < 8; tries++) {
-    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * R, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+function carNear(x, z, r) {
+  const TT = TRAF, g0 = Math.floor((x - r) / TR_CELL), g1 = Math.floor((x + r) / TR_CELL), h0 = Math.floor((z - r) / TR_CELL), h1 = Math.floor((z + r) / TR_CELL);
+  for (let a = g0; a <= g1; a++) for (let b = h0; b <= h1; b++) {
+    for (let o = TT.H.get(hk(a, b)) ?? -1; o >= 0; o = TT.nxt[o]) { const d = TT.cars[o]; if ((d.x - x) ** 2 + (d.z - z) ** 2 < r * r) return true; }
+  }
+  for (const d of TT.fresh) if ((d.x - x) ** 2 + (d.z - z) ** 2 < r * r) return true;
+  return false;
+}
+function spawnCar(B, V, inside) {
+  const RD = ROADS, TT = TRAF;
+  for (let tries = 0; tries < 10; tries++) {
+    const x = B.x0 + Math.random() * (B.x1 - B.x0), z = B.z0 + Math.random() * (B.z1 - B.z0);
+    if (!inside && inBox(V, x, z)) continue;
     const cell = RD.grid.get(Math.floor(x / RD.CELL) * 4096 + Math.floor(z / RD.CELL)); if (!cell) continue;
     const i = cell[(Math.random() * cell.length) | 0], c = RD.cls[i];
-    if (c === 0 && Math.random() < 0.8) continue;
-    if (Math.random() > 0.25 + c * 0.09) continue;
-    const len = RD.S[RD.start[i] + RD.lens[i] - 1]; if (len < 6) continue;
-    const dir = RD.flag[i] & 1 ? 1 : Math.random() < 0.5 ? 1 : -1;
+    if (RD.ghost[i] || Math.random() > SPAWN_W[c]) continue;
+    const len = RD.L[i], n0 = RD.ends[i * 2], n1 = RD.ends[i * 2 + 1];
+    const m0 = RD.deg[n0] >= 3 ? RD.nodeH[n0] + 6 : 3, m1 = RD.deg[n1] >= 3 ? RD.nodeH[n1] + 6 : 3;
+    if (len - m0 - m1 < 4) continue;
+    const dir = RD.flag[i] & 1 ? 1 : Math.random() < 0.5 ? 1 : -1, nl = laneCount(i, dir); if (!nl) continue;
     const mix = c >= 5 ? TYPE_MIX.big : c >= 3 ? TYPE_MIX.mid : TYPE_MIX.small;
     let rr = Math.random(), t = 0; for (; t < mix.length - 1; t++) { rr -= mix[t]; if (rr <= 0) break; }
+    if (TT.slots[t].length >= CAR_CAP) continue;
     const T = VTYPES[t], vmax = [5, 7, 8, 10, 9, 12, 14, 9, 16, 19][c] * T.f * (0.85 + Math.random() * 0.25);
-    const car = { t, i, dir, s: Math.random() * len, lane: (Math.random() * 3) | 0, jit: T.two ? (Math.random() - 0.5) * 1.2 : 0, v: vmax * 0.6, vmax,
-      col: t === 3 ? new THREE.Color(1, 1, 1) : pickCol(T.two ? TWO_COLS : t === 7 ? [[1, '#e0a030']] : CAR_COLS), x: 0, z: 0, y: 0, hx: 1, hz: 0 };
-    roadAt(car.i, car.s, car.dir, laneOff(car.i, car.lane) + car.jit, car);
-    let clash = false;
-    for (const o of TRAF.cars) if (Math.abs(o.x - car.x) < 7 && Math.abs(o.z - car.z) < 7) { clash = true; break; }
-    if (clash) continue;
-    TRAF.cars.push(car); return;
+    const s = m0 + Math.random() * (len - m0 - m1), wk = WORKBY.get(i), jit = T.two ? (Math.random() - 0.5) * 1.1 : 0;
+    let lane = (Math.random() * nl) | 0; if (wk && wk.dir === dir && lane === 0) lane = 1;   // kerb lane is shut there
+    const car = { id: ++TT.id, t, i, dir, s, lane, jit, off: laneOff(i, lane, dir) + jit, v: 0, vmax, w: T.w, len: T.len, idm: T.two ? IDM.two : t >= 6 ? IDM.heavy : IDM.car,
+      col: t === 3 ? new THREE.Color(1, 1, 1) : pickCol(T.two ? TWO_COLS : t === 7 ? [[1, '#e0a030']] : CAR_COLS),
+      x: 0, y: 0, z: 0, hx: 1, hz: 0, rx: 1, rz: 0, mode: 0, cs: 0, plan: null, fa: inside ? 0 : 1, fade: 0, wait: 0, stuck: 0, blk: 0, slot: -1, dead: false };
+    roadAt(i, s, dir, car.off, car);
+    if (!inBox(B, car.x, car.z) || (!inside && inBox(V, car.x, car.z)) || carNear(car.x, car.z, 9)) continue;
+    car.v = vmax * 0.6; car.rx = car.hx; car.rz = car.hz;
+    car.slot = TT.slots[t].length; TT.slots[t].push(car); TT.meshes[t].setColorAt(car.slot, car.col); TT.cdirty[t] = true;
+    TT.cars.push(car); TT.fresh.push(car); TT.stat[inside && inBox(V, car.x, car.z) ? 0 : 1]++;
+    return car;
   }
+  return null;
+}
+function releaseBox(c) {
+  const pl = c.plan; if (!pl) return;
+  if (pl.held) { const a = TRAF.box.get(pl.node); if (a) { const k = a.indexOf(c); if (k >= 0) a.splice(k, 1); if (!a.length) TRAF.box.delete(pl.node); } pl.held = false; }
+  if (pl.queued) { const a = TRAF.wait.get(pl.node); if (a) { const k = a.indexOf(c); if (k >= 0) a.splice(k, 1); if (!a.length) TRAF.wait.delete(pl.node); } pl.queued = false; }
+}
+function dropCar(c) {
+  const TT = TRAF, sl = TT.slots[c.t], last = sl.pop();
+  if (last !== c) { sl[c.slot] = last; last.slot = c.slot; TT.meshes[c.t].setColorAt(last.slot, last.col); TT.cdirty[c.t] = true; }
+  releaseBox(c); c.dead = true;
+}
+// cubic Bezier helpers for turns (P = [x0,z0, x1,z1, x2,z2, x3,z3])
+const _bz = { x: 0, z: 0, hx: 1, hz: 0 }, _pa = { x: 0, y: 0, z: 0, hx: 1, hz: 0, len: 0 }, _pb = { x: 0, y: 0, z: 0, hx: 1, hz: 0, len: 0 };
+function bez(P, u, o) {
+  const v = 1 - u, a = v * v * v, b = 3 * v * v * u, c = 3 * v * u * u, d = u * u * u;
+  o.x = a * P[0] + b * P[2] + c * P[4] + d * P[6]; o.z = a * P[1] + b * P[3] + c * P[5] + d * P[7];
+  const da = -3 * v * v, db = 3 * v * v - 6 * v * u, dc = 6 * v * u - 3 * u * u, dd = 3 * u * u;
+  const hx = da * P[0] + db * P[2] + dc * P[4] + dd * P[6], hz = da * P[1] + db * P[3] + dc * P[5] + dd * P[7], l = Math.hypot(hx, hz);
+  if (l > 1e-6) { o.hx = hx / l; o.hz = hz / l; }
+  return o;
+}
+function bezCtrl(P, a, b, tight) {
+  const ch = Math.hypot(b.x - a.x, b.z - a.z), k = tight ? Math.max(ch * 0.42, 3.2) : ch * 0.42;
+  P[0] = a.x; P[1] = a.z; P[2] = a.x + a.hx * k; P[3] = a.z + a.hz * k; P[4] = b.x - b.hx * k; P[5] = b.z - b.hz * k; P[6] = b.x; P[7] = b.z;
+}
+function bezTable(P, t) {
+  let px = P[0], pz = P[1]; t[0] = 0; _bz.hx = 1; _bz.hz = 0;
+  for (let k = 1; k <= 16; k++) { bez(P, k / 16, _bz); t[k] = t[k - 1] + Math.hypot(_bz.x - px, _bz.z - pz); px = _bz.x; pz = _bz.z; }
+  return t[16];
+}
+function bezAt(P, t, d, o) {
+  if (d >= t[16]) return bez(P, 1, o); if (d <= 0) return bez(P, 0, o);
+  let k = 0; while (k < 15 && t[k + 1] < d) k++;
+  return bez(P, (k + (d - t[k]) / Math.max(1e-6, t[k + 1] - t[k])) / 16, o);
+}
+// plan the movement through the node ahead: next road, lane, mouth distances, the curve and a comfortable speed
+function planTurn(c) {
+  const RD = ROADS, i = c.i, dir = c.dir, len = RD.L[i], e = dir > 0 ? 1 : 0, node = RD.ends[i * 2 + e];
+  let nx = nextRoad(i, dir, false), ut = false;
+  if (!nx) { if (RD.flag[i] & 1) return { fade: true }; nx = [i, -dir]; ut = true; }
+  const j = nx[0], d2 = nx[1], lj = RD.L[j];
+  const qa = dir > 0 ? RD.start[i] + RD.lens[i] - 1 : RD.start[i], qb = d2 > 0 ? RD.start[j] : RD.start[j] + RD.lens[j] - 1;
+  const t0x = RD.TX[qa] * dir, t0z = RD.TZ[qa] * dir, t3x = RD.TX[qb] * d2, t3z = RD.TZ[qb] * d2;
+  const dot = clamp(t0x * t3x + t0z * t3z, -1, 1), th = Math.acos(dot), side = t3x * t0z - t3z * t0x;   // side > 0: turning left
+  const deg = ut || laneCount(j, d2) < laneCount(i, dir) ? Math.max(3, RD.deg[node]) : RD.deg[node];   // U-turns and lane drops reserve the box too
+  let ma, mb;
+  if (ut) ma = mb = Math.min(5, len * 0.35);
+  else if (deg >= 3) {
+    const base = RD.nodeH[node] + 2.2, M = SIGS && SIGS.mouth;
+    // wait a little further back than where turning cars finish, so right turns never sweep a waiting car's nose
+    ma = Math.max(base + 3.0, (M && M.get(i * 2 + e)) || 0); mb = Math.max(base, (M && M.get(j * 2 + (d2 > 0 ? 0 : 1))) || 0);
+  } else ma = mb = 1.0 + th * 2.6;
+  ma = clamp(ma, 0.6, len * 0.45); mb = clamp(mb, 0.6, lj * 0.45);
+  const nl2 = Math.max(1, laneCount(j, d2)), lane2 = ut ? nl2 - 1 : side > 0.3 ? 0 : side < -0.3 ? nl2 - 1 : Math.min(c.lane, nl2 - 1);
+  const sA = dir > 0 ? len - ma : ma, sB = ut ? sA : d2 > 0 ? mb : lj - mb, offB = laneOff(j, lane2, d2) + c.jit;
+  roadAt(i, sA, dir, laneOff(i, c.lane, dir) + c.jit, _pa); roadAt(j, sB, d2, offB, _pb);
+  const tight = ut || dot < -0.5, P = new Float32Array(8); bezCtrl(P, _pa, _pb, tight);
+  const ch = Math.hypot(_pb.x - _pa.x, _pb.z - _pa.z);
+  const vlim = th < 0.12 ? 99 : clamp(Math.sqrt(2.6 * Math.max(1.5, ch / (2 * Math.max(0.05, Math.sin(th / 2))))), 2.2, 99);
+  const sp = new Float32Array(26); for (let k = 0; k <= 12; k++) { bez(P, k / 12, _bz); sp[k * 2] = _bz.x; sp[k * 2 + 1] = _bz.z; }
+  return { fade: false, turn: ut ? 1 : side > 0.3 ? -1 : side < -0.3 ? 1 : 0, j, d2, ma, sB, lane2, offB, P, sp, tbl: new Float32Array(17), L: 0, vlim, node: RD.jc[node], deg, from: i * 2 + e, y0: _pa.y, y1: _pb.y, tight, held: false, queued: false };
+}
+function pathsClash(a, b) {
+  const A = a.plan.sp, B = b.plan.sp, lim = (a.w + b.w) / 2 + 0.6, l2 = lim * lim;
+  for (let p = 0; p < 13; p++) for (let q = 0; q < 13; q++) { const dx = A[p * 2] - B[q * 2], dz = A[p * 2 + 1] - B[q * 2 + 1]; if (dx * dx + dz * dz < l2) return true; }
+  return false;
+}
+function requestBox(c) {   // a junction box is entered only when no car inside (or waiting long) has a path that crosses ours
+  const TT = TRAF, pl = c.plan, occ = TT.box.get(pl.node), wl = TT.wait.get(pl.node);
+  if (occ) for (const o of occ) if (o !== c && o.plan && !(o.plan.from === pl.from && o.plan.j === pl.j && o.plan.lane2 === pl.lane2 && o.lane === c.lane) && pathsClash(c, o)) return false;   // same lane, same exit: just follow
+  if (wl) for (const o of wl) {
+    if (o === c || !o.plan) continue;
+    if (o.wait > 4 && o.wait > c.wait + 0.5 && o.plan.from !== pl.from && pathsClash(c, o)) return false;
+  }
+  // never sweep through a car standing in the way (waiting at the box edge, stopped at the lights, queued on the exit)
+  let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; const sp = pl.sp;
+  for (let k = 0; k < 13; k++) { x0 = Math.min(x0, sp[k * 2]); x1 = Math.max(x1, sp[k * 2]); z0 = Math.min(z0, sp[k * 2 + 1]); z1 = Math.max(z1, sp[k * 2 + 1]); }
+  for (let gx = Math.floor((x0 - 6) / TR_CELL); gx <= Math.floor((x1 + 6) / TR_CELL); gx++) for (let gz = Math.floor((z0 - 6) / TR_CELL); gz <= Math.floor((z1 + 6) / TR_CELL); gz++) {
+    for (let k = TT.H.get(hk(gx, gz)) ?? -1; k >= 0; k = TT.nxt[k]) {
+      const o = TT.cars[k]; if (o === c || o.dead || (o.mode === 1 && o.v > 0.5)) continue;
+      if (o.i === c.i && o.dir === c.dir && (o.x - c.x) * c.hx + (o.z - c.z) * c.hz < 0) continue;   // behind me on my approach
+      if (o.i === pl.j && o.dir === pl.d2 && o.mode === 0) continue;                 // ahead on my exit: just follow it
+      const lim = (c.w + o.w) / 2 + 0.4, bx = o.hx * o.len / 2, bz = o.hz * o.len / 2;
+      for (let q = 0; q < 13; q++) if (segD2(o.x - bx, o.z - bz, o.x + bx, o.z + bz, sp[q * 2], sp[q * 2 + 1]) < lim * lim) return false;
+    }
+  }
+  if (pl.queued && wl) { const k = wl.indexOf(c); if (k >= 0) wl.splice(k, 1); if (!wl.length) TT.wait.delete(pl.node); pl.queued = false; }
+  let a = occ; if (!a) TT.box.set(pl.node, (a = [])); a.push(c); pl.held = true; c.wait = 0;
+  return true;
+}
+function idmAcc(P, v, v0, gap, vl) {
+  let acc = P.a * (1 - (v / Math.max(0.5, v0)) ** 4);
+  if (gap < 1e8) { const ss = P.s0 + Math.max(0, v * P.T + v * (v - vl) / (2 * Math.sqrt(P.a * P.b))); acc -= P.a * (ss / Math.max(0.1, gap)) ** 2; }
+  return acc;
 }
 function stepTraffic(dt) {
   if (!TRAF) return false;
-  const show = view.mpp < 1.7;
-  for (const m of TRAF.meshes) m.visible = show;
-  if (!show) { TRAF.cars.length = 0; return false; }
-  const RD = ROADS, cx = view.tx, cz = view.tz, R = clamp(view.mpp * 650, 220, 1000), want = Math.min(800, Math.round(140 + R * 0.62));
-  TRAF.cars = TRAF.cars.filter((c) => Math.hypot(c.x - cx, c.z - cz) < R * 1.2);
-  for (let k = 0; k < 25 && TRAF.cars.length < want; k++) spawnCar(cx, cz, R);
-  const H = TRAF.hash; H.clear();
-  for (let k = 0; k < TRAF.cars.length; k++) { const c = TRAF.cars[k], key = Math.floor(c.x / 12) * 65536 + Math.floor(c.z / 12); let a = H.get(key); if (!a) H.set(key, (a = [])); a.push(k); }
-  const counts = new Array(VTYPES.length).fill(0);
-  for (let k = 0; k < TRAF.cars.length; k++) {
-    const c = TRAF.cars[k], T = VTYPES[c.t];
-    let tv = c.vmax;
-    // keep a gap to whatever is ahead in our lane
-    const gx = Math.floor((c.x + c.hx * 10) / 12), gz = Math.floor((c.z + c.hz * 10) / 12);
-    for (let a = gx - 1; a <= gx + 1; a++) for (let b = gz - 1; b <= gz + 1; b++) {
-      const arr = H.get(a * 65536 + b); if (!arr) continue;
-      for (const o of arr) {
-        if (o === k) continue; const d = TRAF.cars[o];
-        const rx = d.x - c.x, rz = d.z - c.z, al = rx * c.hx + rz * c.hz; if (al <= 0 || al > 26) continue;
-        const lat = Math.abs(rx * c.hz - rz * c.hx), cross = d.hx * c.hx + d.hz * c.hz < 0.2; if (lat > (cross ? 2.2 : T.two || VTYPES[d.t].two ? 1.0 : 1.7)) continue;
-        if (d.hx * c.hx + d.hz * c.hz < 0.2) {   // merging / crossing traffic: the later one yields at close range
-          if (al < (T.len + VTYPES[d.t].len) / 2 + 2.5 && o < k) tv = Math.min(tv, 0.4);
-          continue;
-        }
-        tv = Math.min(tv, Math.max(0, (al - (T.len + VTYPES[d.t].len) / 2 - 2.2) / 1.3));
-      }
-    }
-    // signals
-    if (SIGS) {
-      const arm = SIGS.armKey.get(c.i * 2 + (c.dir > 0 ? 1 : 0));
-      if (arm) {
-        const L = RD.S[RD.start[c.i] + RD.lens[c.i] - 1], dist = (c.dir > 0 ? L - c.s : c.s) - arm.stop - T.len / 2, st = sigState(arm.si, arm.ph);
-        if (st !== 2 && dist > -0.5 && dist < 45 && (st === 0 || dist > 7)) tv = Math.min(tv, Math.max(0, dist / 2.2));
-      }
-    }
-    c.v += clamp(tv - c.v, -7 * dt, 2.6 * dt); if (c.v < 0) c.v = 0;
-    c.s += c.v * dt * c.dir;
-    const L = RD.S[RD.start[c.i] + RD.lens[c.i] - 1];
-    if (c.s < 0 || c.s > L) {
-      const over = c.s < 0 ? -c.s : c.s - L, nx = nextRoad(c.i, c.dir, false);
-      if (!nx) { if (RD.flag[c.i] & 1) { c.dead = true; continue; } c.dir = -c.dir; c.s = clamp(c.s, 0, L); }
-      else { c.i = nx[0]; c.dir = nx[1]; const L2 = RD.S[RD.start[c.i] + RD.lens[c.i] - 1]; c.s = c.dir > 0 ? Math.min(over, L2) : Math.max(0, L2 - over); }
-    }
-    roadAt(c.i, c.s, c.dir, laneOff(c.i, c.lane) + c.jit, c);
-    const im = TRAF.meshes[c.t], n = counts[c.t]; if (n >= im.instanceMatrix.count) continue;
-    _vp.set(c.x, c.y, c.z); _vq.setFromAxisAngle(_vy, Math.atan2(-c.hz, c.hx)); _vm.compose(_vp, _vq, _vs);
-    im.setMatrixAt(n, _vm); im.setColorAt(n, c.col); counts[c.t] = n + 1;
+  const TT = TRAF, RD = ROADS, show = view.mpp < 1.7 && VBOX;
+  if (!show) {
+    if (TT.shown) { for (const c of TT.cars) dropCar(c); TT.cars.length = 0; TT.box.clear(); TT.wait.clear(); for (const m of TT.meshes) { m.count = 0; m.visible = false; } TT.shown = false; }
+    return false;
   }
-  TRAF.cars = TRAF.cars.filter((c) => !c.dead);
-  TRAF.meshes.forEach((im, t) => { im.count = counts[t]; im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true; });
+  if (!TT.shown) { for (const m of TT.meshes) m.visible = true; TT.shown = true; TT.fill = true; }
+  if (TT.pause) return true;
+  const V = VBOX, M = 70, B = { x0: V.x0 - M, x1: V.x1 + M, z0: V.z0 - M, z1: V.z1 + M };
+  const want = Math.round(clamp(Math.round((B.x1 - B.x0) * (B.z1 - B.z0) / 1e6 * 150), 110, 260) * (TT.boost || 1));
+  // retire cars that are out of sight beyond the margin, or have faded out
+  let w = 0;
+  for (const c of TT.cars) {
+    if (c.dead) continue;
+    if (!inBox(V, c.x, c.z, M + 50) || (c.fade && c.fa <= 0)) { dropCar(c); continue; }
+    TT.cars[w++] = c;
+  }
+  TT.cars.length = w;
+  if (TT.nxt.length < w + 64) TT.nxt = new Int32Array((w + 64) * 2);
+  TT.H.clear();
+  for (let k = 0; k < w; k++) { const c = TT.cars[k], key = hk(Math.floor(c.x / TR_CELL), Math.floor(c.z / TR_CELL)); TT.nxt[k] = TT.H.get(key) ?? -1; TT.H.set(key, k); }
+  // top up: off-screen in the margin ring, or (when far short, e.g. right after zooming in) anywhere, growing in
+  TT.fresh.length = 0;
+  if (TT.cars.length >= want * 0.8) TT.fill = false;
+  const inside = TT.fill || TT.cars.length < want * 0.3;
+  for (let k = 0; k < 24 && TT.cars.length < want; k++) spawnCar(B, V, inside);
+  const nAll = TT.cars.length; TT.nstep = (TT.nstep || 0) + 1; TT.lastDt = dt;
+  for (let k = 0; k < nAll; k++) {
+    const c = TT.cars[k], P = c.idm, len = RD.L[c.i];
+    if (c.fade) c.fa = Math.max(0, c.fa - dt * 1.5); else if (c.fa < 1) c.fa = Math.min(1, c.fa + dt * 1.5);
+    let de = c.dir > 0 ? len - c.s : c.s;
+    if (c.mode === 0 && !c.plan && de < 45 + c.v * 2) {
+      c.plan = planTurn(c);
+      if (!c.plan.fade && c.plan.turn && de > 25) { const nl = laneCount(c.i, c.dir); if (nl > 1) { c.lane = c.plan.turn < 0 ? 0 : nl - 1; c.plan = planTurn(c); } }   // get in lane for the turn
+    }
+    const pl = c.plan;
+    // whoever is in front of us (same way: follow; crossing right in front: the later arrival waits)
+    let gap = 1e9, vl = 0;
+    const gx = Math.floor((c.x + c.hx * 15) / TR_CELL), gz = Math.floor((c.z + c.hz * 15) / TR_CELL);
+    for (let a = gx - 1; a <= gx + 1; a++) for (let b = gz - 1; b <= gz + 1; b++) {
+      for (let o = TT.H.get(hk(a, b)) ?? -1; o >= 0; o = TT.nxt[o]) {
+        if (o === k) continue; const d = TT.cars[o]; if (d.dead) continue;
+        const rx = d.x - c.x, rz = d.z - c.z, al = rx * c.hx + rz * c.hz; if (al <= -c.len / 2 || al > 34) continue;
+        const latA = Math.abs(rx * c.hz - rz * c.hx);
+        const hd0 = c.hx * d.hx + c.hz * d.hz;
+        if (hd0 > 0.2 && hd0 < 0.92 && c.id > d.id && al < 14) {   // converging at an angle (merges without a shared node): closest approach in the next 1.5 s
+          const vx = d.v * d.hx - c.v * c.hx, vz = d.v * d.hz - c.v * c.hz, vv = vx * vx + vz * vz;
+          const t = vv > 1e-4 ? clamp(-(rx * vx + rz * vz) / vv, 0, 1.5) : 0, mx = rx + vx * t, mz = rz + vz * t;
+          if (mx * mx + mz * mz < ((c.w + d.w) / 2 + 0.7) ** 2) { gap = Math.min(gap, Math.max(0, Math.hypot(rx, rz) - (c.len + d.len) / 2)); vl = 0; }
+        }
+        if (al <= 0.05) { if (latA < (c.w + d.w) / 2 + 0.15 && c.id > d.id && hd0 > 0.2) { gap = Math.min(gap, 0); vl = 0; } continue; }
+        if (latA > (c.w + d.w) / 2 + 0.25) continue;
+        const hd = c.hx * d.hx + c.hz * d.hz, g = al - (c.len + d.len) / 2;
+        if (hd > 0.5) { if (g < gap) { gap = g; vl = d.v * hd; } }
+        else if (g < 5) { const yieldTo = (d.mode === 1 && c.mode === 0) || ((d.mode === 1) === (c.mode === 1) && d.id < c.id); if (yieldTo && g < gap) { gap = g; vl = 0; } }
+      }
+    }
+    let v0 = c.vmax, og = 1e9;   // og: distance to a point we must be able to stop at (red light, busy junction, dead end)
+    if (c.mode === 1) {   // on a curve: never sweep into anything standing on the rest of the path
+      let hit = 1e9;
+      for (const ahead of [2.5, 5, 8]) {
+        bezAt(pl.P, pl.tbl, c.cs + ahead + c.len / 2, _pa);
+        const gx = Math.floor(_pa.x / TR_CELL), gz = Math.floor(_pa.z / TR_CELL);
+        for (let a = gx - 1; a <= gx + 1; a++) for (let b = gz - 1; b <= gz + 1; b++) for (let o = TT.H.get(hk(a, b)) ?? -1; o >= 0; o = TT.nxt[o]) {
+          const d = TT.cars[o]; if (d === c || d.dead || d.v > 0.5) continue;
+          const lim = (c.w + d.w) / 2 + 0.3, bx = d.hx * d.len / 2, bz = d.hz * d.len / 2;
+          if (segD2(d.x - bx, d.z - bz, d.x + bx, d.z + bz, _pa.x, _pa.z) < lim * lim) hit = Math.min(hit, ahead - 0.6);
+        }
+        if (hit < 1e8) break;
+      }
+      if (hit < 1e8) {
+        og = Math.min(og, hit + P.s0);
+        if (pl.held && c.v < 0.3 && (c.blk += dt) > 1.0) releaseBox(c);   // stuck behind someone waiting for the box: let them have it
+      } else if (!pl.held) { if (requestBox(c)) c.blk = 0; else og = Math.min(og, P.s0); }   // take the box back before moving on
+    }
+    if (c.mode === 0) {   // dug-up kerb lane ahead: move out of it in good time, or stop short of the cones
+      const z = workZone(c);
+      if (z) { const al = c.dir > 0 ? c.s : len - c.s; if (al > z[0] - 60 && al < z[1] + 2) { if (c.lane === 0) c.lane = 1; if (al < z[0] && Math.abs(c.off - (laneOff(c.i, 0, c.dir) + c.jit)) < 1.3) og = Math.min(og, z[0] - al - c.len / 2 + P.s0); } }
+    }
+    if (PEDS && PEDS.cross.length) for (const q of PEDS.cross) {   // somebody on the carriageway ahead: stop for them
+      const rx = q.x - c.x, rz = q.z - c.z, al = rx * c.hx + rz * c.hz;
+      if (al > 0 && al < 30 && Math.abs(rx * c.hz - rz * c.hx) < c.w / 2 + 0.9) og = Math.min(og, al - c.len / 2 - 1.2 + P.s0);
+    }
+    if (c.mode === 0 && pl) {
+      if (pl.fade) { og = de - 0.5 - c.len / 2 + P.s0; if (de < 6 && c.v < 0.5) c.fade = 1; }
+      else {
+        const dcs = de - pl.ma, front = dcs - c.len / 2;
+        v0 = Math.min(v0, Math.sqrt(pl.vlim * pl.vlim + 4.0 * Math.max(0, dcs)));
+        let red = false;
+        if (SIGS) {
+          const arm = SIGS.armKey.get(c.i * 2 + (c.dir > 0 ? 1 : 0));
+          if (arm) {
+            const st = sigState(arm.si, arm.ph), dist = de - Math.max(arm.stop, pl.ma) - c.len / 2;
+            if (st !== 2 && dist > -0.5 && (st === 0 || dist > 7)) { red = true; og = Math.min(og, dist + P.s0); if (pl.held) releaseBox(c); }
+          }
+        }
+        if (!red && pl.deg >= 3 && !pl.held) {
+          if (front < c.v * c.v / 4 + 14 && gap > front - 1 && !requestBox(c)) {
+            if (!pl.queued) { let a = TT.wait.get(pl.node); if (!a) TT.wait.set(pl.node, (a = [])); a.push(c); pl.queued = true; }
+            c.wait += dt;
+          }
+          if (!pl.held && front < c.v * c.v / 4 + 18) og = Math.min(og, front + P.s0);
+        }
+        if (!red && pl.deg >= 3 && !pl.held) {   // not cleared: keep well clear of the paths of the cars already in the box
+          const occ = TT.box.get(pl.node);
+          if (occ) for (const o of occ) { const sp = o.plan && o.plan.sp; if (!sp || o === c) continue;
+            const lim = (c.w + o.w) / 2 + 1.0;
+            for (let q = 0; q < 13; q++) { const rx = sp[q * 2] - c.x, rz = sp[q * 2 + 1] - c.z, al = rx * c.hx + rz * c.hz;
+              if (al > -c.len / 2 && Math.abs(rx * c.hz - rz * c.hx) < lim) og = Math.min(og, al - c.len / 2 - o.w / 2 - 0.9 + P.s0); } }
+        }
+      }
+    } else if (c.mode === 1) v0 = Math.min(v0, pl.vlim);
+    let acc = idmAcc(P, c.v, v0, gap, vl);
+    if (og < 1e8) acc = Math.min(acc, idmAcc(P, c.v, v0, og, 0));
+    acc = clamp(acc, -9, P.a);
+    c.v = Math.max(0, c.v + acc * dt);
+    if (gap < 0.15 || og < P.s0 - 1.2) c.v = Math.min(c.v, 0.3 * Math.max(0, Math.min(gap, og - P.s0 + 1.2)));
+    c.stuck = c.v < 0.05 ? c.stuck + dt : 0;
+    if (c.stuck > 45 && !c.fade) { c.fade = 1; releaseBox(c); TT.stat[2]++; }
+    // move
+    if (c.mode === 0) {
+      c.s += c.v * dt * c.dir; de = c.dir > 0 ? len - c.s : c.s;
+      const tgt = laneOff(c.i, c.lane, c.dir) + c.jit, dl = tgt - c.off;
+      if (Math.abs(dl) > 0.05) {   // changing lane: only into a gap (nobody alongside on that side)
+        let free = true; const gx0 = Math.floor(c.x / TR_CELL), gz0 = Math.floor(c.z / TR_CELL);
+        for (let a = gx0 - 1; a <= gx0 + 1 && free; a++) for (let b = gz0 - 1; b <= gz0 + 1 && free; b++) {
+          for (let o = TT.H.get(hk(a, b)) ?? -1; o >= 0; o = TT.nxt[o]) {
+            const d = TT.cars[o]; if (d === c || d.dead) continue;
+            const rx = d.x - c.x, rz = d.z - c.z, al = rx * c.hx + rz * c.hz, lat = rx * c.hz - rz * c.hx;
+            if (c.hx * d.hx + c.hz * d.hz > 0.5 && Math.abs(al) < (c.len + d.len) / 2 + 1.5 && lat * dl > 0 && Math.abs(lat) < (c.w + d.w) / 2 + Math.abs(dl) + 0.3) { free = false; break; }
+          }
+        }
+        if (free) c.off += clamp(dl, -1.1 * dt, 1.1 * dt); else c.v = Math.max(0, c.v - 1.5 * dt);
+      }
+      if (pl && pl.fade) { if (de < 0.3) { c.s = c.dir > 0 ? len - 0.3 : 0.3; c.v = 0; c.fade = 1; } }
+      else if (pl && de <= pl.ma) {
+        if (pl.deg >= 3 && !pl.held) c.v = 0;   // not cleared yet: wait at the edge of the box
+        else {
+          roadAt(c.i, c.dir > 0 ? len - pl.ma : pl.ma, c.dir, c.off, _pa); roadAt(pl.j, pl.sB, pl.d2, pl.offB, _pb);
+          bezCtrl(pl.P, _pa, _pb, pl.tight); pl.L = bezTable(pl.P, pl.tbl); pl.y0 = _pa.y; pl.y1 = _pb.y;
+          const moved = Math.abs(pl.sp[0] - _pa.x) + Math.abs(pl.sp[1] - _pa.z) > 0.4;
+          for (let k = 0; k <= 12; k++) { bez(pl.P, k / 12, _bz); pl.sp[k * 2] = _bz.x; pl.sp[k * 2 + 1] = _bz.z; }
+          if (moved && pl.deg >= 3) { releaseBox(c); if (!requestBox(c)) c.v = 0; }   // the real path differs from the planned one: check it again
+          if (pl.deg < 3 || pl.held) { c.mode = 1; c.cs = pl.ma - de; c.blk = 0; }
+        }
+      }
+    } else {
+      c.cs += c.v * dt;
+      if (c.cs >= pl.L) {
+        const over = c.cs - pl.L; releaseBox(c);
+        c.i = pl.j; c.dir = pl.d2; c.lane = pl.lane2; c.off = pl.offB; c.s = clamp(pl.sB + over * pl.d2, 0, RD.L[pl.j]); c.mode = 0; c.plan = null;
+      }
+    }
+    if (c.mode === 0) roadAt(c.i, c.s, c.dir, c.off, c);
+    else { bezAt(pl.P, pl.tbl, c.cs, _bz); c.x = _bz.x; c.z = _bz.z; c.hx = _bz.hx; c.hz = _bz.hz; c.y = pl.y0 + (pl.y1 - pl.y0) * clamp(c.cs / Math.max(0.1, pl.L), 0, 1); }
+    {   // drawn heading turns at a bounded rate (no snapping on tight curves)
+      const cr = c.rx * c.hz - c.rz * c.hx, dp = c.rx * c.hx + c.rz * c.hz, ang = Math.atan2(cr, dp), mx = 3.2 * dt;
+      const t = clamp(ang, -mx, mx), ct = Math.cos(t), st = Math.sin(t), nx = c.rx * ct - c.rz * st, nz = c.rx * st + c.rz * ct;
+      c.rx = nx; c.rz = nz;
+    }
+  }
+  const zf = 1 - 0.85 * smoothstep(1.35, 1.7, view.mpp);   // shrink away as the flow streaks take over
+  // draw: every car owns a fixed instance slot, so colours are uploaded only when cars come and go
+  for (let t = 0; t < VTYPES.length; t++) {
+    const im = TT.meshes[t], sl = TT.slots[t], arr = im.instanceMatrix.array;
+    for (let q = 0; q < sl.length; q++) { const c = sl[q], f = c.fa, sc = (f >= 1 ? 1 : 0.2 + 0.8 * f * f * (3 - 2 * f)) * zf; putYaw(arr, q, c.x, c.y, c.z, c.rx, c.rz, sc); }
+    im.count = sl.length; flushInst(im.instanceMatrix, sl.length);
+    if (TT.cdirty[t]) { im.instanceColor.needsUpdate = true; TT.cdirty[t] = false; }
+  }
   return true;
 }
-// ---- pedestrians on the footpaths
+// ---- pedestrians on the footpaths: keep left, sidestep oncoming walkers, queue or overtake slower ones, never overlap
 const PEDMAT = new THREE.MeshLambertMaterial({ color: 0xffffff });
 PEDMAT.onBeforeCompile = (sh) => {
   sh.uniforms.uTime = U.uTime;
@@ -3691,6 +4152,7 @@ PEDMAT.onBeforeCompile = (sh) => {
 };
 const SHIRTS = ['#f1f1ec', '#9cc3e6', '#f29a2e', '#7a1f2b', '#2f7d4f', '#e8c547', '#d9578f', '#2b2d33', '#5a7fc2', '#c8463a', '#e7d9b9', '#4c3a6e'].map((c) => new THREE.Color(c));
 const PANTS = ['#1f2a44', '#151517', '#8a7a5a', '#54575c', '#2c3e5c', '#6b4a33'].map((c) => new THREE.Color(c));
+const PED_CAP = 240, PED_CELL = 3;
 function initPeds() {
   const G = new Geo(true), P = (G2, x0, x1, y0, y1, z0, z1, part, swing, piv) => {
     const e = [part, swing, piv, 0], c = [1, 1, 1];
@@ -3701,59 +4163,152 @@ function initPeds() {
   P(G, -0.08, 0.08, 0.0, 0.84, 0.02, 0.15, 2, 1, 0.84); P(G, -0.08, 0.08, 0.0, 0.84, -0.15, -0.02, 2, -1, 0.84);
   P(G, -0.11, 0.11, 0.82, 1.4, -0.19, 0.19, 1, 0, 0); P(G, -0.06, 0.06, 0.86, 1.38, 0.19, 0.27, 1, -2, 1.38); P(G, -0.06, 0.06, 0.86, 1.38, -0.27, -0.19, 1, 2, 1.38);
   P(G, -0.07, 0.07, 1.4, 1.46, -0.06, 0.06, 0, 0, 0); P(G, -0.1, 0.1, 1.45, 1.68, -0.09, 0.09, 0, 0, 0); P(G, -0.11, 0.08, 1.62, 1.72, -0.1, 0.1, 3, 0, 0);
-  const geo = G.mesh(PEDMAT).geometry, MAX = 1200;
-  const shirt = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3), pants = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3), ph = new THREE.InstancedBufferAttribute(new Float32Array(MAX), 1);
+  const geo = G.mesh(PEDMAT).geometry;
+  const shirt = new THREE.InstancedBufferAttribute(new Float32Array(PED_CAP * 3), 3), pants = new THREE.InstancedBufferAttribute(new Float32Array(PED_CAP * 3), 3), ph = new THREE.InstancedBufferAttribute(new Float32Array(PED_CAP), 1);
   geo.setAttribute('iShirt', shirt); geo.setAttribute('iPants', pants); geo.setAttribute('iPhase', ph);
-  const im = new THREE.InstancedMesh(geo, PEDMAT, MAX); im.count = 0; im.castShadow = false; im.frustumCulled = false; im.renderOrder = 10;
+  const im = new THREE.InstancedMesh(geo, PEDMAT, PED_CAP); im.count = 0; im.castShadow = false; im.frustumCulled = false; im.renderOrder = 10; im.visible = false;
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   group.ground.add(im);
-  PEDS = { list: [], im, shirt, pants, ph };
+  PEDS = { list: [], im, shirt, pants, ph, H: new Map(), nxt: new Int32Array(PED_CAP + 16), adirty: false, shown: false, cross: [] };
 }
-function spawnPed(cx, cz, R) {
-  const RD = ROADS;
-  for (let tries = 0; tries < 8; tries++) {
-    const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * R, x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+function pedAttrs(k, p) {
+  const P = PEDS, sh = p.shirt, pa = p.pants || p.shirt;
+  P.shirt.setXYZ(k, sh.r, sh.g, sh.b); P.pants.setXYZ(k, pa.r, pa.g, pa.b); P.ph.setX(k, p.ph); P.adirty = true;
+}
+const pedSideOk = (i, side) => { const R = ROADS; if (!R.bclr[i]) return true; return (R.flag[i] & 4 ? 1 : -1) !== side; };   // that side is busway
+const pedW = (i) => Math.max(1.3, ROADS.sw[i] / 10 - 0.4);   // narrow footpaths: people spill onto the verge to pass
+function pedPose(p) {   // on the footpath: side is in the road's drawn frame, lat runs across the footpath (0 kerb .. 1 outside)
+  const RD = ROADS; roadAt(p.i, p.s, 1, p.side * (RD.hw[p.i] / 10 + 0.3 + p.lat * pedW(p.i)), p); p.hx *= p.dir; p.hz *= p.dir;
+}
+function footMasked(i, s, side) {   // footpath at s lies on another carriageway (a junction mouth, a slip road)?
+  const RD = ROADS, p = RD.start[i], c = RD.lens[i], S = RD.S; let lo = 0, hi = c - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S[p + m] <= s) lo = m; else hi = m; }
+  const k = side > 0 ? 0 : 1; return (RD.pmask[(p + lo) * 2 + k] & 2) && (RD.pmask[(p + hi) * 2 + k] & 2);
+}
+function spawnPed(B, V, inside) {
+  const RD = ROADS, P = PEDS;
+  for (let tries = 0; tries < 10; tries++) {
+    const x = B.x0 + Math.random() * (B.x1 - B.x0), z = B.z0 + Math.random() * (B.z1 - B.z0);
+    if (!inside && inBox(V, x, z)) continue;
     const cell = RD.grid.get(Math.floor(x / RD.CELL) * 4096 + Math.floor(z / RD.CELL)); if (!cell) continue;
     const i = cell[(Math.random() * cell.length) | 0];
-    if (RD.br[i] || RD.sw[i] < 6) continue;
-    if (Math.random() > 0.35 + RD.cls[i] * 0.08) continue;
-    const len = RD.S[RD.start[i] + RD.lens[i] - 1]; if (len < 25) continue;
-    const p = { i, dir: Math.random() < 0.5 ? 1 : -1, s: Math.random() * len, side: Math.random() < 0.5 ? 1 : -1, lat: Math.random(), v: 1.0 + Math.random() * 0.6,
-      ph: Math.random() * 100, sc: 0.9 + Math.random() * 0.2, shirt: SHIRTS[(Math.random() * SHIRTS.length) | 0], pants: Math.random() < 0.25 ? null : PANTS[(Math.random() * PANTS.length) | 0], x: 0, z: 0, y: 0, hx: 1, hz: 0 };
-    PEDS.list.push(p); return;
+    if (RD.br[i] || RD.ghost[i] || RD.sw[i] < 6 || RD.cls[i] === 7 || Math.random() > 0.35 + RD.cls[i] * 0.08) continue;
+    const len = RD.L[i]; if (len < 25) continue;
+    const side = Math.random() < 0.5 ? 1 : -1, s = 4 + Math.random() * (len - 8);
+    if (!pedSideOk(i, side) || footMasked(i, s, side)) continue;
+    const lat = 0.2 + Math.random() * 0.6;
+    const p = { i, dir: Math.random() < 0.5 ? 1 : -1, s, side, lat, pl: lat, v: 1.0 + Math.random() * 0.6, cv: 1.0, ph: Math.random() * 100, sc: 0.9 + Math.random() * 0.2,
+      shirt: SHIRTS[(Math.random() * SHIRTS.length) | 0], pants: Math.random() < 0.25 ? null : PANTS[(Math.random() * PANTS.length) | 0],
+      x: 0, y: 0, z: 0, hx: 1, hz: 0, rx: 1, rz: 0, mode: 0, cn: null, cd: 0, chk: Math.random() * 0.4, fa: inside ? 0 : 1, fade: 0 };
+    pedPose(p);
+    if (!inBox(B, p.x, p.z) || (!inside && inBox(V, p.x, p.z))) continue;
+    let clash = false; for (const o of P.list) if ((o.x - p.x) ** 2 + (o.z - p.z) ** 2 < 1.0) { clash = true; break; }
+    if (clash) continue;
+    p.rx = p.hx; p.rz = p.hz; p.cv = p.v;
+    pedAttrs(P.list.length, p); P.list.push(p); return p;
   }
+  return null;
+}
+function pedNextRoad(p) {   // walked off the end of this footpath: carry on round the corner / across the mouth, or turn back
+  const RD = ROADS, nx = nextRoad(p.i, p.dir, true);
+  if (!nx) { p.dir = -p.dir; return; }
+  const [j, d2] = nx, ts = p.side * p.dir, L2 = RD.L[j];
+  const q = { i: j, dir: d2, s: d2 > 0 ? 0.3 : L2 - 0.3, side: ts * d2, lat: p.lat, x: 0, y: 0, z: 0, hx: 1, hz: 0 };
+  pedPose(q);
+  const dx = q.x - p.x, dz = q.z - p.z, d = Math.hypot(dx, dz);
+  let run = 0; while (run < 20 && footMasked(j, q.s + d2 * (1 + run), q.side)) run += 2;   // its footpath starts across the mouth: fine if short
+  if (d > 28 || run >= 20 || !pedSideOk(j, q.side)) { p.dir = -p.dir; return; }
+  if (d < 0.4) { p.i = j; p.dir = d2; p.s = q.s; p.side = q.side; return; }
+  p.mode = 2; p.cd = 0; p.wt = 0; p.cn = { ax: p.x, az: p.z, ay: p.y, bx: q.x, bz: q.z, by: q.y, L: d, j, d2, s: q.s, side: q.side };   // wait at the kerb
+}
+function segD2(ax, az, bx, bz, px, pz) { const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1, t = clamp(((px - ax) * dx + (pz - az) * dz) / l2, 0, 1), ex = ax + dx * t - px, ez = az + dz * t - pz; return ex * ex + ez * ez; }
+function segSeg2(ax, az, bx, bz, cx, cz, dx, dz) {   // squared distance between segments AB and CD
+  const o = (px, pz, qx, qz, rx, rz) => (qx - px) * (rz - pz) - (qz - pz) * (rx - px);
+  const o1 = o(ax, az, bx, bz, cx, cz), o2 = o(ax, az, bx, bz, dx, dz), o3 = o(cx, cz, dx, dz, ax, az), o4 = o(cx, cz, dx, dz, bx, bz);
+  if (o1 * o2 < 0 && o3 * o4 < 0) return 0;
+  return Math.min(segD2(ax, az, bx, bz, cx, cz), segD2(ax, az, bx, bz, dx, dz), segD2(cx, cz, dx, dz, ax, az), segD2(cx, cz, dx, dz, bx, bz));
+}
+function roadClear(c) {   // no vehicle on the crossing, or due to reach it within ~4 s
+  if (!TRAF || !TRAF.shown) return true;
+  const TT = TRAF, g0 = Math.floor((Math.min(c.ax, c.bx) - 30) / TR_CELL), g1 = Math.floor((Math.max(c.ax, c.bx) + 30) / TR_CELL);
+  const h0 = Math.floor((Math.min(c.az, c.bz) - 30) / TR_CELL), h1 = Math.floor((Math.max(c.az, c.bz) + 30) / TR_CELL);
+  for (let a = g0; a <= g1; a++) for (let b = h0; b <= h1; b++) for (let o = TT.H.get(hk(a, b)) ?? -1; o >= 0; o = TT.nxt[o]) {
+    const d = TT.cars[o]; if (!d || d.dead) continue;
+    const look = Math.min(30, d.v * 4 + d.len / 2 + 1);
+    if (segSeg2(c.ax, c.az, c.bx, c.bz, d.x - d.hx * d.len / 2, d.z - d.hz * d.len / 2, d.x + d.hx * look, d.z + d.hz * look) < 2.6 * 2.6) return false;
+  }
+  return true;
 }
 function stepPeds(dt) {
   if (!PEDS) return false;
-  const show = view.mpp < 0.9; PEDS.im.visible = show;
-  if (!show) { PEDS.list.length = 0; return false; }
-  const RD = ROADS, cx = view.tx, cz = view.tz, R = clamp(view.mpp * 520, 120, 420), want = Math.min(700, Math.round(70 + R * 0.95));
-  PEDS.list = PEDS.list.filter((p) => Math.hypot(p.x - cx, p.z - cz) < R * 1.2);
-  for (let k = 0; k < 30 && PEDS.list.length < want; k++) spawnPed(cx, cz, R);
-  let n = 0;
-  for (const p of PEDS.list) {
-    p.s += p.v * dt * p.dir;
-    const L = RD.S[RD.start[p.i] + RD.lens[p.i] - 1];
-    if (p.s < 0 || p.s > L) {
-      const nx = nextRoad(p.i, p.dir, true);
-      if (!nx) { p.dir = -p.dir; p.s = clamp(p.s, 0, L); }
-      else { p.i = nx[0]; p.dir = nx[1]; const L2 = RD.S[RD.start[p.i] + RD.lens[p.i] - 1]; p.s = p.dir > 0 ? 0.2 : L2 - 0.2; }
-    }
-    const H = RD.hw[p.i] / 10, sw = RD.sw[p.i] / 10;
-    roadAt(p.i, p.s, p.dir, p.side * (H + 0.35 + p.lat * Math.max(0.1, sw - 0.7)), p);
-    { // footpath here lies on another carriageway (junction mouths, slip roads): keep walking, but out of sight
-      const pp = RD.start[p.i], Lq = RD.lens[p.i]; let lo = 0, hi = Lq - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (RD.S[pp + m] <= p.s) lo = m; else hi = m; }
-      const sideIdx = (p.side * p.dir > 0) ? 0 : 1;
-      if ((RD.pmask[(pp + lo) * 2 + sideIdx] & 2) || (RD.pmask[(pp + hi) * 2 + sideIdx] & 2)) continue;
-    }
-    if (n >= PEDS.im.instanceMatrix.count) continue;
-    _vp.set(p.x, p.y, p.z); _vq.setFromAxisAngle(_vy, Math.atan2(-p.hz, p.hx)); _vs.set(p.sc, p.sc, p.sc); _vm.compose(_vp, _vq, _vs);
-    PEDS.im.setMatrixAt(n, _vm);
-    const sh = p.shirt, pa = p.pants || p.shirt;
-    PEDS.shirt.setXYZ(n, sh.r, sh.g, sh.b); PEDS.pants.setXYZ(n, pa.r, pa.g, pa.b); PEDS.ph.setX(n, p.ph);
-    n++;
+  const P = PEDS, RD = ROADS, show = view.mpp < 0.9 && VBOX;
+  if (!show) { if (P.shown) { P.list.length = 0; P.cross.length = 0; P.im.count = 0; P.im.visible = false; P.shown = false; } return false; }
+  if (!P.shown) { P.im.visible = true; P.shown = true; P.fill = true; }
+  const V = VBOX, M = 30, B = { x0: V.x0 - M, x1: V.x1 + M, z0: V.z0 - M, z1: V.z1 + M };
+  const want = clamp(Math.round((B.x1 - B.x0) * (B.z1 - B.z0) / 1e6 * 110), 60, 200), L = P.list;
+  for (let k = L.length - 1; k >= 0; k--) {   // retire (swap the last walker into the freed slot)
+    const p = L[k]; if (inBox(V, p.x, p.z, M + 30) && !(p.fade && p.fa <= 0)) continue;
+    const last = L.pop(); if (k < L.length) { L[k] = last; pedAttrs(k, last); }
   }
-  _vs.set(1, 1, 1);
-  PEDS.im.count = n; PEDS.im.instanceMatrix.needsUpdate = true; PEDS.shirt.needsUpdate = true; PEDS.pants.needsUpdate = true; PEDS.ph.needsUpdate = true;
+  if (L.length >= want * 0.8) P.fill = false;
+  const inside = P.fill || L.length < want * 0.3;
+  for (let k = 0; k < 10 && L.length < want && L.length < PED_CAP; k++) spawnPed(B, V, inside);
+  P.H.clear();
+  for (let k = 0; k < L.length; k++) { const p = L[k], key = hk(Math.floor(p.x / PED_CELL), Math.floor(p.z / PED_CELL)); P.nxt[k] = P.H.get(key) ?? -1; P.H.set(key, k); }
+  const arr = P.im.instanceMatrix.array;
+  for (let k = 0; k < L.length; k++) {
+    const p = L[k];
+    if (p.fade) p.fa = Math.max(0, p.fa - dt * 1.5); else if (p.fa < 1) p.fa = Math.min(1, p.fa + dt * 1.5);
+    // neighbours: push = wanted sideways speed (m/s, + = to my left); lead = distance to someone I must not walk into
+    let push = 0, lead = 1e9, leadV = 0;
+    const gx = Math.floor(p.x / PED_CELL), gz = Math.floor(p.z / PED_CELL);
+    for (let a = gx - 1; a <= gx + 1; a++) for (let b = gz - 1; b <= gz + 1; b++) {
+      for (let o = P.H.get(hk(a, b)) ?? -1; o >= 0; o = P.nxt[o]) {
+        if (o === k) continue; const q = L[o];
+        const rx = q.x - p.x, rz = q.z - p.z, d2 = rx * rx + rz * rz; if (d2 > 6.25) continue;
+        const al = rx * p.hx + rz * p.hz, lat = rx * p.hz - rz * p.hx, hd = p.hx * q.hx + p.hz * q.hz, d = Math.sqrt(d2);
+        if (al > 0 && al < 2.4 && Math.abs(lat) < 0.6) {
+          if (hd < -0.2) push += lat > 0.05 ? -0.35 : 0.75;            // oncoming: keep left (or stay right of someone already on my left)
+          else if (q.cv < p.cv - 0.05) { push -= 0.5; if (al < lead) { lead = al; leadV = q.cv; } }   // slower ahead: overtake on the right
+          else if (al < lead) { lead = al; leadV = q.cv * Math.max(0, hd); }
+        }
+        if (d < 0.6 && d > 1e-4) { push -= (lat >= 0 ? 1 : -1) * (0.6 - d) * 4; if (al > 0 && al < lead) { lead = al; leadV = Math.min(leadV, q.cv * Math.max(0, hd)); } }
+      }
+    }
+    if (p.mode === 0) {
+      const w = pedW(p.i), dl = 1 / (p.side * p.dir * w);
+      if (push === 0) p.lat += clamp(p.pl - p.lat, -0.12 * dt, 0.12 * dt); else p.lat += clamp(push, -0.8, 0.8) * dt * dl;
+      p.lat = clamp(p.lat, 0.04, 0.96);
+    }
+    let tv = p.v; if (lead < 1.8) tv = Math.min(tv, Math.max(0, leadV + (lead - 0.75) * 0.9));
+    p.cv += clamp(tv - p.cv, -2.5 * dt, 1.0 * dt);
+    if (p.mode === 0) {
+      p.s += p.cv * dt * p.dir;
+      if ((p.chk -= dt) < 0) {   // a long stretch of footpath on another carriageway ahead: turn back instead
+        p.chk = 0.4;
+        p.onRoad = footMasked(p.i, p.s, p.side);
+        if (footMasked(p.i, p.s + p.dir * 1.5, p.side)) { let run = 0; while (run < 18 && footMasked(p.i, p.s + p.dir * (1.5 + run), p.side)) run += 2; if (run >= 18) p.dir = -p.dir; }
+      }
+      const Lr = RD.L[p.i];
+      if (p.s < 0 || p.s > Lr) { p.s = clamp(p.s, 0, Lr); pedNextRoad(p); }
+      if (p.mode === 0) pedPose(p);
+    }
+    if (p.mode === 2) {   // at the kerb: cross when the road is clear (or after a long wait, when drivers will stop anyway)
+      const c = p.cn; p.wt += dt; p.cv = 0; p.hx = (c.bx - c.ax) / c.L; p.hz = (c.bz - c.az) / c.L;
+      if (p.wt > 0.6 && (roadClear(c) || p.wt > 14)) p.mode = 1;
+    }
+    if (p.mode === 1) {
+      const c = p.cn; p.cd += p.cv * dt;
+      if (p.cd >= c.L) { p.mode = 0; p.i = c.j; p.dir = c.d2; p.s = c.s; p.side = c.side; p.cn = null; pedPose(p); }
+      else { const f = p.cd / c.L; p.x = c.ax + (c.bx - c.ax) * f; p.z = c.az + (c.bz - c.az) * f; p.y = c.ay + (c.by - c.ay) * f; p.hx = (c.bx - c.ax) / c.L; p.hz = (c.bz - c.az) / c.L; }
+    }
+    const kk = Math.min(1, dt * 9); p.rx += (p.hx - p.rx) * kk; p.rz += (p.hz - p.rz) * kk; const rl = Math.hypot(p.rx, p.rz) || 1; p.rx /= rl; p.rz /= rl;
+    const f = p.fa, sc = p.sc * (f >= 1 ? 1 : 0.2 + 0.8 * f * f * (3 - 2 * f));
+    putYaw(arr, k, p.x, p.y, p.z, p.rx, p.rz, sc);
+  }
+  P.cross.length = 0; for (const p of L) if (p.mode === 1 || (p.mode === 0 && p.onRoad)) P.cross.push(p);
+  P.im.count = L.length; flushInst(P.im.instanceMatrix, L.length);
+  if (P.adirty) { P.shirt.needsUpdate = true; P.pants.needsUpdate = true; P.ph.needsUpdate = true; P.adirty = false; }
   return true;
 }
 function stepStreet(dt) {
@@ -3763,21 +4318,134 @@ function stepStreet(dt) {
   return a || b;
 }
 
+// ---------------------------------------------------------------- road works and construction sites
+// Road works: on a few wide roads the kerb lane of one direction is dug up for ~40 m behind a taper of cones and
+// barricades, with a sign ahead, an excavator, a spoil heap and two workers; traffic merges out of that lane.
+// Construction sites: chosen in the data build (mid-size plots beside big roads); a concrete frame part-way up, brick
+// infill on the lower floors, a tower crane, tin hoarding and material heaps.
+let WORKS = [], WORKBY = new Map();
+function seeded(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function planWorks() {
+  const RD = ROADS, rnd = seeded(7071), cand = [], picked = [];
+  for (let i = 0; i < RD.n; i++) { const c = RD.cls[i]; if (c < 3 || c > 6 || c === 4 || RD.br[i] || (RD.flag[i] & 2) || RD.bclr[i] || RD.L[i] < 110) continue; cand.push(i); }
+  for (let k = cand.length - 1; k > 0; k--) { const j = (rnd() * (k + 1)) | 0; [cand[k], cand[j]] = [cand[j], cand[k]]; }
+  const P = { x: 0, y: 0, z: 0, hx: 1, hz: 0 };
+  for (const i of cand) {
+    if (WORKS.length >= 18) break;
+    const dir = RD.flag[i] & 1 ? 1 : rnd() < 0.5 ? 1 : -1; if (laneCount(i, dir) < 2) continue;
+    const L = RD.L[i]; roadAt(i, L / 2, 1, 0, P);
+    if (picked.some(([x, z]) => (x - P.x) ** 2 + (z - P.z) ** 2 < 1300 * 1300)) continue;
+    // keep clear of signal stop lines and junction mouths: the zone sits in the middle of the piece
+    const len = Math.min(42, L * 0.3), s0 = (L - len) / 2, w = { i, dir, s0, s1: s0 + len, x: P.x, z: P.z };
+    picked.push([P.x, P.z]); WORKS.push(w); WORKBY.set(i, w);
+  }
+}
+function workZone(c) {   // [start, end] of the closed kerb lane ahead of / around car c in its travel distance, or null
+  const w = WORKBY.get(c.i); if (!w || w.dir !== c.dir) return null;
+  const L = ROADS.L[c.i]; return c.dir > 0 ? [w.s0, w.s1] : [L - w.s1, L - w.s0];
+}
+function buildWorks() {
+  if (!WORKS.length) return;
+  const G = new Geo(false), P = { x: 0, y: 0, z: 0, hx: 1, hz: 0 };
+  const orange = C255(236, 98, 24), white = C255(238, 236, 230), dirt = C255(118, 96, 72), dark = C255(40, 40, 42), yellow = C255(238, 184, 36),
+    glass = C255(40, 52, 60), skin = C255(150, 104, 76), vest = C255(250, 120, 20), helm = C255(250, 220, 40), pants = C255(46, 52, 74), grey = C255(120, 120, 116);
+  const at = (w, s, off) => { roadAt(w.i, w.dir > 0 ? s : ROADS.L[w.i] - s, w.dir, off, P); return P; };   // s: distance along travel
+  const cone = (x, z, y) => { cbox(G, x, z, 1, 0, 0.2, 0.2, y, y + 0.05, dark); cbox(G, x, z, 1, 0, 0.13, 0.13, y + 0.05, y + 0.32, orange); cbox(G, x, z, 1, 0, 0.1, 0.1, y + 0.32, y + 0.42, white); cbox(G, x, z, 1, 0, 0.07, 0.07, y + 0.42, y + 0.6, orange); };
+  const worker = (x, z, y, hx, hz) => { cbox(G, x, z, hx, hz, 0.1, 0.17, y, y + 0.84, pants); cbox(G, x, z, hx, hz, 0.13, 0.22, y + 0.84, y + 1.42, vest); cbox(G, x, z, hx, hz, 0.1, 0.1, y + 1.42, y + 1.66, skin); cbox(G, x, z, hx, hz, 0.13, 0.13, y + 1.64, y + 1.76, helm); };
+  for (const w of WORKS) {
+    laneSpan(w.i, w.dir, _ls);
+    const nl = laneCount(w.i, w.dir), lw = (_ls[1] - _ls[0]) / nl, kerb = _ls[1] - 0.35, edge = _ls[1] - lw - 0.05, mid = (kerb + edge) / 2;
+    const L = ROADS.L[w.i], a0 = w.dir > 0 ? w.s0 : L - w.s1, a1 = w.dir > 0 ? w.s1 : L - w.s0;   // travel distances
+    // dug strip
+    for (let s = a0; s < a1 - 0.1; s += 3) { const e = Math.min(a1, s + 3); at(w, (s + e) / 2, mid); cbox(G, P.x, P.z, P.hx, P.hz, (e - s) / 2 + 0.05, Math.abs(kerb - edge) / 2 - 0.15, P.y, P.y + 0.035, dirt, true); }
+    // cone taper in, cone line along the open lane, taper back out
+    for (let s = a0 - 16; s <= a1 + 6; s += 2.4) {
+      const off = s < a0 ? kerb + (edge - kerb) * (s - (a0 - 16)) / 16 : s > a1 ? edge + (kerb - edge) * (s - a1) / 6 : edge;
+      at(w, s, off); cone(P.x, P.z, P.y);
+    }
+    // barricade boards across the closed lane at both ends (striped), sign ahead on the kerb
+    for (const s of [a0 - 1, a1 + 1]) {
+      at(w, s, mid); const vx = -P.hz, vz = P.hx, half = Math.abs(kerb - edge) / 2 - 0.2;
+      for (const sg of [-1, 1]) cbox(G, P.x + vx * sg * half, P.z + vz * sg * half, P.hx, P.hz, 0.06, 0.06, P.y, P.y + 1.0, grey);
+      for (let k = 0; k < 6; k++) { const f = -half + (k + 0.5) * (2 * half / 6); cbox(G, P.x + vx * f, P.z + vz * f, P.hx, P.hz, 0.04, half / 6, P.y + 0.62, P.y + 0.92, k % 2 ? white : orange); }
+    }
+    at(w, a0 - 34, _ls[1] + 0.6); cbox(G, P.x, P.z, P.hx, P.hz, 0.05, 0.05, P.y, P.y + 1.9, grey);
+    cbox(G, P.x - P.hx * 0.06, P.z - P.hz * 0.06, P.hx, P.hz, 0.03, 0.5, P.y + 1.6, P.y + 2.5, yellow);
+    // excavator, spoil heap, workers
+    const xm = (a0 + a1) / 2; at(w, xm, mid); const ex = P.x, ez = P.z, ey = P.y, hx = P.hx, hz = P.hz, vx = -hz, vz = hx;
+    cbox(G, ex, ez, hx, hz, 1.8, 1.1, ey, ey + 0.6, dark);
+    cbox(G, ex, ez, hx, hz, 1.5, 1.0, ey + 0.6, ey + 1.5, yellow);
+    cbox(G, ex + hx * 0.5 + vx * 0.4, ez + hz * 0.5 + vz * 0.4, hx, hz, 0.6, 0.5, ey + 1.5, ey + 2.6, glass);
+    cbox(G, ex + hx * 2.6, ez + hz * 2.6, hx, hz, 1.3, 0.18, ey + 2.2, ey + 2.6, yellow);
+    cbox(G, ex + hx * 3.8, ez + hz * 3.8, hx, hz, 0.18, 0.18, ey + 0.8, ey + 2.4, yellow);
+    cbox(G, ex + hx * 3.9, ez + hz * 3.9, hx, hz, 0.35, 0.45, ey + 0.35, ey + 0.85, dark);
+    at(w, xm - 9, mid); cbox(G, P.x, P.z, P.hx, P.hz, 2.2, Math.abs(kerb - edge) / 2 - 0.4, P.y, P.y + 0.55, dirt); cbox(G, P.x, P.z, P.hx, P.hz, 1.2, Math.abs(kerb - edge) / 2 - 0.9, P.y + 0.55, P.y + 0.95, dirt);
+    at(w, xm + 7, mid + 0.5); worker(P.x, P.z, P.y, P.hx, P.hz);
+    at(w, xm - 4, mid - 0.4); worker(P.x, P.z, P.y, -P.hz, P.hx);
+  }
+  const m = G.mesh(POLX); m.castShadow = false; m.receiveShadow = true; group.ground.add(m); WORKS.mesh = m;
+}
+function buildSites() {
+  const S = META.sites; if (!S || !S.length) return;
+  const G = new Geo(false);
+  const conc = C255(196, 192, 182), concD = C255(160, 156, 148), brick = C255(178, 98, 70), steel = C255(70, 70, 72), yellow = C255(240, 186, 30),
+    tin = C255(44, 96, 168), tinW = C255(232, 232, 228), sand = C255(206, 172, 120), net = C255(52, 120, 70), glass = C255(40, 52, 60), red = C255(196, 40, 30);
+  for (const [x, z, ux, uz, W, D, fl, sd] of S) {
+    const vx = -uz, vz = ux, F = (a, b) => [x + ux * a + vx * b, z + uz * a + vz * b], hw = W / 2 - 3, hd = D / 2 - 3;
+    const built = Math.max(2, Math.round(fl * (0.3 + 0.6 * sd))), FH = 3.2, top = built * FH;
+    // tin hoarding round the plot, with a gate gap on the long front
+    for (const [a0, b0, a1, b1] of [[-W / 2, -D / 2, W / 2, -D / 2], [W / 2, -D / 2, W / 2, D / 2], [W / 2, D / 2, 3, D / 2], [-3 - 3, D / 2, -W / 2, D / 2], [-W / 2, D / 2, -W / 2, -D / 2]]) {
+      const [px, pz] = F((a0 + a1) / 2, (b0 + b1) / 2), L = Math.hypot(a1 - a0, b1 - b0); if (L < 0.5) continue;
+      const dx = (ux * (a1 - a0) + vx * (b1 - b0)) / L, dz = (uz * (a1 - a0) + vz * (b1 - b0)) / L;
+      cbox(G, px, pz, dx, dz, L / 2, 0.05, 0, 2.3, tin); cbox(G, px, pz, dx, dz, L / 2, 0.06, 2.3, 2.45, tinW);
+    }
+    // columns, slabs, brick infill below the working floors, a green safety net on the top floors' long face
+    const nx = Math.max(2, Math.round(2 * hw / 6) + 1), nz = Math.max(2, Math.round(2 * hd / 6) + 1);
+    for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+      const [px, pz] = F(-hw + 2 * hw * i / (nx - 1), -hd + 2 * hd * j / (nz - 1));
+      cbox(G, px, pz, ux, uz, 0.28, 0.28, 0, top + 1.4, i % 2 ? conc : concD);
+    }
+    for (let f = 1; f <= built; f++) {
+      const [px, pz] = F(0, 0), part = f === built ? 0.55 : 1;
+      const [qx, qz] = F(-hw * (1 - part), 0);
+      cbox(G, qx, qz, ux, uz, hw * part + 0.3, hd + 0.3, f * FH - 0.25, f * FH, conc);
+      if (f <= built - 2) for (const sg of [-1, 1]) {
+        const [bx, bz] = F(0, sg * hd); cbox(G, bx, bz, ux, uz, hw, 0.12, (f - 1) * FH, f * FH - 0.25, brick);
+        const [cx2, cz2] = F(sg * hw, 0); cbox(G, cx2, cz2, vx, vz, hd, 0.12, (f - 1) * FH, f * FH - 0.25, brick);
+      }
+      if (f > built - 2) { const [nxp, nzp] = F(0, hd + 0.5); cbox(G, nxp, nzp, ux, uz, hw + 0.4, 0.04, (f - 1) * FH, f * FH, net); }
+    }
+    // tower crane beside the frame: mast, slewing jib (angle varies by site), counter-jib with weights, cab, hook
+    const [mx, mz] = F(-W / 2 - 3.5, -D / 2 + 4), mh = top + 16, ang = sd * Math.PI * 2, jx = Math.cos(ang), jz = Math.sin(ang), jl = Math.max(W, D) * 1.05;
+    cbox(G, mx, mz, 1, 0, 2.2, 2.2, 0, 0.8, concD);
+    for (let y = 0.8; y < mh; y += 4) cbox(G, mx, mz, 1, 0, 0.8, 0.8, y, Math.min(mh, y + 3.6), yellow);
+    cbox(G, mx, mz, jx, jz, 0.9, 0.9, mh, mh + 2.2, yellow); cbox(G, mx + jx * 0.4 - jz * 1.2, mz + jz * 0.4 + jx * 1.2, jx, jz, 0.7, 0.5, mh + 0.2, mh + 1.8, glass);
+    cbox(G, mx + jx * jl / 2, mz + jz * jl / 2, jx, jz, jl / 2, 0.5, mh + 1.4, mh + 2.3, yellow);
+    cbox(G, mx - jx * 6, mz - jz * 6, jx, jz, 6, 0.5, mh + 1.4, mh + 2.3, yellow);
+    cbox(G, mx - jx * 10, mz - jz * 10, jx, jz, 1.4, 0.9, mh - 0.4, mh + 1.4, concD);
+    cbox(G, mx, mz, 1, 0, 0.3, 0.3, mh + 2.2, mh + 6.5, yellow); cbox(G, mx, mz, 1, 0, 0.18, 0.18, mh + 6.5, mh + 6.9, red);
+    const hk = jl * (0.45 + 0.4 * ((sd * 7) % 1)), hx = mx + jx * hk, hz2 = mz + jz * hk;
+    cbox(G, hx, hz2, 1, 0, 0.03, 0.03, top + 6, mh + 1.4, steel); cbox(G, hx, hz2, 1, 0, 0.35, 0.35, top + 5.2, top + 6, yellow);
+    // sand and aggregate heaps, a rebar bundle
+    const [sx, sz] = F(W / 2 - 4, D / 2 - 1.8); cbox(G, sx, sz, ux, uz, 2.0, 1.2, 0, 0.6, sand); cbox(G, sx, sz, ux, uz, 1.1, 0.7, 0.6, 1.0, sand);
+    const [rx, rz] = F(-W / 2 + 6, D / 2 - 1.4); cbox(G, rx, rz, ux, uz, 3.5, 0.35, 0, 0.3, steel);
+  }
+  const m = G.mesh(POLX); m.castShadow = true; m.receiveShadow = true; group.ground.add(m);
+}
+
 // ---------------------------------------------------------------- main loop
-let lastT = performance.now(), lastRender = 0, ready = false;
+let lastT = performance.now(), lastRender = 0, ready = false, simAcc = 0, liveLvl = 0;
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
   if (!ready) return;
   U.uTime.value = now / 1000;
   let changed = stepAnims(dt) | stepKeys(dt);
-  stepTrains(dt); stepBuses(dt);
-  const lively = stepStreet(dt);
   if (stepTod(dt)) changed = true;
   if (changed) dirty = true;
   if (dirty) {
     clampView(); updateCamera();
-    const Q = visibleQuad();
+    const Q = visibleQuad(); setViewBox(Q);
     updateSunDir(); updateLOD(Q); fitShadow(Q); updateLabels(); drawRadar(Q);
     whereDirty = true;
   }
@@ -3786,10 +4454,18 @@ function frame(now) {
     const [x, z] = mouse.in && !drag ? screenToGround(mouse.x, mouse.y) : [view.tx, view.tz];
     updateWhere(x, z); whereDirty = false;
   }
+  // while nothing is being dragged the scene redraws at a capped rate: ~30 fps with traffic on screen, ~20 fps with
+  // trains / buses, ~12-15 fps otherwise. Vehicles and people only step on frames that are drawn.
+  U.uFlow.value = smoothstep(1.3, 1.75, view.mpp) * (1 - smoothstep(6, 9, view.mpp));
   const idle = now - lastInteract > 1500 && todT >= 1;
-  const minGap = idle && !lively ? (U.uNight.value > 0.5 ? 66 : 80) : 0;
+  const minGap = idle ? (liveLvl === 2 ? 33 : liveLvl === 1 ? 50 : U.uNight.value > 0.5 ? 66 : 80) : 0;
+  simAcc += dt;
   if (dirty || built) renderer.shadowMap.needsUpdate = true;
   if (dirty || built || now - lastRender > minGap) {
+    const sdt = Math.min(0.12, simAcc); simAcc = 0;
+    const t0s = performance.now(), tr = stepTrains(sdt), bs = stepBuses(sdt), st = stepStreet(sdt);
+    STATS.simMs = (STATS.simMs || 0) * 0.9 + (performance.now() - t0s) * 0.1; STATS.simMax = Math.max((STATS.simMax || 0) * 0.995, performance.now() - t0s);
+    liveLvl = st ? 2 : tr || bs || U.uFlow.value > 0.01 ? 1 : 0;
     if (U.uNight.value > 0.02) { bloom.strength = 0.85 * U.uNight.value; composer.render(); } else renderer.render(scene, cam);
     lastRender = now;
   }
@@ -3818,7 +4494,7 @@ async function boot() {
   buildRoads();
   buildAirport(); buildPolExtras(); buildDarwajas(); buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
-  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds();
+  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
@@ -3836,7 +4512,7 @@ async function boot() {
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
   later('cells').then(() => later('trees')).then(() => later('props')).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
-window.AMD = { STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
