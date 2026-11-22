@@ -11,6 +11,7 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 - Street life: signals at 288 big crossroads (two-phase cycles, zebras, stop lines), cars, SUVs, autos, scooters, bikes, tempos and trucks that keep their lanes, follow, turn on curves and take turns through junctions (never through the BRTS lanes), and pedestrians who keep left and step round each other
 - Hand-built landmarks: Patang revolving restaurant, ISKCON temple, Taj Skyline, and Ellis Bridge's 1892 steel spans between the Swami Vivekananda Bridge wings
 - Airport perimeter wall with anti-climb coil and watch towers; building outlines squared up from the traced data
+- Industry and pollution: Naroda, Vatva, Odhav and Kathwada GIDC, the Narol and Danilimda-Behrampura textile clusters and the Torrent Sabarmati coal power station, with stacks, tanks, dye-house effluent tanks, smoke plumes and estate smog
 - Day / golden hour / night (lit windows, street lamps), Q/E rotation, search, radar and city map
 
 ## Layout
@@ -104,6 +105,26 @@ opening remove notches and spurs). Procedural cells inside dense blocks are whol
 The perimeter is the edge of the open airside land around runway 05/23: inside a runway-frame envelope, whatever no
 building, through road or water occupies is airfield; the part holding the runway, opened and closed by 70 m and
 30 m, is fenced. Terminal and hangar façades that form the boundary themselves get no wall.
+
+### Industry and pollution
+`tools/p_industry.py` finds the estates in the footprint data: factory-sized low buildings (150 m2 and up, 13.6 m or
+lower) are binned on a 40 m grid, the density is smoothed, and the patches that touch each estate's own roads (named
+in the OSM graph, e.g. "Naroda GIDC factory road", "Vatva GIDC road", "Kathwada GIDC rd") are kept. Inside them the
+sheds take the corrugated industrial palette and lose house-roof tanks and stair rooms. Estates and their character:
+Naroda and Vatva GIDC (dyes, chemicals, pharma; CPCB counts Vatva-Narol and Naroda-Odhav among Gujarat's critically
+polluted clusters), Odhav and Kathwada GIDC (engineering, plastics), the Narol textile-processing cluster and the
+Danilimda-Behrampura dyeing units. The detected areas are wider than the GIDC estates themselves, because the private
+industrial estates around them are picked up too; labels sit on the GIDC roads.
+Stacks are placed beside the sheds on free ground (or on the boiler-house roof): about one in five chemical units
+(steel, 16-32 m), three in ten dye houses (brick or steel, 24-42 m, the share of boiler stacks being the reason
+Narol looks the dirtiest) and a few workshops; process tanks stand beside chemical units, coloured effluent tanks
+beside dye houses. The Torrent Sabarmati power station (coal, 362 MW, 23.0706 N 72.5939 E) gets two banded
+105-120 m stacks with blinking aviation lights; the real stack heights are not published, these follow the CPCB
+minimum-height rules. Smoke: every running stack sends a plume downwind (north-east, on the prevailing
+south-westerly), near-black from dye-house boilers, grey-brown from chemical units, white from the power station,
+computed entirely in the vertex shader from the clock; zoomed out, a grey smog sits over each estate.
+Not modelled: Pirana landfill (biomining is reported complete and the site is being capped), CETPs, the Kharicut
+canal.
 
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in

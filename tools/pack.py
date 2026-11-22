@@ -47,6 +47,12 @@ _old = ((_x - _ox) / (0.0175 * KX)) ** 2 + ((_y - _oy) / (0.0150 * KY)) ** 2 < 1
 _ind = (style >= 23) & (style <= 27)
 style = style.copy(); style[_old & _ind] = 28 + (style[_old & _ind] - 23) % 6
 print('recoloured old-city sheds', int((_old & _ind).sum()))
+# industrial estates (p_industry.py): their sheds become factories, with the corrugated industrial palette
+IND = pickle.load(open(f'{OUT}/industry.pkl', 'rb')) if os.path.exists(f'{OUT}/industry.pkl') else None
+if IND is not None:
+    _f = IND['factory'] & ~_old & ~_ind
+    style[_f] = 23 + (np.arange(len(style))[_f] * 7919 % 5)
+    print('factories restyled', int(_f.sum()))
 cen = shapely.centroid(polys)
 ccx, ccy = chunk_of(shapely.get_x(cen), shapely.get_y(cen))
 groups = defaultdict(lambda: {0: [], 1: []})
@@ -88,6 +94,11 @@ def enc_buildings(idx, cx, cy):
 
 # ---------------- props / trees per chunk ----------------
 props = B['props']
+if IND is not None:   # no house-roof tanks, stair rooms or washing lines on factory sheds
+    _ft = shapely.STRtree(polys[IND['factory']])
+    _pi, _ = _ft.query(shapely.points(props[:, 0], props[:, 1]), predicate='within')
+    _keep = np.ones(len(props), bool); _keep[np.unique(_pi)] = False
+    print('props removed from factory roofs', int((~_keep).sum())); props = props[_keep]
 pcx, pcy = chunk_of(props[:, 0], props[:, 1])
 pgroups = defaultdict(list)
 for i in range(len(props)):
@@ -487,6 +498,11 @@ LANDMARKS = [
     ('Chandola Lake', 22.9871, 72.5870, 'lake'), ('Gyaspur Metro Depot', LAT0 + (-4136.6 - 1464.0) / KY, LON0 + (-3878.7 - 1042.0) / KX, 'campus'), ('Atal Bridge', 23.01647, 72.57545, 'monument'), ('Ellis Bridge', 23.02222, 72.57528, 'monument'),
 ]
 LANDMARKS += [(n, la, lo, 'gate') for n, la, lo, *_ in DARWAJAS if n != 'Teen Darwaza']
+if IND is not None:
+    for e in IND['estates']:
+        lo_, la_ = unproj_xy(e['lx'], e['ly']); LANDMARKS.append((e['name'], float(la_), float(lo_), 'industry'))
+    if IND['power']:
+        LANDMARKS.append(('Sabarmati Thermal Power Station', 23.070555, 72.593889, 'industry'))
 lms = []
 for nm, lat, lon, kind in LANDMARKS:
     x, y = proj_xy(lon, lat)
@@ -567,6 +583,14 @@ meta['play'] = _pl
 print('playgrounds', len(_pl))
 meta['sites'] = [[*m2three(x, y), round(ux, 4), round(-uy, 4), round(W, 1), round(D, 1), fl, round(sd, 3)] for x, y, ux, uy, W, D, fl, sd in B.get('sites', [])]
 print('construction sites', len(meta['sites']))
+if IND is not None:
+    _r = lambda v, d=1: round(float(v), d)
+    meta['industry'] = dict(
+        stacks=[[_r(x), _r(-y), _r(b), _r(h), _r(r, 2), int(k), int(a), int(lk)] for x, y, b, h, r, k, a, lk in IND['chim']],
+        tanks=[[_r(x), _r(-y), _r(r, 2), _r(h), int(c)] for x, y, r, h, c in IND['tanks']],
+        ponds=[[_r(x), _r(-y), _r(ux, 3), _r(-uy, 3), _r(w), _r(d), int(c)] for x, y, ux, uy, w, d, c in IND['ponds']],
+        haze=[[_r(x), _r(-y), int(k)] for x, y, k in IND['haze']])
+    print('industry: stacks', len(IND['chim']), 'tanks', len(IND['tanks']), 'ponds', len(IND['ponds']))
 meta['build'] = _h.hexdigest()[:12]   # bins are fetched as ?v=<build> so a cached copy can never mix with a new meta.json
 json.dump(meta, open(f'{SITE}/data/meta.json', 'w'), separators=(',', ':'))
 print('meta KB', os.path.getsize(f'{SITE}/data/meta.json') // 1024, 'stations', [s['name'] for s in stations])

@@ -117,7 +117,8 @@ composer.setSize(innerWidth, innerHeight);
 // shared uniforms
 const U = {
   uTime: { value: 0 }, uNight: { value: 0 }, uDay: { value: 1 },
-  uSunCol: { value: new THREE.Color(1, 1, 1) }, uHover: { value: -1 }, uFlow: { value: 0 },
+  uSunCol: { value: new THREE.Color(1, 1, 1) }, uHover: { value: -1 }, uFlow: { value: 0 }, uMpp: { value: 26 },
+  uWind: { value: new THREE.Vector2(0.6, -0.8) },   // smoke drifts north-east, on the prevailing south-westerly
 };
 
 // ---------------------------------------------------------------- shaders
@@ -2251,6 +2252,8 @@ function updateLOD(Q) {
   setFarLod(view.mpp > 6.5);
   if (POLMESH) POLMESH.visible = view.mpp < 3.2;
   for (const m of RIVER_FINE) m.visible = view.mpp < 2.6;
+  U.uMpp.value = view.mpp;
+  if (IND) { IND.stacks.visible = view.mpp < 12; IND.tanks.visible = view.mpp < 3; for (const m of IND.ponds) m.visible = view.mpp < 2.2; IND.smoke.visible = settings.smoke !== false; }
   for (const m of BRTS_FINE) m.visible = view.mpp < 2.6;
   const showRoutes = view.mpp > 2.2 && settings.labels;
   for (const m of ROUTE_MESHES) m.visible = showRoutes;
@@ -2303,7 +2306,7 @@ function initLabels() {
   const mk = (cls, html) => { const d = document.createElement('div'); d.className = 'lbl ' + cls; d.innerHTML = html; labelsEl.appendChild(d); return d; };
   for (const w of META.wards) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: w.area, name: w.name });
   for (const w of EXTRA_AREAS) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: 9e6, name: w.name });
-  const icon = { lake: '~', river: '~', monument: '★', stadium: '◎', airport: '✈', campus: '◆', park: '♣', gate: '∩', tower: '▲' };
+  const icon = { lake: '~', river: '~', monument: '★', stadium: '◎', airport: '✈', campus: '◆', park: '♣', gate: '∩', tower: '▲', industry: '⚙︎' };
   for (const l of META.landmarks) LBL.poi.push({ el: mk('poi ' + l.kind, `<span class="pin">${icon[l.kind] || '★'}</span>${l.name}`), x: l.x, z: l.z, min: l.kind === 'gate' ? 5 : 14 });
   for (const s of META.stations) LBL.poi.push({ el: mk('poi station', `<span class="pin">🚆︎</span>${s.name}`), x: s.x, z: s.z, min: 6 });
   if (TR) for (const s of TR.metro.stations) {
@@ -4720,6 +4723,113 @@ function railRun(G, pts, y, ballast, steel) {   // pts: [x,z,...] centreline of 
     for (const g of [-0.7175, 0.7175]) cbox(G, mx + vx * g, mz + vz * g, ux, uz, L / 2 + 0.03, 0.035, y + 0.22, y + 0.36, steel, true);
   }
 }
+// ---------------------------------------------------------------- industry: stacks, process tanks, effluent tanks, smoke
+let IND = null;
+const stackMat = hook(new THREE.MeshLambertMaterial({ color: '#ffffff' }), {
+  vHead: 'attribute float iLook; varying float vLook; varying float vV;', vBody: 'vLook = iLook; vV = position.y;',
+  fHead: 'varying float vLook; varying float vV;',
+  fColor: `int LK = int(vLook + 0.5);
+  vec3 c = LK == 1 ? vec3(0.40, 0.15, 0.09) * (0.88 + 0.16 * step(0.5, fract(vWPos.y * 3.2))) : LK == 2 ? vec3(0.62, 0.61, 0.58) : vec3(0.40, 0.41, 0.43);
+  if (LK == 2) { float b = step(0.84, vV) * step(0.5, fract((vV - 0.84) / 0.032 * 0.5)); c = mix(c, vec3(0.62, 0.05, 0.03), b); }
+  else c *= 0.92 + 0.12 * step(0.5, fract(vWPos.y / 3.0));       // weld seams / brick lifts
+  c = mix(c, vec3(0.03), smoothstep(0.90, 1.0, vV) * 0.85);      // soot round the mouth
+  diffuseColor.rgb = c;
+  if (LK == 2 && vV > 0.975) xEm = vec3(1.0, 0.05, 0.02) * 2.5 * uNight * step(0.5, fract(uTime * 0.6));`,
+});
+const smokeMat = new THREE.ShaderMaterial({
+  uniforms: U, transparent: true, depthWrite: false,
+  vertexShader: `attribute vec3 aSrc; attribute vec4 aPar;
+  uniform float uTime; uniform float uMpp; uniform vec2 uWind;
+  varying vec2 vUv; varying float vA; varying float vK; varying float vSeed;
+  void main() {
+    float kind = aPar.x, ph = aPar.y, kk = aPar.z, sc = aPar.w;
+    vec3 c; float size, alpha;
+    if (kind < 3.5) {
+      bool pw = kind > 2.5, tx = kind > 0.5 && kind < 1.5;
+      float a = fract(uTime * (pw ? 0.045 : 0.07) + kk + ph);
+      float rise = pw ? 75.0 : tx ? 24.0 : 19.0, drift = pw ? 320.0 : tx ? 95.0 : 100.0;
+      float jit = fract(sin(kk * 91.7 + ph * 13.1) * 43758.5) - 0.5;
+      float wob = (sin(uTime * 0.55 + ph * 40.0 + kk * 9.0) * (pw ? 14.0 : 5.0) + jit * (pw ? 40.0 : 14.0)) * a;
+      vec2 d = uWind * drift * a * (0.45 + 0.55 * a) + vec2(-uWind.y, uWind.x) * wob;
+      c = vec3(aSrc.x + d.x, aSrc.y + rise * (1.0 - pow(1.0 - a, 2.4)), aSrc.z + d.y);
+      size = sc * (1.3 + (pw ? 20.0 : tx ? 9.0 : 10.0) * a);
+      alpha = smoothstep(0.0, 0.04, a) * pow(1.0 - a, tx ? 1.25 : 0.85);
+    } else {   // haze over the estate: slow, broad, only from a distance
+      float a = fract(uTime * 0.005 + ph);
+      vec2 d = uWind * (a - 0.5) * 180.0;
+      c = vec3(aSrc.x + d.x, aSrc.y, aSrc.z + d.y);
+      size = sc * clamp(uMpp / 2.5, 1.0, 3.2); alpha = sin(3.14159 * a) * smoothstep(0.35, 1.6, uMpp);
+    }
+    if (alpha < 0.004) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vA = 0.0; return; }   // fully faded: no fill cost
+    vec4 mv = viewMatrix * vec4(c, 1.0);
+    mv.xy += position.xy * size;
+    gl_Position = projectionMatrix * mv;
+    vUv = position.xy; vA = alpha; vK = kind; vSeed = ph * 31.0 + kk * 7.0;
+  }`,
+  fragmentShader: NOISE + `varying vec2 vUv; varying float vA; varying float vK; varying float vSeed;
+  void main() {
+    int K = int(vK + 0.5);
+    // chemical units: grey-brown; dye-house boilers on coal / lignite: near black; workshops: light grey; the power
+    // station: white-grey; estate haze: a dull grey wash that takes the colour out of the ground
+    vec3 col = K == 0 ? vec3(0.30, 0.29, 0.26) : K == 1 ? vec3(0.05, 0.05, 0.055) : K == 2 ? vec3(0.55, 0.55, 0.56) : K == 3 ? vec3(0.90, 0.90, 0.91) : vec3(0.36, 0.35, 0.34);
+    float base = K == 0 ? 0.85 : K == 1 ? 0.72 : K == 2 ? 0.55 : K == 3 ? 0.85 : 0.18;
+    float r = length(vUv) * 2.0, n = vnoise(vUv * 2.6 + vSeed) * 0.65 + vnoise(vUv * 5.3 + vSeed * 1.7) * 0.35;
+    float a = (1.0 - smoothstep(0.35, 1.0, r + (n - 0.5) * 0.6)) * vA * base;
+    if (a < 0.004) discard;
+    col *= (0.82 + 0.36 * (vUv.y + 0.5)) * (0.75 + 0.5 * n);
+    col = mix(col * vec3(0.30, 0.30, 0.36) + vec3(0.025, 0.02, 0.015), col, uDay) * mix(vec3(1.0), uSunCol, 0.5);
+    gl_FragColor = vec4(col, a);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }`,
+});
+function buildIndustry() {
+  const D = META.industry; if (!D) return;
+  IND = { stacks: null, tanks: null, ponds: [], smoke: null };
+  // stacks: tapered, open-topped; steel, brick or banded concrete
+  const sg = new THREE.CylinderGeometry(0.72, 1.0, 1, 10, 1, true); sg.translate(0, 0.5, 0);
+  const st = D.stacks, look = new Float32Array(st.length);
+  const im = new THREE.InstancedMesh(sg, stackMat, st.length);
+  st.forEach(([x, z, b, h, r, k, a, lk], i) => { _p.set(x, b, z); _q.identity(); _s.set(r, h, r); _m.compose(_p, _q, _s); im.setMatrixAt(i, _m); look[i] = lk; });
+  sg.setAttribute('iLook', new THREE.InstancedBufferAttribute(look, 1));
+  im.castShadow = true; im.receiveShadow = true; im.computeBoundingSphere(); group.ground.add(im); IND.stacks = im;
+  // process / solvent tanks
+  const tg = new THREE.CylinderGeometry(1, 1, 1, 14); tg.translate(0, 0.5, 0);
+  const TCOL = ['#d9d6cf', '#a9adb1', '#8a5a3c', '#9fb6c8'].map((h) => new THREE.Color(h));
+  const tk = new THREE.InstancedMesh(tg, new THREE.MeshLambertMaterial({ color: '#ffffff' }), Math.max(1, D.tanks.length));
+  D.tanks.forEach(([x, z, r, h, c], i) => { _p.set(x, 0, z); _q.identity(); _s.set(r, h, r); _m.compose(_p, _q, _s); tk.setMatrixAt(i, _m); tk.setColorAt(i, TCOL[c]); });
+  tk.count = D.tanks.length; tk.castShadow = true; tk.receiveShadow = true; tk.computeBoundingSphere(); group.ground.add(tk); IND.tanks = tk;
+  // effluent tanks: a concrete box brim-full of whatever the dye house ran that day
+  const n = Math.max(1, D.ponds.length);
+  const box = new THREE.BoxGeometry(1, 1, 1); box.translate(0, 0.5, 0);
+  const wat = new THREE.PlaneGeometry(1, 1); wat.rotateX(-Math.PI / 2);
+  const pb = new THREE.InstancedMesh(box, new THREE.MeshLambertMaterial({ color: '#b9b4a8' }), n), pw = new THREE.InstancedMesh(wat, new THREE.MeshLambertMaterial({ color: '#ffffff' }), n);
+  const WCOL = ['#2a2363', '#5a1020', '#1d3a26', '#4a3416'].map((h) => new THREE.Color(h));
+  D.ponds.forEach(([x, z, ux, uz, w, d, c], i) => {
+    _e.set(0, Math.atan2(-uz, ux), 0); _q.setFromEuler(_e);
+    _p.set(x, 0, z); _s.set(w, 0.9, d); _m.compose(_p, _q, _s); pb.setMatrixAt(i, _m);
+    _p.set(x, 0.92, z); _s.set(w - 0.5, 1, d - 0.5); _m.compose(_p, _q, _s); pw.setMatrixAt(i, _m); pw.setColorAt(i, WCOL[c]);
+  });
+  pb.count = pw.count = D.ponds.length;
+  for (const m of [pb, pw]) { m.receiveShadow = true; m.castShadow = m === pb; m.computeBoundingSphere(); group.ground.add(m); IND.ponds.push(m); }
+  // smoke: every particle's path is computed on the GPU from the clock, so it costs no JS per frame
+  const act = st.filter((s) => s[6]), haze = D.haze, NP = (k) => (k === 3 ? 26 : 16);
+  let N = haze.length * 3; for (const s of act) N += NP(s[5]);
+  const src = new Float32Array(N * 3), par = new Float32Array(N * 4); let q = 0;
+  for (const [x, z, b, h, r, k] of act) {
+    const ph = hash1(x * 0.37 + z * 0.11), np = NP(k);
+    for (let j = 0; j < np; j++) { src.set([x, b + h, z], q * 3); par.set([k, ph, j / np, k === 3 ? r * 2.4 : Math.max(2.2, r * 3.2)], q * 4); q++; }
+  }
+  for (const [x, z] of haze) for (let j = 0; j < 3; j++) { src.set([x + (j - 1) * 50, 22 + 12 * j, z], q * 3); par.set([4, hash1(x + z * 3 + j * 7.7), 0, 190 + 60 * j], q * 4); q++; }
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
+  g.setIndex([0, 1, 2, 0, 2, 3]);
+  g.setAttribute('aSrc', new THREE.InstancedBufferAttribute(src, 3)); g.setAttribute('aPar', new THREE.InstancedBufferAttribute(par, 4));
+  g.instanceCount = q;
+  const sm = new THREE.Mesh(g, smokeMat); sm.frustumCulled = false; sm.renderOrder = 40; group.ground.add(sm); IND.smoke = sm;
+  STATS.smoke = q;
+}
+
 function buildDepot(M, pre) {
   const D = M.depot; if (!D) return;
   const G = new Geo(false), ballast = C255(146, 136, 124), steel = C255(84, 80, 76);
@@ -4941,7 +5051,7 @@ async function boot() {
   buildRoads();
   buildAirport(); buildPolExtras(); buildDarwajas(); buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
-  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites(); initPlay();
+  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites(); initPlay(); buildIndustry();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
@@ -4959,7 +5069,7 @@ async function boot() {
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
   later('cells').then(() => later('trees')).then(() => later('props')).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
-window.AMD = { STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
