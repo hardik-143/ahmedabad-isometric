@@ -490,7 +490,7 @@ const tankMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   diffuseColor.rgb *= mix(ribs, 1.3, top);`,
 });
 const TANK_COLS = ['#1f2124', '#1f2124', '#1f2124', '#26292d', '#e8e4da', '#3a6fb0'].map((h) => new THREE.Color(h));
-const mumtyMat = hook(new THREE.MeshLambertMaterial({ color: '#d8d1c3' }), {
+const mumtyMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   fColor: 'diffuseColor.rgb *= 0.9 + 0.1*vnoise(mod(vWPos.xz*3.0,1024.0));',
 });
 
@@ -1946,7 +1946,18 @@ function initDetailGeos() {
     for (const lx of [-2.9, 0, 2.9]) { const leg = new THREE.BoxGeometry(0.06, 0.9, 0.06); leg.translate(lx, 0.45, -1.9 + r * 1.9 - 0.3); parts.push(paint(leg, [0.35, 0.36, 0.38])); }
   }
   solarGeo = mergeGeometries(parts);
-  mumtyGeo = new THREE.BoxGeometry(3.4, 2.7, 3.4); mumtyGeo.translate(0, 1.35, 0);
+  // stair room (mumty): the door onto the terrace faces local +x (the washing line side), under a small chajja,
+  // with a step out and a vent window on one side
+  const bx = (w, h, d, x, y, z, c) => { const g = new THREE.BoxGeometry(w, h, d); g.translate(x, y, z); return paint(g, c); };
+  mumtyGeo = mergeGeometries([
+    bx(3.4, 2.7, 3.4, 0, 1.35, 0, C255(216, 209, 195)),                 // walls and roof slab
+    bx(0.05, 2.2, 1.16, 1.715, 1.1, 0, C255(176, 168, 154)),            // door frame
+    bx(0.06, 2.06, 0.92, 1.73, 1.05, 0, C255(60, 106, 116)),            // painted steel door
+    bx(0.07, 0.05, 0.8, 1.74, 1.45, 0, C255(104, 146, 152)),            // its rail
+    bx(0.45, 0.09, 1.5, 1.92, 2.3, 0, C255(205, 198, 184)),             // chajja over the door
+    bx(0.36, 0.12, 1.2, 1.88, 0.06, 0, C255(168, 162, 152)),            // step
+    bx(0.62, 0.48, 0.05, 0.4, 1.95, 1.715, C255(58, 62, 66)),           // vent window
+  ]);
 }
 const TREE_COLS = ['#557f2f', '#6f9a36', '#86924a', '#b9653a', '#47732d'].map((h) => new THREE.Color(h));
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
@@ -1983,7 +1994,7 @@ function buildProps(ch) {
   if (!ch.pl || !BUF.props) return;
   const r = new Reader(BUF.props, ch.po); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), Y = r.arr(Uint16Array, n), T = r.arr(Uint8Array, n), RO = r.arr(Uint8Array, n), SC = r.arr(Uint8Array, n);
-  let nt = 0, nm = 0, ns = 0; for (let i = 0; i < n; i++) T[i] === 0 ? nt++ : T[i] === 1 ? nm++ : ns++;
+  let nt = 0, nm = 0, ns = 0; for (let i = 0; i < n; i++) T[i] === 0 ? nt++ : T[i] === 2 ? ns++ : nm++;   // 1 and 3: stair rooms
   const tanks = new THREE.InstancedMesh(tankGeo, tankMat, Math.max(nt, 1)); tanks.count = nt;
   const mum = new THREE.InstancedMesh(mumtyGeo, mumtyMat, Math.max(nm, 1)); mum.count = nm;
   const sol = new THREE.InstancedMesh(solarGeo, solarMat, Math.max(ns, 1)); sol.count = ns;
@@ -1992,7 +2003,7 @@ function buildProps(ch) {
     _p.set(X[i] * 0.1, Y[i] * 0.1, Z[i] * 0.1);
     const s = SC[i] / 20;
     if (T[i] === 0) { _q.identity(); _s.set(s, s, s); _m.compose(_p, _q, _s); tanks.setColorAt(a, TANK_COLS[Math.floor(hash1(i * 13 + ch.cx * 7 + ch.cy * 3) * TANK_COLS.length)]); tanks.setMatrixAt(a++, _m); }
-    else if (T[i] === 1) { _e.set(0, (RO[i] / 255) * Math.PI, 0); _q.setFromEuler(_e); _s.set(s, s > 1.2 ? 1.3 : 1, s); _m.compose(_p, _q, _s); mum.setMatrixAt(b++, _m); }
+    else if (T[i] !== 2) { _e.set(0, (RO[i] / 255) * Math.PI, 0); _q.setFromEuler(_e); _s.set(s, s > 1.2 ? 1.3 : 1, s); _m.compose(_p, _q, _s); mum.setMatrixAt(b++, _m); }
     else { _e.set(0, (RO[i] / 255) * Math.PI, 0); _q.setFromEuler(_e); _s.set(1, 1, 1); _m.compose(_p, _q, _s); sol.setMatrixAt(c++, _m); }
   }
   for (const im of [tanks, mum, sol]) { im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; im.computeBoundingSphere(); group.near.add(im); ch.props.push(im); }
@@ -4667,11 +4678,10 @@ function rooftopLife(ch, X, Z, Y, T, RO, SC, n) {
   const G = new Geo(false), pole = C255(120, 120, 118), line = C255(40, 40, 40), chairW = C255(236, 236, 232), chairR = C255(180, 40, 36), skin = C255(150, 104, 76);
   let any = false;
   for (let i = 0; i < n; i++) {
-    if (T[i] === 2 || SC[i] / 20 > 1.2) continue;                     // beside stair rooms and water tanks on ordinary house roofs
-    const h = hash1(i * 31 + ch.cx * 97 + ch.cy * 57); if (h > (T[i] === 1 ? 0.3 : 0.045)) continue;
+    if (T[i] !== 3) continue;   // only on terraces the pipeline marked: a stair room with a door to come out of, layout clear of the parapet
     const th = (RO[i] / 255) * Math.PI, ux = Math.cos(th), uz = -Math.sin(th), vx = -uz, vz = ux;
     const x = X[i] * 0.1, z = Z[i] * 0.1, y = Y[i] * 0.1, sd = hash1(i * 7 + 3);
-    // washing line beside the stair room
+    // washing line in front of the stair-room door
     const cx = x + ux * 3.2, cz = z + uz * 3.2;
     for (const s of [-1.3, 1.3]) cbox(G, cx + vx * s, cz + vz * s, ux, uz, 0.03, 0.03, y, y + 1.75, pole, true);
     cbox(G, cx, cz, vx, vz, 1.3, 0.012, y + 1.72, y + 1.74, line, true);

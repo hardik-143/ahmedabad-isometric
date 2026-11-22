@@ -722,8 +722,19 @@ print('construction sites', len(sites))
 rp = shapely.point_on_surface(polys)
 rpx, rpy = shapely.get_x(rp), shapely.get_y(rp)
 inner = shapely.buffer(polys, -1.1, quad_segs=1)
-props = []  # (x, y, base_h, type, rot, scale)
+props = []  # (x, y, base_h, type, rot, scale)   type: 0 tank, 1 stair room, 2 solar, 3 stair room with terrace life
 rect_ang = np.zeros(len(polys))
+# terrace life (washing line in front of the stair-room door, a chair behind it) needs its layout on the roof,
+# clear of the parapet; offsets are along / across the roof's long edge from the stair room
+_LIFE = [(3.75, 1.4), (3.75, -1.4), (-3.3, 1.5), (-3.3, -0.1), (2.3, 0.0)]
+_par = {}
+def life_fits(i, cx, cy, ux, uy, vx, vy):
+    P = _par.get(i)
+    if P is None:
+        P = _par[i] = shapely.buffer(polys[i], -0.45, quad_segs=1)
+    if P is None or P.is_empty:
+        return False
+    return all(P.contains(shapely.Point(cx + ux * a + vx * b, cy + uy * a + vy * b)) for a, b in _LIFE)
 for i in range(len(polys)):
     if isfab[i] == 1 or special[i] or industrial[i] or hsnap[i] < 3.5 or area[i] < 35 or polT[i] == 2 or terminal[i] or site[i]:
         continue
@@ -740,7 +751,8 @@ for i in range(len(polys)):
     tanks_on = base
     if hsnap[i] >= 9 and area[i] >= 140:
         sc = 1.0 if hsnap[i] < 25 else 1.6
-        props.append((cxp, cyp, base, 1, ang, sc))
+        life = sc == 1.0 and ((r * 91.0) % 1.0) < 0.3 and life_fits(i, cxp, cyp, ux, uy, vx, vy)
+        props.append((cxp, cyp, base, 3 if life else 1, ang, sc))
         tanks_on = base + 2.7 * (1 if sc == 1.0 else 1.3)
         offs = [(-0.9, 0), (0.9, 0)] if area[i] > 300 else [(0, 0)]
         for ox, oy in offs:
@@ -752,7 +764,7 @@ for i in range(len(polys)):
                 if inner[i] is not None and not inner[i].is_empty and inner[i].contains(shapely.Point(px, py)):
                     props.append((px, py, base, 0, 0, 1.0))
         # rooftop solar on a few modern blocks (Gujarat's rooftop-solar push), kept clear of the stair room
-        if not inwc[i] and hsnap[i] >= 10 and area[i] >= 260 and ((r * 37.0) % 1.0) < 0.13:
+        if not life and not inwc[i] and hsnap[i] >= 10 and area[i] >= 260 and ((r * 37.0) % 1.0) < 0.13:
             for ox, oy in ((6.5, 0), (-6.5, 0), (0, 6.0)):
                 px, py = cxp + ux * ox + vx * oy, cyp + uy * ox + vy * oy
                 if inner[i] is not None and not inner[i].is_empty and inner[i].buffer(-3.2).contains(shapely.Point(px, py)):
@@ -760,6 +772,11 @@ for i in range(len(polys)):
     else:
         n = 1 + (area[i] > 500) + (area[i] > 1200 and isfab[i] == 0)
         if isfab[i] == 2 and r > 0.55:
+            continue
+        # a two-storey house whose terrace is in use gets a small stair room (door onto the roof), its tank on top
+        if hsnap[i] >= 5.5 and area[i] >= 55 and ((r * 53.0) % 1.0) < 0.09 and life_fits(i, cxp, cyp, ux, uy, vx, vy):
+            props.append((cxp, cyp, base, 3, ang, 0.8))
+            props.append((cxp, cyp, base + 2.7, 0, 0, 0.85 + 0.3 * ((r * 7) % 1)))
             continue
         cand = [(0, 0), (2.4, 0), (-2.4, 0), (0, 2.4)][:n]
         for ox, oy in cand:

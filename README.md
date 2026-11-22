@@ -154,8 +154,10 @@ costs nothing on the CPU. On the route map, trains show as pills on the line rib
 
 Road works: 18 wide roads, chosen with a fixed seed, have the kerb lane of one direction dug up behind a cone taper,
 barricades, a sign, an excavator and two workers; traffic merges out of that lane in good time and only into a gap.
-Rooftop life: on some flat roofs, beside a stair room or a water tank, there is a washing line with clothes and
-somebody hanging them out, and often a plastic chair with someone sitting out. Street cricket: in 126 parks with
+Every stair room has a painted steel door onto the terrace, with a frame, a chajja over it, a step and a vent window.
+Rooftop life: on ~21,000 terraces there is a washing line in front of that door with clothes and somebody hanging
+them out, and often a plastic chair with someone sitting out. It only goes on roofs reached by a stair room (two-storey
+houses get a small one when their terrace is in use) and only where the whole layout clears the parapet. Street cricket: in 126 parks with
 room for it, nine kids play on a worn pitch with stumps. The bowler walks back and runs in, the batsman and keeper
 shuffle, and fielders and two others run about.
 Construction sites: 26 mid-size plots beside big roads (picked in the data build) show a concrete frame part-way up
