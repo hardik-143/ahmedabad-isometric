@@ -154,6 +154,11 @@ costs nothing on the CPU. On the route map, trains show as pills on the line rib
 
 Road works: 18 wide roads, chosen with a fixed seed, have the kerb lane of one direction dug up behind a cone taper,
 barricades, a sign, an excavator and two workers; traffic merges out of that lane in good time and only into a gap.
+Every flat roof (houses, flats, flat-roofed pol houses, the procedural houses inside old-city blocks; not tiled roofs,
+sheds or special structures) has a 1 m parapet in one of three kinds: a plastered wall in the building's colour with a
+light coping, a cement jali with two rows of openings, or an MS railing (black, green or blue) on a low upstand.
+Towers get a wall or a railing, pol houses a wall or a jali. Openings are cut in the shader (shadows included) and
+the parapets are only built for chunks seen up close.
 Every stair room has a painted steel door onto the terrace, with a frame, a chajja over it, a step and a vent window.
 Rooftop life: on ~21,000 terraces there is a washing line in front of that door with clothes and somebody hanging
 them out, and often a plastic chair with someone sitting out. It only goes on roofs reached by a stair room (two-storey

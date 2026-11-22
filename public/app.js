@@ -1989,8 +1989,126 @@ function buildTrees(ch) {
   ch.trees.push(im); group.near.add(im);
 }
 const _tmpC = new THREE.Color();
+// ---------------------------------------------------------------- terrace parapets: waist-high walls round every flat roof
+// three kinds: plastered solid wall with a light coping, a cement jali with two rows of openings, and an MS railing
+// on a low upstand. aPar = (metres along the edge x10, 0 at the roof / 1 at the top, kind, railing paint)
+const PAR_CUT = `
+float parCut(vec4 P, out float det, out float open) {
+  float u = P.x * 0.1, v = P.y; int K = int(P.z + 0.5);
+  det = 1.0 - smoothstep(0.05, 0.10, fwidth(u)); open = 0.0;
+  if (K == 1) {
+    float ru = fract(u / 0.28), rv = fract((v - 0.30) / 0.28);
+    open = step(0.30, v) * step(v, 0.86) * step(0.2, ru) * step(ru, 0.8) * step(0.18, rv) * step(rv, 0.82);
+  } else if (K == 2 && v > 0.34) {
+    float solid = step(fract(u / 1.8), 0.04) + step(0.93, v) + step(0.60, v) * step(v, 0.65) + step(fract(u / 0.3), 0.3);
+    open = 1.0 - min(solid, 1.0);
+  }
+  return open * step(0.5, det);
+}`;
+const parMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
+  vHead: 'attribute vec4 aPar; varying vec4 vPar;', vBody: 'vPar = aPar;', fHead: 'varying vec4 vPar;' + PAR_CUT,
+  fColor: `float pDet, pOpen; if (parCut(vPar, pDet, pOpen) > 0.5) discard;
+  int PK = int(vPar.z + 0.5), PC = int(vPar.w + 0.5);
+  if (PK == 2 && vPar.y > 0.34) {
+    vec3 steel = PC == 0 ? vec3(0.030, 0.032, 0.036) : PC == 1 ? vec3(0.035, 0.085, 0.060) : vec3(0.045, 0.075, 0.120);
+    diffuseColor.rgb = mix(mix(diffuseColor.rgb * 0.55, steel, 0.6), steel, pDet);
+  } else diffuseColor.rgb *= 1.0 - 0.3 * pOpen * (1.0 - pDet);`,
+});
+const parDepth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+parDepth.onBeforeCompile = (sh) => {
+  sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute vec4 aPar; varying vec4 vPar;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvPar = aPar;');
+  sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec4 vPar;' + PAR_CUT)
+    .replace('void main() {', 'void main() {\n  float pDet, pOpen; if (parCut(vPar, pDet, pOpen) > 0.5) discard;');
+};
+function parapetMesh(S, ox, oz) {
+  const { n, floors, style, kind, rc, rl, abs, polT } = S;
+  // which buildings: flat roofs only (no tiled pol roofs, sheds, special structures), at least one floor
+  const ringStart = new Uint32Array(n + 1), ptStart = new Uint32Array(n + 1);
+  let rr = 0, pp = 0, ne = 0;
+  const ok = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    ringStart[i] = rr; ptStart[i] = pp;
+    const r0 = rr; for (let k = 0; k < rc[i]; k++) pp += rl[rr++];
+    const ws = PAL[style[i]].ws;
+    if (kind[i] !== 0 || floors[i] < 1 || ws === 0 || ws === 10 || (polT[i] === 2 && rc[i] === 1)) continue;
+    ok[i] = 1; ne += pp - ptStart[i];
+  }
+  ringStart[n] = rr; ptStart[n] = pp;
+  if (!ne) return null;
+  const NV = ne * 12;
+  const pos = new Int16Array(NV * 3), nor = new Int8Array(NV * 3), col = new Uint8ClampedArray(NV * 3), par = new Int16Array(NV * 4), idx = new Uint32Array(ne * 18);
+  let v = 0, q = 0;
+  const V = (x, y, z, nx, ny, nz, c, u, h, K, C) => {
+    pos[v * 3] = x; pos[v * 3 + 1] = y; pos[v * 3 + 2] = z; nor[v * 3] = nx; nor[v * 3 + 1] = ny; nor[v * 3 + 2] = nz;
+    col[v * 3] = c[0]; col[v * 3 + 1] = c[1]; col[v * 3 + 2] = c[2];
+    par[v * 4] = u; par[v * 4 + 1] = h; par[v * 4 + 2] = K; par[v * 4 + 3] = C; return v++;
+  };
+  const quad = (a, b, c, d) => { idx[q++] = a; idx[q++] = b; idx[q++] = c; idx[q++] = a; idx[q++] = c; idx[q++] = d; };
+  const IX = new Float64Array(4096), IZ = new Float64Array(4096), NX = new Float64Array(4096), NZ = new Float64Array(4096);
+  for (let b = 0; b < n; b++) {
+    if (!ok[b]) continue;
+    const fl = floors[b], H = fl * 31 + 5, pal = PAL[style[b]], h1 = hash1(b * 4271 + ox * 3 + oz);
+    const jit = 0.93 + 0.12 * hash1(b * 7919 + ox);                               // same wall colour as the building
+    const wc = [pal.w[0] * jit, pal.w[1] * jit, pal.w[2] * jit];
+    // kind by building type: towers solid or railing, pol houses solid or jali, ordinary houses any of the three
+    const K = polT[b] ? (h1 < 0.55 ? 0 : 1) : fl >= 5 || pal.ws === 2 ? (h1 < 0.65 ? 0 : 2) : (h1 < 0.5 ? 0 : h1 < 0.75 ? 1 : 2);
+    const C = Math.floor(hash1(b * 37 + 11) * 3), T = K === 2 ? 0.8 : 2.2, PH = 10;   // dm: wall thickness, height
+    const cap = K === 2 ? wc : [wc[0] * 0.75 + 60, wc[1] * 0.75 + 60, wc[2] * 0.75 + 60];
+    const inC = [wc[0] * 0.9, wc[1] * 0.9, wc[2] * 0.9];
+    let pt = ptStart[b];
+    for (let k = ringStart[b]; k < ringStart[b + 1]; k++) {
+      const m = rl[k]; if (m < 3 || m > 4000) { pt += m; continue; }
+      for (let e = 0; e < m; e++) {   // outward edge normals
+        const a = (pt + e) * 2, c2 = (pt + (e + 1) % m) * 2, dx = abs[c2] - abs[a], dz = abs[c2 + 1] - abs[a + 1], L = Math.hypot(dx, dz) || 1;
+        NX[e] = -dz / L; NZ[e] = dx / L;
+      }
+      for (let e = 0; e < m; e++) {   // inner edge of the wall: mitred offset, capped at 3x on sharp corners
+        const p = (e + m - 1) % m; let mx = NX[p] + NX[e], mz = NZ[p] + NZ[e]; const ml = Math.hypot(mx, mz);
+        if (ml < 1e-3) { mx = NX[e]; mz = NZ[e]; } else { mx /= ml; mz /= ml; }
+        const d = Math.min(3 * T, T / Math.max(0.33, mx * NX[e] + mz * NZ[e]));
+        IX[e] = abs[(pt + e) * 2] - mx * d; IZ[e] = abs[(pt + e) * 2 + 1] - mz * d;
+      }
+      for (let e = 0; e < m; e++) {
+        const f = (e + 1) % m, ax = abs[(pt + e) * 2], az = abs[(pt + e) * 2 + 1], bx = abs[(pt + f) * 2], bz = abs[(pt + f) * 2 + 1];
+        const L = Math.min(32000, Math.round(Math.hypot(bx - ax, bz - az)));
+        const nx = Math.round(NX[e] * 127), nz = Math.round(NZ[e] * 127);
+        const iax = Math.round(IX[e]), iaz = Math.round(IZ[e]), ibx = Math.round(IX[f]), ibz = Math.round(IZ[f]);
+        let o = v;   // outer face
+        V(ax, H, az, nx, 0, nz, wc, 0, 0, K, C); V(bx, H, bz, nx, 0, nz, wc, L, 0, K, C); V(bx, H + PH, bz, nx, 0, nz, wc, L, 1, K, C); V(ax, H + PH, az, nx, 0, nz, wc, 0, 1, K, C);
+        quad(o, o + 1, o + 2, o + 3);
+        o = v;       // inner face (facing the terrace)
+        V(ibx, H, ibz, -nx, 0, -nz, inC, L, 0, K, C); V(iax, H, iaz, -nx, 0, -nz, inC, 0, 0, K, C); V(iax, H + PH, iaz, -nx, 0, -nz, inC, 0, 1, K, C); V(ibx, H + PH, ibz, -nx, 0, -nz, inC, L, 1, K, C);
+        quad(o, o + 1, o + 2, o + 3);
+        o = v;       // coping
+        V(ax, H + PH, az, 0, 127, 0, cap, 0, 1, K, C); V(bx, H + PH, bz, 0, 127, 0, cap, L, 1, K, C); V(ibx, H + PH, ibz, 0, 127, 0, cap, L, 1, K, C); V(iax, H + PH, iaz, 0, 127, 0, cap, 0, 1, K, C);
+        quad(o, o + 1, o + 2, o + 3);
+      }
+      pt += m;
+    }
+  }
+  if (!v) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, v * 3), 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor.subarray(0, v * 3), 3, true));
+  g.setAttribute('color', new THREE.BufferAttribute(col.subarray(0, v * 3), 3, true));
+  g.setAttribute('aPar', new THREE.BufferAttribute(par.subarray(0, v * 4), 4));
+  g.setIndex(new THREE.BufferAttribute(idx.subarray(0, q), 1));
+  g.computeBoundingSphere();
+  const mesh = new THREE.Mesh(g, parMat);
+  mesh.customDepthMaterial = parDepth;
+  mesh.scale.setScalar(0.1); mesh.position.set(ox, 0, oz); mesh.matrixAutoUpdate = false; mesh.updateMatrix();
+  mesh.castShadow = true; mesh.receiveShadow = true; mesh.renderOrder = 10;
+  mesh.dispose = () => g.dispose();
+  return mesh;
+}
 function buildProps(ch) {
   ch.props = [];
+  for (const [buf, off, len] of [[BUF.bld, ch.bo, ch.bl], [BUF.cells, ch.co, ch.cl]]) {   // parapets on buildings and cell houses
+    if (!buf || !len) continue;
+    const pm = parapetMesh(decodeBld(buf, off), ch.ox, ch.oz);
+    if (pm) { group.near.add(pm); ch.props.push(pm); }
+  }
   if (!ch.pl || !BUF.props) return;
   const r = new Reader(BUF.props, ch.po); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), Y = r.arr(Uint16Array, n), T = r.arr(Uint8Array, n), RO = r.arr(Uint8Array, n), SC = r.arr(Uint8Array, n);
