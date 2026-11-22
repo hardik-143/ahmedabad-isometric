@@ -3,8 +3,7 @@ and place stacks, process tanks, effluent tanks and smoke sources. Runs after p_
 
 Estates (anchored on named roads in the OSM graph and on published locations):
   Naroda GIDC, Vatva GIDC (dyes / chemicals: CPCB lists Vatva-Narol and Naroda-Odhav as critically polluted clusters),
-  Odhav and Kathwada GIDC (engineering, plastics), the Narol textile-processing cluster and the Danilimda-Behrampura
-  dyeing units, plus the Torrent Sabarmati coal-fired power station (23.070555 N, 72.593889 E).
+  Odhav and Kathwada GIDC (engineering, plastics) and the Danilimda-Behrampura dyeing units, plus the Torrent Sabarmati coal-fired power station (23.070555 N, 72.593889 E).
 """
 import pickle, time, math, numpy as np, shapely
 from scipy import ndimage
@@ -27,12 +26,12 @@ ESTATES = [
     ('Vatva GIDC', 'chem', [(22.9740, 72.6320), (22.9590, 72.6370), (22.9580, 72.6500), (22.9660, 72.6420)], 1800),
     ('Odhav GIDC', 'eng', [(23.0285, 72.6708), (23.0226, 72.6749), (23.0279, 72.6563)], 1300),
     ('Kathwada GIDC', 'eng', [(23.0390, 72.6845), (23.0350, 72.6860)], 900),
-    ('Narol textile cluster', 'textile', [(22.9680, 72.6000), (22.9610, 72.5960), (22.9720, 72.5930)], 1300),
     ('Danilimda-Behrampura dyeing units', 'textile', [(22.9951, 72.5740), (22.9897, 72.5782)], 800),
 ]
 KIND = {'chem': 0, 'textile': 1, 'eng': 2, 'power': 3}
 
 cand = (area >= 150) & (hs <= 13.6) & (fab != 1) & (ws != 0) & ~site
+house = (area >= 15) & (area < 150)   # houses and chawl rows: where they crowd the sheds it is a residential pocket
 CELL = 40.0
 estates, factory, fac_est = [], np.zeros(len(polys), bool), np.full(len(polys), -1)
 for ei, (name, kind, anchors, R) in enumerate(ESTATES):
@@ -40,11 +39,13 @@ for ei, (name, kind, anchors, R) in enumerate(ESTATES):
     x0, y0 = A.min(0) - R; x1, y1 = A.max(0) + R
     nx, ny = int((x1 - x0) / CELL) + 1, int((y1 - y0) / CELL) + 1
     sel = cand & (CX > x0) & (CX < x1) & (CY > y0) & (CY < y1)
-    cov = np.zeros((ny, nx))
+    cov = np.zeros((ny, nx)); hcov = np.zeros((ny, nx))
     ix = ((CX[sel] - x0) / CELL).astype(int); iy = ((CY[sel] - y0) / CELL).astype(int)
     np.add.at(cov, (iy, ix), area[sel])
-    cov = ndimage.uniform_filter(cov / (CELL * CELL), 5)
-    m = cov >= 0.11
+    hsel = house & (CX > x0) & (CX < x1) & (CY > y0) & (CY < y1)
+    np.add.at(hcov, (((CY[hsel] - y0) / CELL).astype(int), ((CX[hsel] - x0) / CELL).astype(int)), area[hsel])
+    cov = ndimage.uniform_filter(cov / (CELL * CELL), 5); hcov = ndimage.uniform_filter(hcov / (CELL * CELL), 5)
+    m = (cov >= 0.12) & (hcov <= 0.35 * cov) & (hcov <= 0.07)
     m = ndimage.binary_opening(ndimage.binary_closing(m, iterations=2), iterations=1)
     lab, nlab = ndimage.label(m)
     gx = x0 + (np.arange(nx) + 0.5) * CELL; gy = y0 + (np.arange(ny) + 0.5) * CELL
