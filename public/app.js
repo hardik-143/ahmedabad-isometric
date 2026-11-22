@@ -3364,7 +3364,8 @@ function buildBRTS() {
       for (const ss of stOn[li]) { const d = Math.abs(S[j] - ss) - (BRTS_ST_LEN / 2 + 3); f = Math.max(f, clamp(1 - d / 20, 0, 1)); }
       HW[j] = BRTS_HW + (BRTS_ST_W / 2 + 0.2) * f * f * (3 - 2 * f);
     }
-    const inGap = (sv) => ln.gaps.some(([g0, g1]) => sv > g0 && sv < g1);
+    const atStation = (sv) => stOn[li].some((ss) => Math.abs(sv - ss) < BRTS_ST_LEN / 2 + 9.5);
+    const inGap = (sv) => !atStation(sv) && ln.gaps.some(([g0, g1]) => sv > g0 && sv < g1);
     const zeb = stOn[li].flatMap((ss) => [ss - (BRTS_ST_LEN / 2 + 11), ss + (BRTS_ST_LEN / 2 + 11)]);
     const atZebra = (sv) => zeb.some((zs) => Math.abs(sv - zs) < 2.6);   // kerb and railing open where a station's zebra crosses
     const b0 = PG.length / 2;
@@ -3822,9 +3823,35 @@ function busClear() {
         for (let gz = Math.floor(Math.min(p[k + 1], p[k + 3]) / C); gz <= Math.floor(Math.max(p[k + 1], p[k + 3]) / C); gz++) { const key = hk(gx, gz); let a = G.get(key); if (!a) G.set(key, (a = [])); a.push(s); }
     }
   }
-  let nc = 0, nx = 0;
+  // stations: the busway is wider beside each island (bus lanes both sides), and nothing crosses an island or its ramps
+  const STN = B.stations || [], SC2 = 60, SG = new Map();
+  STN.forEach((s, k) => { const key = hk(Math.floor(s.x / SC2), Math.floor(s.z / SC2)); let l = SG.get(key); if (!l) SG.set(key, (l = [])); l.push(k); });
+  const nearSt = (x, z, r) => { for (let gx = Math.floor((x - r) / SC2); gx <= Math.floor((x + r) / SC2); gx++) for (let gz = Math.floor((z - r) / SC2); gz <= Math.floor((z + r) / SC2); gz++) for (const k of SG.get(hk(gx, gz)) || []) { const s = STN[k]; if ((s.x - x) ** 2 + (s.z - z) ** 2 < r * r) return s; } return null; };
+  const SA = BRTS_ST_LEN / 2 + 9.5, SB = BRTS_ST_W / 2 + BRTS_HW + 0.4;
+  const segHitsIsland = (s, x0, z0, x1, z1) => {   // Liang-Barsky clip of a segment against the island rectangle in its own frame
+    const a0 = (x0 - s.x) * s.ux + (z0 - s.z) * s.uz, b0 = (x0 - s.x) * s.uz - (z0 - s.z) * s.ux;
+    const a1 = (x1 - s.x) * s.ux + (z1 - s.z) * s.uz, b1 = (x1 - s.x) * s.uz - (z1 - s.z) * s.ux;
+    let t0 = 0, t1 = 1; const da = a1 - a0, db = b1 - b0;
+    for (const [p, q] of [[-da, a0 + SA], [da, SA - a0], [-db, b0 + SB], [db, SB - b0]]) {
+      if (Math.abs(p) < 1e-9) { if (q < 0) return false; continue; }
+      const r = q / p; if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
+    }
+    return true;
+  };
+  R.bwide = new Uint8Array(R.n);
+  let nc = 0, nx = 0, ni = 0;
   for (let i = 0; i < R.n; i++) {
     if (R.cls[i] === 7 || R.br[i]) continue;
+    {   // does this road run through a station island?
+      const p0 = R.start[i], c = R.lens[i]; let hit = false, along = false;
+      for (let j = 0; j + 1 < c && !hit; j++) {
+        const q = p0 + j, x0 = R.xy[q * 2] * 0.5, z0 = R.xy[q * 2 + 1] * 0.5, x1 = R.xy[q * 2 + 2] * 0.5, z1 = R.xy[q * 2 + 3] * 0.5;
+        const s = nearSt((x0 + x1) / 2, (z0 + z1) / 2, Math.hypot(x1 - x0, z1 - z0) / 2 + 40); if (!s) continue;
+        if (segHitsIsland(s, x0, z0, x1, z1)) { if (R.flag[i] & 2) along = true; else hit = true; }
+      }
+      if (hit) { R.ghost[i] = 1; ni++; continue; }
+      if (along) R.bwide[i] = 1;   // a widened BRTS road past a station: traffic keeps outside the station's bus lanes
+    }
     const p0 = R.start[i], c = R.lens[i], H = R.hw[i] / 10, reach = H + 4.8, centre = R.flag[i] & 2, ms = [];
     let cnt = 0, mid = 0, mL = 0, mR = 0, inside = 0;
     for (let j = 0; j < c; j++) {
@@ -3843,7 +3870,8 @@ function busClear() {
       if (near < 4.3) inside++;
       if (best > 1e8) continue;
       cnt++; ms.push(bm); if (Math.abs(bm) < 2.5) mid++;
-      const intr = 4.8 - (Math.abs(bm) - H); if (intr > 0) { if (bm > 0) mL = Math.max(mL, intr); else mR = Math.max(mR, intr); }
+      const bh = nearSt(x, z, 30) ? 7.3 : 4.8;   // beside a station the bus lanes run either side of the island
+      const intr = bh - (Math.abs(bm) - H); if (intr > 0) { if (bm > 0) mL = Math.max(mL, intr); else mR = Math.max(mR, intr); }
     }
     if (!cnt && !(R.cls[i] === 4 && inside >= 2)) continue;
     if (centre) {   // widened BRTS road: keep traffic outside the bus lanes wherever they actually run
@@ -3854,7 +3882,7 @@ function busClear() {
     if (v > 2 * H - 2.6) { R.ghost[i] = 1; nx++; continue; }
     const cur = R.bclr[i] / 10; if (v > cur) { R.bclr[i] = Math.min(255, Math.round(v * 10)); R.flag[i] = (R.flag[i] & ~4) | (mL > mR ? 4 : 0); nc++; }
   }
-  STATS.busClear = [nc, nx];
+  STATS.busClear = [nc, nx, ni];
 }
 function roadAt(i, s, dir, off, out) {   // world position + heading at distance s along road i, `off` metres left of travel
   const R = ROADS, p = R.start[i], c = R.lens[i], S = R.S, len = R.L[i];
@@ -3875,11 +3903,11 @@ function laneSpan(i, dir, out) {
   const R = ROADS, H = R.hw[i] / 10, fl = R.flag[i], bc = R.bclr[i] / 10;
   let lo = -H, hi = H;
   if (bc > 0) { if (fl & 4) hi -= bc; else lo += bc; }
-  const bm = R.bmid ? R.bmid[i] / 10 : 0;
+  const bm = R.bmid ? R.bmid[i] / 10 : 0, bi = R.bwide && R.bwide[i] ? 7.4 : 4.8;
   if (fl & 1) {
-    if (fl & 2) { if (H - (bm + 4.8) >= (bm - 4.8) + H) { out[0] = bm + 4.8; out[1] = hi; } else { out[0] = lo; out[1] = bm - 4.8; } }   // the wider side of the bus lanes
+    if (fl & 2) { if (H - (bm + bi) >= (bm - bi) + H) { out[0] = bm + bi; out[1] = hi; } else { out[0] = lo; out[1] = bm - bi; } }   // the wider side of the bus lanes
     else { out[0] = dir > 0 ? lo : -hi; out[1] = dir > 0 ? hi : -lo; }
-  } else if (fl & 2) { if (dir > 0) { out[0] = bm + 4.8; out[1] = hi; } else { out[0] = 4.8 - bm; out[1] = -lo; } }
+  } else if (fl & 2) { if (dir > 0) { out[0] = bm + bi; out[1] = hi; } else { out[0] = bi - bm; out[1] = -lo; } }
   else { out[0] = 0.3; out[1] = dir > 0 ? hi : -lo; }
   return out[1] - out[0];
 }
@@ -4580,23 +4608,40 @@ function buildDepot(M, pre) {
       flush();
     }
   }
-  // yard: from the throat the two running lines fan out into ten stabling roads that run into the shed's open face
-  const [fx, fz] = D.face, [ux, uz] = D.u, vx = -uz, vz = ux, [tx, tz] = D.throat;
-  const aT = (tx - fx) * ux + (tz - fz) * uz, lT = (tx - fx) * vx + (tz - fz) * vz;
+  // yard: each running line feeds a ladder of five stabling roads (turnouts in sequence, 1:3.5 diagonals), all ten
+  // roads straight for the last ~80 m into the shed's open face; a scissors crossover just outside the throat lets a
+  // train on either running line reach any road
+  const [fx, fz] = D.face, [ux, uz] = D.u, vx = -uz, vz = ux;
   const W = (pt) => [fx + ux * pt[0] + vx * pt[1], fz + uz * pt[0] + vz * pt[1]];
-  const tracks = [];
-  for (let k = 0; k < 10; k++) {
-    const L = clamp(lT + (k - 4.5) * 5.2, -D.W / 2 + 6, D.W / 2 - 6), dv = Math.abs(L - lT), a1 = aT - 12, a2 = a1 - Math.max(8, dv * 5.5);
-    const pts = [[aT, lT], [a1, lT], [a2, L], [-2, L]].flatMap((p) => W(p));
-    railRun(G, pts, 0.02, ballast, steel); tracks.push(L);
+  const FR = (x, z) => [(x - fx) * ux + (z - fz) * uz, (x - fx) * vx + (z - fz) * vz];
+  const RC = M.corr.find((C) => C.k === 'red'), RP = RC.pts, [RN] = lnormals(RP);
+  const runEnd = [1, -1].map((sg) => FR(RP[0] + RN[0] * TRACK * sg, RP[1] + RN[1] * TRACK * sg));
+  runEnd.sort((p, q) => q[1] - p[1]);                       // [higher lateral, lower lateral]
+  const lM = (runEnd[0][1] + runEnd[1][1]) / 2, tracks = [];
+  for (let k = 0; k < 10; k++) tracks.push(clamp(lM + (k - 4.5) * 4.6, -D.W / 2 + 6, D.W / 2 - 6));
+  for (const [g, ks] of [[0, [5, 6, 7, 8, 9]], [1, [4, 3, 2, 1, 0]]]) {
+    const [aR, lR] = runEnd[g];
+    ks.forEach((k, j) => {
+      const L = tracks[k], dv = Math.abs(L - lR), aj = aR - 8 - 7 * j, ad = aj - Math.max(2, dv * 3.5);
+      railRun(G, [[aR, lR], [aj, lR], [ad, L], [-2, L]].flatMap((p) => W(p)), 0.02, ballast, steel);
+    });
+  }
+  {   // scissors crossover between the running lines, 12-40 m out from the throat
+    const S = corridorS(RC), at = (sv, v) => { let j = 0; while (j < S.length - 2 && S[j + 1] < sv) j++; const f = (sv - S[j]) / Math.max(1e-6, S[j + 1] - S[j]);
+      const x = RP[j * 2] + (RP[j * 2 + 2] - RP[j * 2]) * f, z = RP[j * 2 + 1] + (RP[j * 2 + 3] - RP[j * 2 + 1]) * f, nx = RN[j * 2] + (RN[j * 2 + 2] - RN[j * 2]) * f, nz = RN[j * 2 + 1] + (RN[j * 2 + 3] - RN[j * 2 + 1]) * f;
+      return [x + nx * v, z + nz * v]; };
+    for (const [vA, vB] of [[TRACK, -TRACK], [-TRACK, TRACK]]) {
+      const pts = []; for (let q = 0; q <= 12; q++) { const u = q / 12, e = u * u * (3 - 2 * u); pts.push(...at(12 + 28 * u, vA + (vB - vA) * e)); }
+      railRun(G, pts, 0.02, ballast, steel);
+    }
   }
   // shed doors: a dark opening over every road
-  for (const L of tracks) { const [x, z] = W([0.2, L]); cbox(G, x, z, ux, uz, 0.25, 2.3, 0, 5.2, C255(40, 42, 44), true); }
+  for (const L of tracks) { const [x, z] = W([0.2, L]); cbox(G, x, z, ux, uz, 0.25, 2.2, 0, 5.2, C255(40, 42, 44), true); }
   const m = G.mesh(POLX); m.castShadow = false; m.receiveShadow = true; group.ground.add(m);
-  // stabled trains (three cars) on a few roads
+  // stabled trains (three cars) on the straight ends of some roads
   const im = new THREE.InstancedMesh(carGeo(), TRAINMAT, 15), col = new THREE.Color(COLS.red); let c = 0;
   for (const k of [1, 3, 4, 6, 8]) for (let q = 0; q < 3; q++) {
-    const [x, z] = W([14 + 11.3 + q * 22.6 + (k % 3) * 9, tracks[k]]);
+    const [x, z] = W([10 + 11.3 + q * 22.6 + (k % 2) * 6, tracks[k]]);
     putYaw(im.instanceMatrix.array, c, x, 0.38, z, ux, uz, 1); im.setColorAt(c, col); c++;
   }
   im.count = c; im.castShadow = true; im.receiveShadow = true; group.ground.add(im);

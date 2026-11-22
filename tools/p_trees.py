@@ -18,7 +18,7 @@ import os as _os
 metro_ = []
 if _os.path.exists(f'{OUT}/transit.pkl'):   # riverfront channel, under the metro viaduct, stations
     _TX = pickle.load(open(f'{OUT}/transit.pkl', 'rb'))['excl']
-    metro_ = [_TX['hole'].buffer(1.5), _TX['band'].buffer(1.0), _TX['stations'], _TX['piers']]
+    metro_ = [_TX['hole'].buffer(1.5), _TX['band'].buffer(1.0), _TX['stations'], _TX['piers'], _TX.get('grade', shapely.Polygon())]
 APW, APW_LINES, APW_GATES = airport_wall(G, bpolys)
 print(f'airport wall: {APW.area / 1e6:.2f} km2 inside, {len(APW_GATES)} gates, {sum(shapely.LineString(l).length for l in APW_LINES) / 1e3:.1f} km of wall')
 wall_ = [shapely.LineString(l).buffer(3.0) for l in APW_LINES]

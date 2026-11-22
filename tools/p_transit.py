@@ -585,6 +585,25 @@ for k, c in CORR.items():
         else:
             i += 1
 BAND = shapely.union_all([b.buffer(4.9, cap_style='flat') for b in band])
+# at grade (the depot line's last stretch and the yard): nothing of any height may stand on it
+_gr = []
+for k, c in CORR.items():
+    lo = (RL[k] < 2.5) & (RL[k] > 0.0) & ~UGM[k]   # at grade only (not above the Blue Line tunnel)
+    i = 0
+    while i < len(c):
+        if lo[i]:
+            j = i
+            while j < len(c) and lo[j]:
+                j += 1
+            if j - i > 1:
+                _gr.append(shapely.LineString(c[i:j]).buffer(5.5, cap_style='flat'))
+            i = j
+        else:
+            i += 1
+_F, _U = np.array(DEPOT['face']), np.array(DEPOT['u']); _V = np.array([-_U[1], _U[0]])
+_aT = float((np.array(DEPOT['throat']) - _F) @ _U); _lT = float((np.array(DEPOT['throat']) - _F) @ _V)
+_gr.append(shapely.Polygon([_F + _U * a + _V * l for a, l in ((1.0, _lT - 32), (_aT + 12, _lT - 32), (_aT + 12, _lT + 32), (1.0, _lT + 32))]))
+GRADE = shapely.union_all(_gr)
 PIERS_G = shapely.union_all([shapely.Point(p[0], p[1]).buffer(2.2) for p in piers])
 STA_G = shapely.union_all(foot)
 
@@ -592,6 +611,6 @@ pickle.dump(dict(
     river=dict(H=H, CHW=CHW, PROMP=PROMP, LID=LID, UPPER=UPPER, walls=walls, edges=edges, stairs=stairs, ghats=ghats,
                lamps=lamps, barrages=barrages, water_y=WATER_Y, prom_y=PROM_Y),
     metro=dict(corr=CORR, rl=RL, ug=UGM, col=COL, stations=stations, piers=piers, portals=portals, routes=routes, trips=trips, depot=DEPOT),
-    excl=dict(stations=STA_G, band=BAND, piers=PIERS_G, hole=H),
+    excl=dict(stations=STA_G, band=BAND, piers=PIERS_G, hole=H, grade=GRADE),
 ), open(f'{OUT}/transit.pkl', 'wb'))
 print('done', round(time.time() - t0, 1))

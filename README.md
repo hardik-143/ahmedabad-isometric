@@ -71,8 +71,9 @@ of headways, so trains never meet. Accelerate / cruise / brake runs, 25 s dwells
 it swings through the crossover diagonals.
 Past APMC the Red Line runs on to the Gyaspur depot as in the satellite view. It follows the 132 Ft Ring Road south
 at platform level, crosses the Narol-Sarkhej highway, comes down at 3 % to grade, and curves west beside the canal into
-a ten-road yard fanning into the depot shed. Five trains are stabled there. The line was traced from imagery and is
-accurate to roughly 50 m.
+a yard in front of the depot shed: a scissors crossover just outside the throat, then each running line feeds a ladder
+of five stabling roads, all ten straight for the last ~80 m into the shed, where five trains are stabled. Buildings and
+trees are cleared off the at-grade line and the yard. The line was traced from imagery and is accurate to roughly 50 m.
 Zoomed out, line-coloured ribbons trace the routes (dashed underground).
 
 ### Sabarmati Riverfront
@@ -121,7 +122,9 @@ if only the front is taken (and leaves after the bus ahead), or queues behind. A
 leg. On top of that, a bus closing on the one ahead in its lane eases off and runs late rather than through it.
 Duplicate trips (same run under several service calendars) are dropped. Every road the corridor runs beside (dual-carriageway halves, partner carriageways, service roads) records
 how much width the busway and its barrier take from it and on which side, and traffic keeps out of that strip; the
-OSM busway pieces themselves are closed to cars and walkers. Limitation: Janmarg is ~160 km of routes but only ~89 km of dedicated corridor, and the routing paints
+OSM busway pieces themselves are closed to cars and walkers. Where a station sits over a junction opening (30 of 183),
+the lane paint and railings carry on under it, the cross street through the island is closed, and the strip kept clear
+widens to the station's full width. Limitation: Janmarg is ~160 km of routes but only ~89 km of dedicated corridor, and the routing paints
 ~144 km, so some stretches shown as busway run in mixed traffic in reality.
 
 ### Road paint

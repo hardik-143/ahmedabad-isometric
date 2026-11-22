@@ -472,7 +472,7 @@ if _os.path.exists(f'{OUT}/transit.pkl'):
     _TX = _pk.load(open(f'{OUT}/transit.pkl', 'rb'))['excl']
     _bad = np.zeros(len(polys), bool)
     _tr = shapely.STRtree(polys)
-    for _g, _amin, _hmin in ((_TX['hole'], 0.5, -1), (_TX['stations'], 2.0, -1), (_TX['piers'], 0.05, -1), (_TX['band'], 2.0, 6.0)):
+    for _g, _amin, _hmin in ((_TX['hole'], 0.5, -1), (_TX['stations'], 2.0, -1), (_TX['piers'], 0.05, -1), (_TX['band'], 2.0, 6.0), (_TX.get('grade', shapely.Polygon()), 1.0, -1)):
         _q = _tr.query(_g, predicate='intersects')
         _q = np.unique(_q[1] if _q.ndim == 2 else _q)
         if not len(_q):
