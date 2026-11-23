@@ -20,6 +20,7 @@ echo "== transit";    $PY p_transit.py
 echo "== buildings";  $PY p_buildings.py
 echo "== trees";      $PY p_trees.py
 echo "== industry";   $PY p_industry.py
+echo "== weather";    $PY p_weather.py
 echo "== pack";       $PY pack.py
 cd "$ROOT"
 cp index.html app.js "$AMD_SITE/"

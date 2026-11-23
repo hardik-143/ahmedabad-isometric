@@ -72,7 +72,10 @@ body.night .lbl.road{color:#f3e7cf;text-shadow:0 0 2px #000,0 0 4px #000}
 #timebar{right:76px;bottom:22px;display:flex;gap:6px;background:var(--panel);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:12px;padding:5px}
 #timebar button{border:0;background:transparent;color:#fff;font:700 13px 'Barlow Condensed',sans-serif;letter-spacing:.08em;text-transform:uppercase;padding:7px 10px;border-radius:8px;cursor:pointer;opacity:.75}
 #timebar button.on{background:#fff;color:#111;opacity:1}
-#where{right:22px;bottom:78px;text-align:right;pointer-events:none}
+#wxbar{right:76px;bottom:76px;display:flex;gap:6px;background:var(--panel);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:12px;padding:5px}
+#wxbar button{border:0;background:transparent;color:#fff;font:700 13px 'Barlow Condensed',sans-serif;letter-spacing:.08em;text-transform:uppercase;padding:7px 10px;border-radius:8px;cursor:pointer;opacity:.75}
+#wxbar button.on{background:#7fc4ff;color:#0b1520;opacity:1}
+#where{right:22px;bottom:132px;text-align:right;pointer-events:none}
 #where .d{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-style:italic;font-size:30px;letter-spacing:.02em;line-height:1;
   text-shadow:0 2px 0 #000,0 0 14px rgba(0,0,0,.5)}
 #where .r{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:17px;letter-spacing:.05em;color:#ffd9a8;margin-top:4px;
@@ -117,7 +120,7 @@ body.night .lbl.road{color:#f3e7cf;text-shadow:0 0 2px #000,0 0 4px #000}
 @media (max-width:1180px){ #help{display:none} }
 @media (max-width:760px){
   #brand .t{font-size:32px} #search{width:calc(100% - 150px)} #radarWrap{width:150px;height:150px;bottom:62px}
-  #credits{display:none} #help{display:none} #where .d{font-size:22px} #timebar{right:12px;bottom:12px} #where{bottom:64px;right:12px}
+  #credits{display:none} #help{display:none} #where .d{font-size:22px} #timebar{right:12px;bottom:12px} #wxbar{right:12px;bottom:62px} #where{bottom:112px;right:12px}
   #tools{right:10px} .btn{width:40px;height:40px} #stats{display:none} #radarHint{display:none}
 }
 </style>
@@ -161,11 +164,15 @@ body.night .lbl.road{color:#f3e7cf;text-shadow:0 0 2px #000,0 0 4px #000}
     <button data-t="morning">Morning</button><button data-t="noon" class="on">Noon</button><button data-t="golden">Golden hour</button><button data-t="night">Night</button>
   </div>
 
+  <div id="wxbar" class="hud">
+    <button data-w="clear" class="on">Clear</button><button data-w="clouds">Cloudy</button><button data-w="monsoon">Monsoon</button><button data-w="fog">Fog</button><button data-w="heat">Heatwave</button>
+  </div>
+
   <div id="where" class="hud"><div class="d" id="wD">—</div><div class="r" id="wR"></div><div class="m" id="wM"></div></div>
 
   <div id="radarWrap" class="hud"><canvas id="radar" width="440" height="440"></canvas></div>
   <div id="radarHint" class="hud">Click radar for city map</div>
-  <div id="help" class="hud"><kbd>Drag</kbd> pan · <kbd>Scroll</kbd> zoom · <kbd>Q</kbd><kbd>E</kbd> rotate · <kbd>Right-drag</kbd> free rotate · <kbd>N</kbd> night · <kbd>M</kbd> map</div>
+  <div id="help" class="hud"><kbd>Drag</kbd> pan · <kbd>Scroll</kbd> zoom · <kbd>Q</kbd><kbd>E</kbd> rotate · <kbd>Right-drag</kbd> free rotate · <kbd>N</kbd> night · <kbd>W</kbd> weather · <kbd>M</kbd> map</div>
   <div id="credits" class="hud">Buildings: VEDAS / ISRO-SAC and Google Open Buildings v3 + 2.5D Temporal 2023 (CC BY 4.0, via ramSeraph/indian_buildings) · Roads, parks, central water: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> (ODbL) · Rivers &amp; lakes: India-WRIS, Swachh Bharat Mission · Rail: Indian Railways (via ramSeraph/indian_transport) · Metro alignments &amp; stations: <a href="https://github.com/croyla/amd-gtfs">amd-gtfs</a> (ODbL; train service is synthetic) · BRTS stops, routes &amp; timetable: Janmarg GTFS (via <a href="https://github.com/str3939/Janmarg-BRTS-Guide">Janmarg-BRTS-Guide</a>); corridors routed on the road graph · Wards: DataMeet · Riverfront channel built from the river outline + SRFDCL design widths · Trees, rooftop tanks, pol façades, taxiway layout &amp; parked aircraft are procedural.</div>
 
   <div id="bigmap"><div id="bigmapTitle">AHMEDABAD<small>Click anywhere to fly there · Esc to close</small></div><div id="bigmapInner"><canvas id="bigmapCanvas"></canvas><div id="bigmapLabels"></div></div></div>

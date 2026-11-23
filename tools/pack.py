@@ -591,6 +591,10 @@ if IND is not None:
         ponds=[[_r(x), _r(-y), _r(ux, 3), _r(-uy, 3), _r(w), _r(d), int(c)] for x, y, ux, uy, w, d, c in IND['ponds']],
         haze=[[_r(x), _r(-y), int(k)] for x, y, k in IND['haze']])
     print('industry: stacks', len(IND['chim']), 'tanks', len(IND['tanks']), 'ponds', len(IND['ponds']))
+if os.path.exists(f'{OUT}/weather.pkl'):   # monsoon waterlogging spots (p_weather.py)
+    meta['wlog'] = [[round(x, 1), round(-y, 1), round(ux, 3), round(-uy, 3), round(l, 1), round(w, 1), round(c, 2), int(k)]
+                    for x, y, ux, uy, l, w, c, k in pickle.load(open(f'{OUT}/weather.pkl', 'rb'))['spots']]
+    print('waterlogging spots', len(meta['wlog']))
 meta['build'] = _h.hexdigest()[:12]   # bins are fetched as ?v=<build> so a cached copy can never mix with a new meta.json
 json.dump(meta, open(f'{SITE}/data/meta.json', 'w'), separators=(',', ':'))
 print('meta KB', os.path.getsize(f'{SITE}/data/meta.json') // 1024, 'stations', [s['name'] for s in stations])

@@ -120,6 +120,71 @@ const U = {
   uSunCol: { value: new THREE.Color(1, 1, 1) }, uHover: { value: -1 }, uFlow: { value: 0 }, uMpp: { value: 26 },
   uWind: { value: new THREE.Vector2(0.6, -0.8) },   // smoke drifts north-east, on the prevailing south-westerly
 };
+// ---------------------------------------------------------------- weather: shared uniforms + shader library
+// rain falls only under a few storm cells drifting south-west -> north-east (the monsoon's direction); the ground
+// stays dark and wet along each cell's track and dries behind it; clouds cast moving shadows; fog / heat haze is a
+// height fog (thick at street level, thinning with height, so towers stand out of it)
+Object.assign(U, {
+  uWxOn: { value: 0 }, uWxCover: { value: 0 }, uWxCloudA: { value: 0 }, uWxCloudC: { value: new THREE.Color(1, 1, 1) },
+  uWxFog: { value: new THREE.Vector4(0.8, 0.82, 0.85, 0) }, uWxFogH: { value: 80 }, uWxFogL: { value: 1.5 }, uWxHeat: { value: 0 },
+  uWxRain: { value: 0 }, uWxCell: { value: [0, 1, 2, 3, 4, 5].map(() => new THREE.Vector4(0, 0, 1, 0)) }, uWxVel: { value: new THREE.Vector2(10.8, -14.4) },
+  uWxSunDir: { value: new THREE.Vector3(0, 1, 0) }, uWxT: { value: 0 }, uWxFlash: { value: 0 }, uWxDry: { value: 240 }, uWxDay: U.uDay,
+});
+const WX_LIB = `
+uniform float uWxOn; uniform float uWxCover; uniform float uWxFogH; uniform float uWxFogL; uniform float uWxHeat; uniform float uWxRain;
+uniform float uWxT; uniform float uWxFlash; uniform float uWxDry; uniform float uWxDay;
+uniform vec3 uWxCloudC; uniform vec3 uWxSunDir; uniform vec4 uWxFog; uniform vec4 uWxCell[6]; uniform vec2 uWxVel;
+float wxH(vec2 p){ p = fract(p * vec2(127.1, 311.7)); p += dot(p, p + 19.19); return fract(p.x * p.y); }
+float wxN(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(wxH(i), wxH(i + vec2(1.0, 0.0)), u.x), mix(wxH(i + vec2(0.0, 1.0)), wxH(i + vec2(1.0, 1.0)), u.x), u.y); }
+float wxRain(vec2 p){
+  float r = 0.0;
+  for (int i = 0; i < 6; i++) { vec4 c = uWxCell[i]; if (c.w <= 0.0) continue; r = max(r, c.w * (1.0 - smoothstep(0.2, 1.0, length(p - c.xy) / c.z))); }
+  if (r <= 0.0) return 0.0;
+  vec2 q = (p - uWxVel * uWxT) * 0.0011;   // ragged showers, carried along with the cells
+  return uWxRain * r * clamp(0.35 + 1.3 * wxN(q) * wxN(q * 2.7 + 5.1) * 1.4, 0.0, 1.25);
+}
+float wxWet(vec2 p){
+  float sp = max(1.0, length(uWxVel)); vec2 vh = uWxVel / sp, pe = vec2(-vh.y, vh.x); float w = 0.0;
+  for (int i = 0; i < 6; i++) { vec4 c = uWxCell[i]; if (c.w <= 0.0) continue;
+    vec2 rl = p - c.xy; float al = dot(rl, -vh), cr = abs(dot(rl, pe)); if (al < -0.8 * c.z) continue;
+    float core = 1.0 - smoothstep(0.5 * c.z, 0.95 * c.z, cr), since = max(0.0, al - 0.3 * c.z) / sp;
+    w = max(w, core * c.w * exp(-since / uWxDry)); }
+  return w * uWxRain;
+}
+float wxCloud(vec2 q){
+  vec2 s = q * 0.0005 + uWxVel * uWxT * 0.00035;
+  float n = wxN(s) * 0.55 + wxN(s * 2.17 + 7.3) * 0.3 + wxN(s * 4.9 + 2.1) * 0.15;
+  float d = smoothstep(1.0 - uWxCover - 0.05, 1.0 - uWxCover + 0.22, n);
+  for (int i = 0; i < 6; i++) { vec4 c = uWxCell[i]; if (c.w <= 0.0) continue; d = max(d, uWxRain * c.w * (1.0 - smoothstep(0.6, 1.7, length(q - c.xy) / c.z))); }
+  return d;
+}`;
+const wxPost = (lit) => `
+if (uWxOn > 0.5) {
+  vec3 wP = vWxP; float wR = wxRain(wP.xz);
+  ${lit ? `vec3 wUp = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz); float wu = clamp(dot(normal, wUp), 0.0, 1.0);
+  float wW = max(wxWet(wP.xz), wR) * (wP.y < 3.0 ? 1.0 : 0.75);
+  outgoingLight *= 1.0 - wW * (0.2 + 0.32 * wu);
+  outgoingLight += wW * wu * wu * 0.08 * uWxFog.rgb * uWxFogL;` : ''}
+  float wl = dot(outgoingLight, vec3(0.299, 0.587, 0.114));
+  outgoingLight = mix(outgoingLight, wl * vec3(1.14, 1.0, 0.78), 0.28 * uWxHeat);
+  float wf = uWxFog.w * (1.0 - exp(-max(0.0, uWxFogH - wP.y) / (uWxFogH * 0.45))) + 0.17 * wR * (1.0 - exp(-max(0.0, 200.0 - wP.y) / 90.0));
+  outgoingLight = mix(outgoingLight, uWxFog.rgb * uWxFogL, clamp(wf, 0.0, 0.93));
+  outgoingLight += uWxFlash * vec3(0.5, 0.55, 0.72);
+}`;
+function wxPatch(sh) {
+  const v = sh.vertexShader, f = sh.fragmentShader;
+  if (!v.includes('#include <project_vertex>') || !f.includes('#include <opaque_fragment>')) return;
+  for (const k in U) if (k.startsWith('uWx')) sh.uniforms[k] = U[k];
+  sh.vertexShader = v.replace('#include <common>', '#include <common>\nvarying vec3 vWxP;')
+    .replace('#include <project_vertex>', '#include <project_vertex>\nvWxP = transpose(mat3(viewMatrix)) * (mvPosition.xyz - viewMatrix[3].xyz);');
+  const lit = f.includes('#include <lights_fragment_end>');
+  let ff = f.replace('#include <common>', '#include <common>\nvarying vec3 vWxP;\n' + WX_LIB);
+  if (lit) ff = ff.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+    if (uWxOn > 0.5) { float wt = 1.0 - 0.75 * wxCloud(vWxP.xz + uWxSunDir.xz / max(0.2, uWxSunDir.y) * (900.0 - vWxP.y)); reflectedLight.directDiffuse *= wt; reflectedLight.directSpecular *= wt; }`);
+  sh.fragmentShader = ff.replace('#include <opaque_fragment>', wxPost(lit) + '\n#include <opaque_fragment>');
+}
+THREE.Material.prototype.onBeforeCompile = function (sh) { wxPatch(sh); };   // every built-in material the app doesn't hook itself
 
 // ---------------------------------------------------------------- shaders
 const NOISE = `
@@ -151,6 +216,7 @@ function hook(mat, { vHead = '', vBody = '', fHead = '', fColor = '', fEmissive 
       .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\n' + NOISE + fHead)
       .replace('#include <color_fragment>', '#include <color_fragment>\nvec3 xEm = vec3(0.0);\n' + fColor)
       .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' + fEmissive + '\ntotalEmissiveRadiance += xEm;');
+    wxPatch(sh);
   };
   return mat;
 }
@@ -2198,6 +2264,7 @@ function applyTod(p) {
   U.uNight.value = p.night; U.uDay.value = 1 - p.night; U.uSunCol.value.copy(sun.color);
   renderer.toneMappingExposure = p.exp;
   document.body.classList.toggle('night', p.night > 0.5);
+  wxApplyLight(p);
 }
 function setTime(name) {
   todName = name;
@@ -2573,6 +2640,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'e') rotateBy(-Math.PI / 2);
   else if (k === 'n') setTime(todName === 'night' ? 'noon' : 'night');
   else if (k === 't') { const o = ['morning', 'noon', 'golden', 'night']; setTime(o[(o.indexOf(todName) + 1) % 4]); }
+  else if (k === 'w') { const o = Object.keys(WXK); setWeather(o[(o.indexOf(wxName) + 1) % o.length]); }
   else if (k === 'm') bigmap.classList.contains('show') ? bigmap.classList.remove('show') : openBigMap();
   else if (k === 'escape') bigmap.classList.remove('show');
   else if (k === '/') { e.preventDefault(); qEl.focus(); }
@@ -4301,7 +4369,9 @@ function stepTraffic(dt) {
         else if (g < 5) { const yieldTo = (d.mode === 1 && c.mode === 0) || ((d.mode === 1) === (c.mode === 1) && d.id < c.id); if (yieldTo && g < gap) { gap = g; vl = 0; } }
       }
     }
-    let v0 = c.vmax, og = 1e9;   // og: distance to a point we must be able to stop at (red light, busy junction, dead end)
+    // rain: drivers ease off, and wade through waterlogged stretches; the factor changes gradually, never a slam
+    if (WXD.wetRoads || c.wk < 1) { const w0 = c.wk ?? 1; c.wk = w0 + ((WXD.wetRoads ? wxCarK(c) : 1) - w0) * Math.min(1, dt * 0.7); }
+    let v0 = c.vmax * (c.wk ?? 1), og = 1e9;   // og: distance to a point we must be able to stop at (red light, busy junction, dead end)
     if (c.mode === 1) {   // on a curve: never sweep into anything standing on the rest of the path
       let hit = 1e9;
       for (const ahead of [2.5, 5, 8]) {
@@ -4430,6 +4500,7 @@ PEDMAT.onBeforeCompile = (sh) => {
       vec3 skin = mix(vec3(0.16, 0.08, 0.04), vec3(0.42, 0.24, 0.15), fract(iPhase * 0.173));
       vPC = pt < 0.5 ? skin : (pt < 1.5 ? iShirt : (pt < 2.5 ? iPants : vec3(0.012, 0.01, 0.01)));`);
   sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vPC;').replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = vPC;');
+  wxPatch(sh);
 };
 const SHIRTS = ['#f1f1ec', '#9cc3e6', '#f29a2e', '#7a1f2b', '#2f7d4f', '#e8c547', '#d9578f', '#2b2d33', '#5a7fc2', '#c8463a', '#e7d9b9', '#4c3a6e'].map((c) => new THREE.Color(c));
 const PANTS = ['#1f2a44', '#151517', '#8a7a5a', '#54575c', '#2c3e5c', '#6b4a33'].map((c) => new THREE.Color(c));
@@ -4830,6 +4901,215 @@ function buildIndustry() {
   STATS.smoke = q;
 }
 
+// ---------------------------------------------------------------- weather: presets, rain cells, waterlogging, clouds
+const WXK = {
+  clear: { cover: 0, cloudA: 0, cloudC: '#ffffff', fog: '#cfd8e0', fogD: 0, fogH: 80, heat: 0, rain: 0, sunK: 1, hemiK: 1, grey: 0, bg: '#c9d8e6', bgK: 0, exp: 1, warm: 0 },
+  clouds: { cover: 0.5, cloudA: 0.9, cloudC: '#ffffff', fog: '#d3dbe3', fogD: 0.06, fogH: 400, heat: 0, rain: 0, sunK: 1, hemiK: 1.08, grey: 0.12, bg: '#c2ccd6', bgK: 0.4, exp: 1, warm: 0 },
+  monsoon: { cover: 0.4, cloudA: 0.9, cloudC: '#9aa3ad', fog: '#8f9aa5', fogD: 0.06, fogH: 200, heat: 0, rain: 1, sunK: 0.5, hemiK: 1.05, grey: 0.55, bg: '#87929d', bgK: 0.85, exp: 1.0, warm: 0 },
+  fog: { cover: 0.12, cloudA: 0.45, cloudC: '#e8ecef', fog: '#d6dbdf', fogD: 0.5, fogH: 36, heat: 0, rain: 0, sunK: 0.5, hemiK: 1.25, grey: 0.5, bg: '#d3d8dc', bgK: 0.92, exp: 1.02, warm: 0 },
+  heat: { cover: 0, cloudA: 0, cloudC: '#ffffff', fog: '#dcc08e', fogD: 0.13, fogH: 600, heat: 1, rain: 0, sunK: 1.25, hemiK: 0.95, grey: 0, bg: '#e9d2a8', bgK: 0.78, exp: 1.06, warm: 0.45 },
+};
+const WX_LABEL = { clear: 'Clear', clouds: 'Cloudy', monsoon: 'Monsoon', fog: 'Fog', heat: 'Heatwave' };
+const wxMake = (n) => { const k = WXK[n]; return { ...k, cloudC: new THREE.Color(k.cloudC), fog: new THREE.Color(k.fog), bg: new THREE.Color(k.bg) }; };
+let WXC = wxMake('clear'), wxFrom = null, wxTo = null, wxTt = 1, wxName = 'clear';
+const _wc = new THREE.Color(), _wc2 = new THREE.Color();
+// storm cells ride south-west -> north-east across the city; a long track so they enter and leave well outside it
+const WXD = { dir: [0.6, -0.8], speed: 18, Lp: 36000, c0: [2000, 500], cells: [], pos: [], spots: null, lv: null, grid: new Map(),
+  anim: 0, wetRoads: false, flashIn: 6, flashT: -1, mesh: {} };
+const wxMod = (a, m) => ((a % m) + m) % m;
+function wxCellPos(c, T) {
+  const [dx, dz] = WXD.dir, a = wxMod(T * WXD.speed + c.ph, WXD.Lp) - WXD.Lp / 2;
+  return [WXD.c0[0] - dz * c.off + dx * a, WXD.c0[1] + dx * c.off + dz * a];
+}
+function wxRainAt(x, z, pos) {
+  let r = 0;
+  WXD.cells.forEach((c, i) => { const p = pos[i], d = Math.hypot(x - p[0], z - p[1]) / c.r; if (d < 1) r = Math.max(r, c.I * (1 - smoothstep(0.2, 1, d))); });
+  return r * WXC.rain;
+}
+function wxStartCells() {
+  // the first cell is just upwind of where you are looking, so rain arrives within a minute; the others are spread
+  // along and across the track so different parts of the city get their turn
+  const [dx, dz] = WXD.dir, vx = view.tx - WXD.c0[0], vz = view.tz - WXD.c0[1], T = U.uWxT.value;
+  const off0 = -vx * dz + vz * dx, along0 = vx * dx + vz * dz - 700, ph0 = wxMod(along0 + WXD.Lp / 2 - T * WXD.speed, WXD.Lp);
+  WXD.cells = [[0, 3400, 1.0, 0], [4600, 3000, 0.85, 0.31], [-4700, 3600, 0.95, 0.58], [9300, 3200, 0.8, 0.16], [-9200, 3300, 0.9, 0.44], [1900, 2600, 0.7, 0.71]]
+    .map(([o, r, I, f]) => ({ off: off0 + o, r, I, ph: ph0 + WXD.Lp * f }));
+  if (WXD.lv) {   // replay the last ten minutes, so the water stands where it has just rained and nowhere else
+    WXD.lv.fill(0); const keep = WXC.rain; WXC.rain = 1;
+    for (let t = T - 600; t < T; t += 5) wxStepSpots(5, WXD.cells.map((c) => wxCellPos(c, t)));
+    WXC.rain = keep;
+  }
+}
+const WX_FILL = [1 / 40, 1 / 55, 1 / 30], WX_DRAIN = [1 / 420, 1 / 200, 1 / 90];   // underpass, reported area, minor road
+function wxStepSpots(dt, pos) {
+  const S = WXD.spots, lv = WXD.lv; if (!S) return false;
+  const evap = 1 + 3 * WXC.heat; let any = false;
+  for (let i = 0; i < S.length; i++) {
+    const s = S[i], k = s[7], R = wxRainAt(s[0], s[1], pos);
+    let v = lv[i] + dt * (R * WX_FILL[k] - WX_DRAIN[k] * evap * (R < 0.1 ? 1 : 0.25));
+    v = clamp(v, 0, s[6]); lv[i] = v; if (v > 0.005) any = true;
+  }
+  return any;
+}
+function wxCarK(c) {
+  let k = 1 - 0.22 * wxRainAt(c.x, c.z, WXD.pos);
+  const L = WXD.grid.get(((Math.floor(c.x / 60) & 0xffff) << 16) | (Math.floor(c.z / 60) & 0xffff));
+  if (L) for (const i of L) {
+    const s = WXD.spots[i], v = WXD.lv[i]; if (v < 0.25) continue;
+    const rx = c.x - s[0], rz = c.z - s[1], a = rx * s[2] + rz * s[3], b = rx * s[3] - rz * s[2];
+    if ((a / (s[4] * 0.5 + 18)) ** 2 + (b / (s[5] * 0.5 + 2)) ** 2 < 1) k = Math.min(k, (2.2 + 5 * (1 - v)) / Math.max(4, c.vmax));   // slowing for it, then wading through
+  }
+  return k;
+}
+function wxApplyLight(p) {
+  const W = WXC, day = 1 - p.night;
+  sun.intensity = p.si * W.sunK;
+  sun.color.lerp(_wc.setRGB(0.8, 0.83, 0.88), W.grey).lerp(_wc.set('#ffcf8a'), W.warm * day);
+  hemi.intensity = p.hi * W.hemiK;
+  hemi.color.lerp(_wc.setRGB(0.76, 0.78, 0.82), W.grey); hemi.groundColor.lerp(_wc.setRGB(0.45, 0.44, 0.42), W.grey * 0.5);
+  scene.background.lerp(_wc2.copy(W.bg).multiplyScalar(0.1 + 0.9 * day), W.bgK);
+  renderer.toneMappingExposure = p.exp * W.exp;
+  U.uSunCol.value.copy(sun.color);
+  U.uWxFogL.value = (sun.intensity * 0.42 * Math.max(0.15, Math.sin(THREE.MathUtils.degToRad(p.elev))) + hemi.intensity * 0.95) * 0.78;
+}
+function setWeather(name) {
+  if (!WXK[name]) return;
+  wxName = name; wxFrom = { ...WXC, cloudC: WXC.cloudC.clone(), fog: WXC.fog.clone(), bg: WXC.bg.clone() }; wxTo = wxMake(name); wxTt = 0;
+  if (name === 'monsoon') wxStartCells();
+  document.querySelectorAll('#wxbar button').forEach((b) => b.classList.toggle('on', b.dataset.w === name));
+  dirty = true;
+}
+function wxBlend(t) {
+  const a = wxFrom, b = wxTo, o = {};
+  for (const k in b) o[k] = typeof b[k] === 'number' ? lerp(a[k], b[k], t) : a[k].clone().lerp(b[k], t);
+  return o;
+}
+const WX_QUAD = (g) => { g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0], 3)); g.setIndex([0, 1, 2, 0, 2, 3]); return g; };
+const WX_OUT = `
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>`;
+function buildWeather() {
+  const M = WXD.mesh;
+  // spots where water stands after rain
+  const S = META.wlog || []; WXD.spots = S; WXD.lv = new Float32Array(S.length);
+  S.forEach((s, i) => { for (const [ox, oz] of [[-1, 0], [1, 0], [0, 0]]) {
+    const x = s[0] + s[2] * ox * s[4] * 0.5, z = s[1] + s[3] * ox * s[4] * 0.5, key = ((Math.floor(x / 60) & 0xffff) << 16) | (Math.floor(z / 60) & 0xffff);
+    const L = WXD.grid.get(key) || []; if (!L.includes(i)) L.push(i); WXD.grid.set(key, L); } });
+  if (S.length) {
+    const g = new THREE.CircleGeometry(1, 22); g.rotateX(-Math.PI / 2);
+    const lvA = new THREE.InstancedBufferAttribute(new Float32Array(S.length), 1), kA = new THREE.InstancedBufferAttribute(new Float32Array(S.map((s) => s[7])), 1);
+    lvA.setUsage(THREE.DynamicDrawUsage); g.setAttribute('aLv', lvA); g.setAttribute('aK', kA);
+    const mat = new THREE.ShaderMaterial({ uniforms: U, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      vertexShader: `attribute float aLv; attribute float aK; varying vec2 vL; varying vec3 vW; varying float vLv; varying float vK;
+      void main() { float s = 0.32 + 0.68 * sqrt(clamp(aLv, 0.0, 1.0)); vL = position.xz; vLv = aLv; vK = aK;
+        vec4 w = modelMatrix * instanceMatrix * vec4(position * vec3(s, 1.0, s), 1.0); vW = w.xyz;
+        gl_Position = aLv < 0.01 ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * viewMatrix * w; }`,
+      fragmentShader: WX_LIB + `varying vec2 vL; varying vec3 vW; varying float vLv; varying float vK;
+      void main() {
+        float n = wxN(vW.xz * 0.35) * 0.5 + wxN(vW.xz * 1.3) * 0.25, edge = 1.0 - smoothstep(0.6, 0.98, length(vL) + (n - 0.37) * 0.55);
+        if (edge <= 0.0) discard;
+        // standing water mirrors the overcast sky; muddy brown in the deep underpass pools, rim darker where it meets the road
+        vec3 mud = vK < 0.5 ? vec3(0.20, 0.15, 0.09) : vec3(0.13, 0.125, 0.115), sky = uWxFog.rgb * 1.05;
+        float deep = smoothstep(0.98, 0.45, length(vL));
+        vec3 c = mix(mud, sky, (vK < 0.5 ? 0.35 : 0.62) * deep + 0.12 * wxN(vW.xz * 0.06 + uWxT * 0.03));
+        vec2 g = vW.xz * 1.5, id = floor(g), f = fract(g) - 0.5; float ph = fract(uWxT * 1.6 + wxH(id));
+        float ring = smoothstep(0.07, 0.0, abs(length(f) - ph * 0.45)) * (1.0 - ph) * step(wxH(id + 3.1), 0.75);
+        c += ring * min(1.0, wxRain(vW.xz) * 1.5) * 0.35 * sky;
+        gl_FragColor = vec4(c * uWxFogL * 0.85, edge * smoothstep(0.0, 0.12, vLv) * 0.9);
+        ${WX_OUT}
+      }` });
+    const im = new THREE.InstancedMesh(g, mat, S.length);
+    S.forEach((s, i) => { _p.set(s[0], 0.07, s[1]); _e.set(0, Math.atan2(-s[3], s[2]), 0); _q.setFromEuler(_e); _s.set(s[4] * 0.5, 1, s[5] * 0.5); _m.compose(_p, _q, _s); im.setMatrixAt(i, _m); });
+    im.frustumCulled = false; im.renderOrder = 6; im.visible = false; group.ground.add(im); M.pud = im; M.lvA = lvA;
+  }
+  // falling rain: streaks anchored to a world tile around the view, only where a cell is overhead
+  const NR = 16000, rg = WX_QUAD(new THREE.InstancedBufferGeometry()), rr = new Float32Array(NR * 3);
+  for (let i = 0; i < NR * 3; i++) rr[i] = hash1(i * 7.13 + 1.7);
+  rg.setAttribute('aR', new THREE.InstancedBufferAttribute(rr, 3)); rg.instanceCount = NR;
+  U.uWxBox = { value: new THREE.Vector4(0, 0, 512, 0) };
+  const rainMat = new THREE.ShaderMaterial({ uniforms: U, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    vertexShader: WX_LIB + `attribute vec3 aR; uniform vec4 uWxBox; uniform float uMpp; varying float vA; varying float vV;
+    void main() {
+      float t = fract(uWxT * 0.32 + aR.z), y = 30.0 * (1.0 - t);
+      vec2 xz = uWxBox.xy + mod(aR.xy * uWxBox.z - uWxBox.xy, uWxBox.z), sl = uWxVel / max(1.0, length(uWxVel)) * 0.3;
+      float R = wxRain(xz); vA = R * (1.0 - smoothstep(0.5, 0.9, uMpp)) * smoothstep(0.0, 0.08, t); vV = position.y;
+      if (vA < 0.01) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+      vec3 base = vec3(xz.x + sl.x * y, y, xz.y + sl.y * y), dir = normalize(vec3(-sl.x, -1.0, -sl.y));
+      vec3 right = normalize(vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]));
+      vec3 p = base + dir * (position.y * (1.8 + 3.0 * smoothstep(0.03, 0.4, uMpp))) + right * position.x * max(0.03, uMpp * 1.5);
+      gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+    }`,
+    fragmentShader: `uniform float uWxFogL; varying float vA; varying float vV;
+    void main() { gl_FragColor = vec4(vec3(0.72, 0.77, 0.85) * uWxFogL * 0.95, vA * 0.55 * (0.3 + 0.7 * vV)); ${WX_OUT} }` });
+  const rain = new THREE.Mesh(rg, rainMat); rain.frustumCulled = false; rain.renderOrder = 45; rain.visible = false; group.ground.add(rain); M.rain = rain;
+  // splashes: little rings bursting on the ground
+  const NS = 2600, sg = new THREE.InstancedBufferGeometry(), ring = new THREE.RingGeometry(0.78, 1, 10); ring.rotateX(-Math.PI / 2);
+  sg.index = ring.index; sg.setAttribute('position', ring.getAttribute('position'));
+  const sr = new Float32Array(NS * 3); for (let i = 0; i < NS * 3; i++) sr[i] = hash1(i * 3.37 + 9.1);
+  sg.setAttribute('aR', new THREE.InstancedBufferAttribute(sr, 3)); sg.instanceCount = NS;
+  const spMat = new THREE.ShaderMaterial({ uniforms: U, transparent: true, depthWrite: false,
+    vertexShader: WX_LIB + `attribute vec3 aR; uniform vec4 uWxBox; uniform float uMpp; varying float vA;
+    void main() {
+      float t = fract(uWxT * 2.2 + aR.z); vec2 xz = uWxBox.xy + mod(aR.xy * uWxBox.z - uWxBox.xy, uWxBox.z);
+      vA = wxRain(xz) * (1.0 - t) * (1.0 - smoothstep(0.2, 0.32, uMpp));
+      if (vA < 0.02) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+      gl_Position = projectionMatrix * viewMatrix * vec4(vec3(xz.x, 0.08, xz.y) + position * (0.12 + 0.42 * t), 1.0);
+    }`,
+    fragmentShader: `uniform float uWxFogL; varying float vA; void main() { gl_FragColor = vec4(vec3(0.8, 0.84, 0.9) * uWxFogL, vA * 0.5); ${WX_OUT} }` });
+  const spl = new THREE.Mesh(sg, spMat); spl.frustumCulled = false; spl.renderOrder = 44; spl.visible = false; group.ground.add(spl); M.spl = spl;
+  // cloud deck 900 m up: seen only from a distance; it casts the shadows the city shaders draw
+  const cg = new THREE.PlaneGeometry(1, 1); cg.rotateX(-Math.PI / 2);
+  const cloudMat = new THREE.ShaderMaterial({ uniforms: U, transparent: true, depthWrite: false, depthTest: false,
+    vertexShader: `varying vec2 vXZ; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vXZ = w.xz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: WX_LIB + `uniform float uMpp; uniform float uWxCloudA; varying vec2 vXZ;
+    void main() {
+      float zf = smoothstep(1.4, 3.4, uMpp) * uWxCloudA; if (zf <= 0.0) discard;
+      float d = wxCloud(vXZ); if (d < 0.01) discard;
+      float lit = 1.0 - 0.5 * clamp(wxCloud(vXZ + uWxSunDir.xz * 320.0) - d + 0.25, 0.0, 1.0);
+      vec3 c = uWxCloudC * mix(0.55, 1.08, lit) * uWxFogL * 0.72 * (0.25 + 0.75 * uWxDay);
+      gl_FragColor = vec4(c, smoothstep(0.0, 0.6, d) * zf * (0.45 + 0.55 * uWxDay));   // thinner at night, so the lit city shows through
+      ${WX_OUT}
+    }` });
+  const cloud = new THREE.Mesh(cg, cloudMat); cloud.scale.set(240000, 1, 240000); cloud.frustumCulled = false; cloud.renderOrder = 60; cloud.visible = false;
+  group.ground.add(cloud); M.cloud = cloud;
+  document.querySelectorAll('#wxbar button').forEach((b) => (b.onclick = () => setWeather(b.dataset.w)));
+}
+function stepWeather(dt) {
+  let changed = false;
+  if (wxTt < 1) { wxTt = Math.min(1, wxTt + dt / 2.5); WXC = wxBlend(ease(wxTt)); applyTod(tod); changed = true; }
+  const W = WXC, T = (U.uWxT.value += dt), M = WXD.mesh;
+  const on = W.cover > 0.002 || W.fogD > 0.002 || W.heat > 0.002 || W.rain > 0.002 || (WXD.lv && WXD.lv.some((v) => v > 0.005));
+  U.uWxOn.value = on ? 1 : 0;
+  U.uWxCover.value = W.cover; U.uWxCloudA.value = W.cloudA; U.uWxCloudC.value.copy(W.cloudC); U.uWxHeat.value = W.heat; U.uWxRain.value = W.rain;
+  U.uWxFog.value.set(W.fog.r, W.fog.g, W.fog.b, W.fogD); U.uWxFogH.value = W.fogH;
+  U.uWxSunDir.value.copy(sunDir); U.uWxVel.value.set(WXD.dir[0] * WXD.speed, WXD.dir[1] * WXD.speed);
+  WXD.pos = WXD.cells.map((c) => wxCellPos(c, T));
+  WXD.cells.forEach((c, i) => U.uWxCell.value[i].set(WXD.pos[i][0], WXD.pos[i][1], c.r, W.rain > 0.001 ? c.I : 0));
+  for (let i = WXD.cells.length; i < 6; i++) U.uWxCell.value[i].w = 0;
+  const wet = wxStepSpots(dt, WXD.pos);
+  WXD.wetRoads = W.rain > 0.02 || wet;
+  // what has to move on screen: clouds (zoomed out), falling rain, puddles filling
+  const rainHere = W.rain > 0.01 && VBOX ? wxRainAt((VBOX.x0 + VBOX.x1) / 2, (VBOX.z0 + VBOX.z1) / 2, WXD.pos) : 0;
+  if (M.pud) { M.pud.visible = wet && view.mpp < 3; if (M.pud.visible) { M.lvA.array.set(WXD.lv); M.lvA.needsUpdate = true; } }
+  if (M.rain) {
+    const vis = W.rain > 0.01 && view.mpp < 0.9 && VBOX; M.rain.visible = !!vis; M.spl.visible = !!vis && view.mpp < 0.32;
+    if (vis) { const S = 2 ** Math.ceil(Math.log2(Math.max(VBOX.x1 - VBOX.x0, VBOX.z1 - VBOX.z0) + 80)); U.uWxBox.value.set(VBOX.x0 - 40, VBOX.z0 - 40, S, 0); }
+  }
+  if (M.cloud) { M.cloud.visible = W.cloudA > 0.01 && W.cover > 0.002 && view.mpp > 1.4; M.cloud.position.set(view.tx, 900, view.tz); }
+  // lightning while a storm is near the view
+  let fl = 0;
+  if (W.rain > 0.5 && WXD.pos.some((p, i) => Math.hypot(p[0] - view.tx, p[1] - view.tz) < WXD.cells[i].r * 2.2)) {
+    WXD.flashIn -= dt;
+    if (WXD.flashIn <= 0) { WXD.flashT = 0; WXD.flashIn = 5 + hash1(T * 13.7) * 11; }
+  }
+  if (WXD.flashT >= 0) {
+    const t = (WXD.flashT += dt); fl = t < 0.06 ? 1 : t < 0.12 ? 0 : t < 0.45 ? 0.7 * (1 - (t - 0.12) / 0.33) : 0;
+    if (t > 0.45) WXD.flashT = -1;
+  }
+  U.uWxFlash.value = fl * (0.35 + 0.65 * U.uNight.value);
+  WXD.anim = !on ? 0 : (M.rain && M.rain.visible) || fl > 0 ? 2 : (M.cloud && M.cloud.visible) || (M.pud && M.pud.visible) || rainHere > 0 ? 1 : 0;
+  return changed || fl > 0;
+}
+
 function buildDepot(M, pre) {
   const D = M.depot; if (!D) return;
   const G = new Geo(false), ballast = C255(146, 136, 124), steel = C255(84, 80, 76);
@@ -4999,6 +5279,7 @@ function frame(now) {
   U.uTime.value = now / 1000;
   let changed = stepAnims(dt) | stepKeys(dt);
   if (stepTod(dt)) changed = true;
+  if (stepWeather(dt)) changed = true;
   if (changed) dirty = true;
   if (dirty) {
     clampView(); updateCamera();
@@ -5023,6 +5304,7 @@ function frame(now) {
     const t0s = performance.now(), tr = stepTrains(sdt), bs = stepBuses(sdt), st = stepStreet(sdt);
     STATS.simMs = (STATS.simMs || 0) * 0.9 + (performance.now() - t0s) * 0.1; STATS.simMax = Math.max((STATS.simMax || 0) * 0.995, performance.now() - t0s);
     liveLvl = st ? 2 : tr || bs || U.uFlow.value > 0.01 ? 1 : 0;
+    if (WXD.anim) liveLvl = Math.max(liveLvl, WXD.anim);
     if (U.uNight.value > 0.02) { bloom.strength = 0.85 * U.uNight.value; composer.render(); } else renderer.render(scene, cam);
     lastRender = now;
   }
@@ -5051,7 +5333,7 @@ async function boot() {
   buildRoads();
   buildAirport(); buildPolExtras(); buildDarwajas(); buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
-  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites(); initPlay(); buildIndustry();
+  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites(); initPlay(); buildIndustry(); buildWeather();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
@@ -5069,7 +5351,7 @@ async function boot() {
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
   later('cells').then(() => later('trees')).then(() => later('props')).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
-window.AMD = { get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);

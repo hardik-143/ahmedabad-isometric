@@ -12,7 +12,7 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 - Hand-built landmarks: Patang revolving restaurant, ISKCON temple, Taj Skyline, and Ellis Bridge's 1892 steel spans between the Swami Vivekananda Bridge wings
 - Airport perimeter wall with anti-climb coil and watch towers; building outlines squared up from the traced data
 - Industry and pollution: Naroda, Vatva, Odhav and Kathwada GIDC, the Danilimda-Behrampura dyeing units and the Torrent Sabarmati coal power station, with stacks, tanks, dye-house effluent tanks, smoke plumes and estate smog
-- Day / golden hour / night (lit windows, street lamps), Q/E rotation, search, radar and city map
+- Day / golden hour / night (lit windows, street lamps) and five weathers (clear, cloudy, monsoon, fog, heatwave), Q/E rotation, search, radar and city map
 
 ## Layout
 
@@ -125,6 +125,25 @@ south-westerly), near-black from dye-house boilers, grey-brown from chemical uni
 computed entirely in the vertex shader from the clock; zoomed out, a grey smog sits over each estate.
 Not modelled: Pirana landfill (biomining is reported complete and the site is being capped), CETPs, the Kharicut
 canal.
+
+### Weather
+Five presets (buttons above the time bar, or W): clear, cloudy, monsoon, fog and heatwave; they combine with any time
+of day and blend over 2.5 s. Every material in the scene gets a small shared shader pass for wet ground, cloud
+shadows, height fog and heat haze, so nothing needs its own weather code.
+Monsoon: rain never covers the whole city. Six storm cells (2.6-3.6 km across) drift south-west to north-east at
+about 65 km/h, the direction the south-west monsoon winds carry the clouds, on a 36 km loop, so a given area gets a
+shower of a few minutes roughly every half hour and the next area gets its turn after it. Under a cell: streaks of
+rain and splashes up close, roads and roofs turn dark and wet, a grey veil at street level, and lightning when a
+storm is overhead. Behind it the ground dries over a few minutes. Traffic slows in rain and crawls through standing
+water. Water collects at 575 spots (`tools/p_weather.py`): the 36 road underpasses OSM tags as tunnels (Akhbarnagar,
+Income Tax, Parimal, Usmanpura, Paldi, Thaltej, Gota Road and the rail underpasses), deep and slow to drain; a few
+at-grade spots in 21 areas the AMC and the press keep reporting as waterlogged (Shivranjani, Sindhu Bhavan Road,
+Prahladnagar, Vastrapur, Vejalpur, Bopal, Mithakhali, Maninagar, Khokhra-Hatkeshwar, Nikol, Odhav, Vatva, Kathwada,
+Gota, Tragad, Isanpur, Vastral, Chandkheda, Shahibag); and 420 shallow puddles on minor roads that come and go
+quickly. Each fills only while rain falls on it and drains at its own rate. Zoomed out, the storm cells show as a
+cloud deck with moving shadows.
+Fog: a ground fog about 35 m deep, so towers rise out of it. Heatwave: a strong, warm sun, washed-out colours and a
+dusty haze.
 
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
