@@ -118,6 +118,7 @@ body.nowx #where{bottom:78px}
 #wkPop{position:fixed;right:34px;bottom:96px;z-index:30;pointer-events:none;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;
   font:800 italic 50px/1 'Barlow Condensed',sans-serif;letter-spacing:.02em;text-align:right;-webkit-text-stroke:2px #12050c;paint-order:stroke fill;text-shadow:3px 3px 0 rgba(0,0,0,.5)}
 #wkPop.show{opacity:1;transform:none} #wkPop.area{color:#ff6fb7} #wkPop.veh{color:#5fe1ff}
+body:not(.nowx) #wkPop{bottom:150px}
 body.walking #where{display:none}
 body.walking #radarWrap{border-radius:50%;overflow:hidden;box-shadow:0 0 0 4px rgba(10,10,14,.7),0 0 0 7px rgba(255,255,255,.28)}
 body.walking #radarWrap canvas{border-radius:50%}
