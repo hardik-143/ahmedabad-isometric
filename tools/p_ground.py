@@ -345,6 +345,48 @@ R2 = newR
 R2.sort(key=lambda r: (r['cls'], r['bridge']))
 print(f'elevated pieces {n_el}, {el_len / 1000:.1f} km of deck+ramps')
 
+# ---- roads hanging off a raised deck end: OSM leaves some ramps untagged (no bridge=yes), e.g. the two Surendra
+# Mangaldas Road ramps at the west end of Swami Vivekananda Bridge, so they would start 7 m up in mid-air and carry
+# on at grade. Make them ramps: down from the deck end at 1:16 (steeper only when the road is too short), then flat.
+_k1 = lambda p: (round(float(p[0]), 1), round(float(p[1]), 1))
+upn = {}
+for r in R2:
+    if r['bridge']:
+        for e in (0, -1):
+            if r['z'][e] > 0.3:
+                kk = _k1(r['xy'][e]); upn[kk] = max(upn.get(kk, 0.0), float(r['z'][e]))
+newR, n_ramp = [], 0
+for r in R2:
+    ends = [] if r['bridge'] else [(e, upn[_k1(r['xy'][e])]) for e in (0, -1) if _k1(r['xy'][e]) in upn]
+    if not ends:
+        newR.append(r); continue
+    c = np.asarray(shapely.segmentize(shapely.LineString(r['xy']), 8.0).coords)
+    cs = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))]); L = cs[-1]
+    h = np.zeros(len(c))
+    for e, H in ends:
+        d = cs if e == 0 else L - cs
+        g = max(GRAD, H / max(L * (0.5 if len(ends) == 2 else 1.0), 1.0))
+        h = np.maximum(h, H - g * d)
+    h = np.clip(h, 0, DECK); up = h > 0.05; n_ramp += 1
+    j = 0; n = len(c)
+    while j < n:
+        if up[j]:
+            a0 = max(0, j - 1)
+            while j < n and up[j]:
+                j += 1
+            b0 = min(n - 1, j)
+            newR.append(dict(r, bridge=True, xy=c[a0:b0 + 1], z=h[a0:b0 + 1]))
+        else:
+            a0 = j
+            while j < n and not up[j]:
+                j += 1
+            b0 = min(n - 1, j)
+            if b0 > a0:
+                newR.append(dict(r, bridge=False, xy=np.asarray(shapely.simplify(shapely.LineString(c[a0:b0 + 1]), 0.4).coords)))
+R2 = newR
+R2.sort(key=lambda r: (r['cls'], r['bridge']))
+print(f'untagged ramps raised off deck ends: {n_ramp}')
+
 # ---- service roads beside flyovers: OSM often draws a side road closer to the flyover axis than the deck is wide, so
 # it disappears under the deck and the ramp walls. Push every such parallel road out until it clears the deck edge
 # (parapet + 0.8 m), tapering back over 30 m where it leaves the flyover. Roads that contain the deck (the at-grade
