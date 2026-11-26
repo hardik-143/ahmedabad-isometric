@@ -3173,6 +3173,22 @@ function cartGeo() {   // makai lari: a wooden hand cart with a coal brazier, co
     lq(G, [0, 2.45, 0], [0, 2.45, 0], [Math.cos(b) * R, 2.1, Math.sin(b) * R], [Math.cos(a) * R, 2.1, Math.sin(a) * R], [Math.cos((a + b) / 2) * 0.3, 1, Math.sin((a + b) / 2) * 0.3], [0, 0, 0, 0], cols[k % 4]); }
   return G.mesh(VEHMAT).geometry;
 }
+function roadLightGeo() {   // the riverfront road's lights: a 9 m galvanised pole, a curved arm over the road (+z), an LED head
+  const G = new Geo(true), steel = C255(150, 156, 162), dark = C255(70, 74, 78), led = C255(255, 248, 232);
+  vbox(G, -0.2, 0.2, 0, 0.35, -0.2, 0.2, C255(190, 186, 178));                                   // footing
+  const n = 8;
+  for (let k = 0; k < n; k++) {   // tapered octagonal pole
+    const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2, am = (a0 + a1) / 2, r0 = 0.12, r1 = 0.065, y0 = 0.35, y1 = 8.6;
+    lq(G, [Math.cos(a0) * r0, y0, Math.sin(a0) * r0], [Math.cos(a1) * r0, y0, Math.sin(a1) * r0], [Math.cos(a1) * r1, y1, Math.sin(a1) * r1], [Math.cos(a0) * r1, y1, Math.sin(a0) * r1], [Math.cos(am), 0.01, Math.sin(am)], [0, 0, 0, 0], steel);
+  }
+  const arm = [[0, 8.45, 0], [0, 8.85, 0.45], [0, 9.0, 1.1], [0, 9.02, 1.9]];
+  for (let k = 0; k < arm.length - 1; k++) beam(G, arm[k], arm[k + 1], 0.08, 0.08, steel, 0);
+  beam(G, [0, 7.9, 0], [0, 8.6, 0.9], 0.04, 0.04, steel, 0);                                     // stay
+  vbox(G, -0.17, 0.17, 8.92, 9.06, 1.6, 2.35, dark);                                            // luminaire housing
+  vbox(G, -0.13, 0.13, 8.9, 8.92, 1.66, 2.29, led, 1);                                           // LED panel, glows at night
+  vbox(G, -0.09, 0.09, 2.6, 3.4, 0.07, 0.11, C255(30, 90, 160));                                 // pole banner
+  return G.mesh(VEHMAT).geometry;
+}
 function buildRiverProps() {
   const R = TR && TR.river; if (!R || !R.lamps.length) return;
   const Wl = R.walls[0], segs = [];
@@ -3206,6 +3222,29 @@ function buildRiverProps() {
     im.computeBoundingSphere(); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im); return im;
   };
   inst(benchGeo(), benches); inst(binGeo(), bins);
+  // the riverfront road: tall single-arm LED lights on its river-side kerb every ~32 m, arms over the carriageway
+  const lights = [], taken = new Set(), Rd = ROADS;
+  let bx0 = 1e9, bx1 = -1e9, bz0 = 1e9, bz1 = -1e9; for (const [ax, az] of segs) { bx0 = Math.min(bx0, ax); bx1 = Math.max(bx1, ax); bz0 = Math.min(bz0, az); bz1 = Math.max(bz1, az); }
+  for (let i = 0; i < Rd.n; i++) {
+    if (Rd.br[i] || Rd.cls[i] > 6 || Rd.hw[i] < 30) continue;
+    const p0 = Rd.start[i], c = Rd.lens[i];
+    const fx = Rd.xy[p0 * 2] * 0.5, fz = Rd.xy[p0 * 2 + 1] * 0.5; if (fx < bx0 - 400 || fx > bx1 + 400 || fz < bz0 - 400 || fz > bz1 + 400) continue;
+    let acc = 16;
+    for (let j = 0; j < c - 1; j++) {
+      const ax = Rd.xy[(p0 + j) * 2] * 0.5, az = Rd.xy[(p0 + j) * 2 + 1] * 0.5, dx = Rd.xy[(p0 + j + 1) * 2] * 0.5 - ax, dz = Rd.xy[(p0 + j + 1) * 2 + 1] * 0.5 - az, L = Math.hypot(dx, dz); if (L < 0.01) continue;
+      const ux = dx / L, uz = dz / L;
+      for (let t = acc; t < L; t += 32) {
+        const qx = ax + ux * t, qz = az + uz * t, w = nearWall(qx, qz);
+        if (w.d < 8 || w.d > 70 || Math.abs(ux * w.ux + uz * w.uz) < 0.8) continue;      // a road running along the river
+        let nx = -uz, nz = ux; if ((w.x - qx) * nx + (w.z - qz) * nz < 0) { nx = -nx; nz = -nz; }
+        const off = Rd.hw[i] / 10 + 0.7, px = qx + nx * off, pz = qz + nz * off;
+        const key = colKey(Math.floor(px / 14), Math.floor(pz / 14)); if (taken.has(key) || promAt(px, pz) || waterAt(px, pz)) continue;
+        taken.add(key); lights.push([px, pz, -nx, -nz]); PROP_COL.circ.push([px, pz, 0.16, 9]);
+      }
+      acc = ((acc - L) % 32 + 32) % 32;
+    }
+  }
+  if (lights.length) inst(roadLightGeo(), lights);
   inst(cartGeo(), carts.map(([x, z, ux, uz]) => [x, z, -uz, ux]));   // the cart's length (x) along the wall
   // "I love Amdavad": on the upper promenade nearest the Patang Hotel, reading towards the city
   const lm = (META.lm3d || []).find((o) => o.kind === 'patang') || { x: 0, z: 0 };
@@ -3905,7 +3944,7 @@ function buildBRTS() {
   const bg = BG.mesh(VEHMAT).geometry;
   const im = new THREE.InstancedMesh(bg, VEHMAT, 700); im.count = 0; im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; im.frustumCulled = false;
   group.ground.add(im);
-  loadBusModel(im);   // the Blender-modelled bus replaces these boxes once it has loaded
+  loadVehicleModels(im);   // the Blender-modelled bus (and its turning wheels) replace these boxes once loaded
   const legs = B.legs.map((lg) => {
     const p = lg.p, n = p.length / 3, s = new Float32Array(n);
     for (let j = 1; j < n; j++) s[j] = s[j - 1] + Math.hypot(p[j * 3] - p[j * 3 - 3], p[j * 3 + 1] - p[j * 3 - 2]);
@@ -3921,31 +3960,61 @@ function buildBRTS() {
   BUSES = { im, legs, trips, clock: TOD_CLOCK[todName] || 12.5 * 3600, last: todName };
   busSchedule(B);
 }
-// The Janmarg bus modelled in Blender (tools/bus_blender.py -> models/bus.glb, ~1,900 triangles): its parts are merged
-// into one geometry for the instanced buses, painted per material, and the lamps keep their night glow by name
-async function loadBusModel(im) {
+// Vehicles modelled in Blender (tools/vehicles_blender.py -> models/vehicles.glb, meshopt): Bus, Scooter and Auto bodies
+// and their wheels as separate models, so wheels spin with the distance driven and front wheels steer. Each model's parts
+// are merged into one geometry, painted per material; lamps and windows keep their night glow by material name and
+// the 'Paint' panels take the rider's colour (aR.y = 1).
+let VEHM = null;
+const VEH_KIND = { HeadLamp: 1, TailLamp: 2, LED: 3, Indicator: 3, Glass: 4 };
+async function loadVehicleModels(busIm) {
   try {
     const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([import('three/addons/loaders/GLTFLoader.js'), import('three/addons/libs/meshopt_decoder.module.js')]);
     const L = new GLTFLoader(); L.setMeshoptDecoder(MeshoptDecoder);
-    const g = await L.loadAsync('models/bus.glb');   // meshopt-compressed and quantized (tools/bus_pack.mjs)
-    const KIND = { HeadLamp: 1, TailLamp: 2, LED: 3, Indicator: 3, Glass: 4 }, parts = [];
+    const g = await L.loadAsync('models/vehicles.glb');
     const flt = (a) => { const f = new Float32Array(a.count * 3); for (let i = 0; i < a.count; i++) { f[i * 3] = a.getX(i); f[i * 3 + 1] = a.getY(i); f[i * 3 + 2] = a.getZ(i); } return new THREE.BufferAttribute(f, 3); };
     g.scene.updateMatrixWorld(true);
-    g.scene.traverse((o) => {
-      if (!o.isMesh) return;
-      let geo = new THREE.BufferGeometry(); geo.setAttribute('position', flt(o.geometry.attributes.position)); geo.setAttribute('normal', flt(o.geometry.attributes.normal));
-      if (o.geometry.index) geo.setIndex(Array.from(o.geometry.index.array));
-      geo.applyMatrix4(o.matrixWorld); if (geo.index) geo = geo.toNonIndexed();
-      const n = geo.attributes.position.count, c = o.material.color, k = KIND[o.material.name] || 0;
-      const col = new Float32Array(n * 3), ar = new Float32Array(n * 4);
-      for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; ar[i * 4] = k; }
-      for (const a of Object.keys(geo.attributes)) if (a !== 'position' && a !== 'normal') geo.deleteAttribute(a);
-      geo.setAttribute('color', new THREE.BufferAttribute(col, 3)); geo.setAttribute('aR', new THREE.BufferAttribute(ar, 4));
-      parts.push(geo);
-    });
-    const merged = mergeGeometries(parts); if (!merged) return;
-    const old = im.geometry; im.geometry = merged; old.dispose();
-  } catch (e) { console.warn('bus model', e); }
+    const M = {};
+    for (const name of ['Bus', 'BusWheel', 'Scooter', 'ScooterWheel', 'Auto', 'AutoWheel']) {
+      const node = g.scene.getObjectByName(name); if (!node) continue;
+      const parts = [];
+      node.traverse((o) => {
+        if (!o.isMesh) return;
+        let geo = new THREE.BufferGeometry(); geo.setAttribute('position', flt(o.geometry.attributes.position)); geo.setAttribute('normal', flt(o.geometry.attributes.normal));
+        if (o.geometry.index) geo.setIndex(Array.from(o.geometry.index.array));
+        geo.applyMatrix4(o.matrixWorld); if (geo.index) geo = geo.toNonIndexed();
+        const n = geo.attributes.position.count, c = o.material.color, k = VEH_KIND[o.material.name] || 0, paint = o.material.name === 'Paint' ? 1 : 0;
+        const col = new Float32Array(n * 3), ar = new Float32Array(n * 4);
+        for (let q = 0; q < n; q++) { col[q * 3] = c.r; col[q * 3 + 1] = c.g; col[q * 3 + 2] = c.b; ar[q * 4] = k; ar[q * 4 + 1] = paint; }
+        geo.setAttribute('color', new THREE.BufferAttribute(col, 3)); geo.setAttribute('aR', new THREE.BufferAttribute(ar, 4));
+        parts.push(geo);
+      });
+      M[name] = mergeGeometries(parts);
+    }
+    VEHM = M;
+    if (busIm && M.Bus) { const old = busIm.geometry; busIm.geometry = M.Bus; old.dispose(); }
+    if (M.BusWheel && BUSES && !BUSES.wheels) {
+      const wm = new THREE.InstancedMesh(M.BusWheel, VEHMAT, 2800); wm.count = 0; wm.frustumCulled = false; wm.renderOrder = 10; wm.receiveShadow = true;
+      group.ground.add(wm); BUSES.wheels = wm;
+    }
+    if (WALK.on && WALK.mode !== 'walk' && WALK.mode !== 'cycle') rebuildAvatar();   // swap a ride already in use
+  } catch (e) { console.warn('vehicle models', e); }
+}
+// bus wheels: the body's pose (with its pitch), then the wheel at its axle, the front pair steered along the path
+const _wm = new THREE.Matrix4(), _wb = new THREE.Matrix4(), _wt = new THREE.Matrix4(), _wr = new THREE.Matrix4();
+function busWheels(n, x, y, z, hx, hz, py, fhx, fhz, tr) {
+  const W = BUSES.wheels; if (!W || n * 4 + 4 > 2800) return;
+  if (tr.wx !== undefined) { const d = Math.hypot(x - tr.wx, z - tr.wz); if (d < 8) tr.spin = (tr.spin || 0) - d / 0.5; }
+  tr.wx = x; tr.wz = z;
+  const c = 1 / Math.sqrt(1 + py * py), sn = py * c;
+  _wb.set(hx * c, -hx * sn, -hz, x, sn, c, 0, y, hz * c, -hz * sn, hx, z, 0, 0, 0, 1);
+  const fl = fhx * hx + fhz * hz, fr = fhx * -hz + fhz * hx, steer = clamp(Math.atan2(-fr, fl), -0.6, 0.6);
+  const arr = W.instanceMatrix.array; let k = n * 4;
+  for (const ax of [3.6, -3.6]) for (const sd of [1.1, -1.1]) {
+    _wt.makeTranslation(ax, 0.5, sd); _wm.multiplyMatrices(_wb, _wt);
+    if (ax > 0) { _wr.makeRotationY(steer); _wm.multiply(_wr); }
+    _wr.makeRotationZ(tr.spin || 0); _wm.multiply(_wr);
+    _wm.toArray(arr, k * 16); k++;
+  }
 }
 const _bp = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bs = new THREE.Vector3(1, 1, 1), _by = new THREE.Vector3(0, 1, 0), _bm = new THREE.Matrix4();
 // The line a bus drives: the path in its lane (left of travel), then steered like a real bus, which cannot turn tighter
@@ -4120,8 +4189,11 @@ function stepBuses(dt) {
   if (BS.last !== todName) { BS.clock = TOD_CLOCK[todName] || BS.clock; BS.last = todName; for (const tr of BS.trips) tr.dl = 0; }
   BS.clock += dt;
   const show = view.mpp < 6;
-  BS.im.visible = show; if (!show) return false;
+  BS.im.visible = show; if (BS.wheels) BS.wheels.visible = show; if (!show) return false;
   const T0 = BS.clock % 86400; let c = 0;
+  // draw only the buses round you (all of them still drive, queue and block); wheels only close up
+  const FX = WALK.on ? walkFocus().x : view.tx, FZ = WALK.on ? walkFocus().z : view.tz, RD2 = (WALK.on ? 900 : Math.max(700, view.mpp * 1400)) ** 2, RW2 = 260 * 260;
+  const drawn = (x, z) => (x - FX) ** 2 + (z - FZ) ** 2; let nw = 0;
   const DR = BRTS_DOOR; if (DR) DR.tgt.fill(0);
   const act = BS.act || (BS.act = []); act.length = 0;
   for (const tr of BS.trips) {
@@ -4139,7 +4211,11 @@ function stepBuses(dt) {
       else d = tu.s1;
       const fq = lineAt(tu.Q, d + 3.6), bq = lineAt(tu.Q, d - 3.6);
       let hx = fq[0] - bq[0], hz = fq[2] - bq[2]; const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
-      putYawP(BS.im.instanceMatrix.array, c++, (fq[0] + bq[0]) / 2, (fq[1] + bq[1]) / 2, (fq[2] + bq[2]) / 2, hx, hz, 1, 0);
+      const d2 = drawn((fq[0] + bq[0]) / 2, (fq[2] + bq[2]) / 2);
+      if (d2 < RD2) {
+        if (d2 < RW2) busWheels(nw++, (fq[0] + bq[0]) / 2, (fq[1] + bq[1]) / 2, (fq[2] + bq[2]) / 2, hx, hz, 0, fq[3], fq[4], tr);
+        putYawP(BS.im.instanceMatrix.array, c++, (fq[0] + bq[0]) / 2, (fq[1] + bq[1]) / 2, (fq[2] + bq[2]) / 2, hx, hz, 1, 0);
+      }
       act.push(tr, (fq[0] + bq[0]) / 2, (fq[2] + bq[2]) / 2, hx, hz);
       continue;
     }
@@ -4159,10 +4235,15 @@ function stepBuses(dt) {
     const [fx, fy, fz] = busPos(tr, kl, sv + 3.6), [bx, by, bz] = busPos(tr, kl, sv - 3.6), L = Lk, rev = tr.lg[kl] < 0;
     let hx = fx - bx, hz = fz - bz; const hl = Math.hypot(hx, hz);
     if (hl < 0.5) { const q = legAt(L, rev, clamp(sv, 0, L.L)); hx = q[3]; hz = q[4]; } else { hx /= hl; hz /= hl; }   // heading from the two axles: no snapping at vertices
-    putYawP(BS.im.instanceMatrix.array, c++, (fx + bx) / 2, (fy + by) / 2, (fz + bz) / 2, hx, hz, 1, hl >= 0.5 ? (fy - by) / hl : 0);
+    const d2 = drawn((fx + bx) / 2, (fz + bz) / 2);
+    if (d2 < RD2) {
+      if (d2 < RW2) { const fq = busPos(tr, kl, sv + 3.6); busWheels(nw++, (fx + bx) / 2, (fy + by) / 2, (fz + bz) / 2, hx, hz, hl >= 0.5 ? (fy - by) / hl : 0, fq[3], fq[4], tr); }
+      putYawP(BS.im.instanceMatrix.array, c++, (fx + bx) / 2, (fy + by) / 2, (fz + bz) / 2, hx, hz, 1, hl >= 0.5 ? (fy - by) / hl : 0);
+    }
     act.push(tr, (fx + bx) / 2, (fz + bz) / 2, hx, hz);
   }
   BS.im.count = c; flushInst(BS.im.instanceMatrix, c);
+  if (BS.wheels) { BS.wheels.visible = show; BS.wheels.count = nw * 4; flushInst(BS.wheels.instanceMatrix, nw * 4); }
   // keep a gap: a bus closing on the one ahead in its lane eases off (its clock slows), stopping a couple of metres short
   const H = BS.hash || (BS.hash = new Map()); H.clear();
   for (let q = 0; q < act.length; q += 5) { const key = hk(Math.floor(act[q + 1] / 20), Math.floor(act[q + 2] / 20)); let l = H.get(key); if (!l) H.set(key, (l = [])); l.push(q); }
@@ -5983,13 +6064,37 @@ function buildCycle(col) {
     vbox(K, -0.05, 0.05, -CYC.crank - 0.012, -CYC.crank + 0.012, 0.1, 0.2, lin('#2b2b2b')); vbox(K, -0.05, 0.05, CYC.crank - 0.012, CYC.crank + 0.012, -0.2, -0.1, lin('#2b2b2b'));
     const k = K.mesh(VEHMAT); k.renderOrder = 11; return k;
   };
-  const wr = wheel(), wf = wheel(), ck = crank();
-  wr.position.set(CYC.rear, CYC.R, 0); wf.position.set(CYC.front, CYC.R, 0); ck.position.set(bb[0], bb[1], 0);
-  m.add(wr, wf, ck); m.userData.spin = { wheels: [wr, wf], crank: ck };
+  const wr = wheel(), wf = wheel(), ck = crank(), fork = new THREE.Group();
+  wr.position.set(CYC.rear, CYC.R, 0); fork.position.set(CYC.front, CYC.R, 0); fork.add(wf); ck.position.set(bb[0], bb[1], 0);
+  m.add(wr, fork, ck); m.userData.spin = { wheels: [wr, wf], crank: ck, steer: [fork], R: CYC.R, maxSteer: 0.5 };
+  return m;
+}
+// scooter and auto from the Blender models: the body (its 'Paint' panels in the rider's colour), wheels that spin, the
+// front one on a steering pivot. Wheel centres match tools/vehicles_blender.py.
+const RIDE_WHEELS = { scooter: { geo: 'ScooterWheel', R: 0.25, at: [[0.62, 0, 1], [-0.55, 0, 0]], maxSteer: 0.55 },
+  auto: { geo: 'AutoWheel', R: 0.22, at: [[1.0, 0, 1], [-0.85, 0.6, 0], [-0.85, -0.6, 0]], maxSteer: 0.6 } };
+function buildRideModel(kind, pf, col) {
+  const body = VEHM[kind === 'auto' ? 'Auto' : 'Scooter'].clone(), RW = RIDE_WHEELS[kind];
+  if (kind === 'scooter') {   // the rider's scooter colour on the painted panels
+    const pc = col ? [col.r, col.g, col.b] : lin(['#c0392b', '#2980b9', '#f4f1ea', '#151515', '#f1c40f'][pf.scoot || 0]);
+    const C = body.attributes.color, A = body.attributes.aR;
+    for (let q = 0; q < C.count; q++) if (A.getY(q) > 0.5) C.setXYZ(q, pc[0], pc[1], pc[2]);
+    for (let q = 0; q < A.count; q++) A.setY(q, 0);
+  }
+  const m = new THREE.Mesh(body, VEHMAT); m.castShadow = true; m.renderOrder = 11;
+  const wheels = [], steer = [];
+  for (const [x, z, front] of RW.at) {
+    const w = new THREE.Mesh(VEHM[RW.geo], VEHMAT); w.castShadow = true; w.renderOrder = 11; wheels.push(w);
+    if (front) { const pv = new THREE.Group(); pv.position.set(x, RW.R, z); pv.add(w); m.add(pv); steer.push(pv); }
+    else { w.position.set(x, RW.R, z); m.add(w); }
+  }
+  m.userData.spin = { wheels, steer, R: RW.R, maxSteer: RW.maxSteer };
+  m.userData.own = true;   // its body geometry is a copy: dispose with the mesh
   return m;
 }
 function buildRide(kind, pf, col) {
   if (kind === 'cycle') return buildCycle(col);
+  if (VEHM && (kind === 'scooter' || kind === 'auto') && VEHM.Scooter && VEHM.Auto) return buildRideModel(kind, pf, col);
   const G = new Geo(true), C = VCOL;
   if (kind === 'auto') VTYPES[3].build(G);
   else {   // scooter, no rider (you are the rider)
@@ -6003,8 +6108,8 @@ function buildRide(kind, pf, col) {
 const RIDE_SPEC = {
   walk: { r: 0.3, seat: null },
   cycle: { r: 0.45, vmax: 7, acc: 2.6, brk: 6.5, rev: 1.2, steer: 2.6, seat: [-0.22, 0.12, 0], seat3: [0.04, 0.39, 0], cam: 5, len: 1.8, w: 0.6 },
-  scooter: { r: 0.55, vmax: 13, acc: 3.4, brk: 7.5, rev: 2.5, steer: 2.1, seat: [-0.24, -0.16, 0], seat3: [-0.3, 0.2, 0], cam: 5.5, len: 1.8, w: 0.7 },
-  auto: { r: 0.9, vmax: 10.5, acc: 2.2, brk: 5.5, rev: 2.5, steer: 1.55, seat: [0.42, -0.3, 0], seat3: [0.18, 0.2, 0], cam: 7, len: 2.7, w: 1.4 },
+  scooter: { r: 0.55, vmax: 13, acc: 3.4, brk: 7.5, rev: 2.5, steer: 2.1, seat: [-0.24, -0.16, 0], seat3: [-0.04, 0.39, 0], seat3old: [-0.3, 0.2, 0], cam: 5.5, len: 1.8, w: 0.7 },
+  auto: { r: 0.9, vmax: 10.5, acc: 2.2, brk: 5.5, rev: 2.5, steer: 1.55, seat: [0.42, -0.3, 0], seat3: [0.69, 0.22, 0], seat3old: [0.18, 0.2, 0], cam: 7, len: 2.7, w: 1.4 },
 };
 const wmod = (a, m) => ((a % m) + m) % m;
 
@@ -6401,10 +6506,11 @@ function rebuildAvatar() {
   W.av = CHAR.state === 2 ? makeChar(ACC.pf) : buildAvatar(ACC.pf);   // the box person stands in while the models load
   W.av.root.traverse((o) => { o.renderOrder = 12; });
   W.holder.add(W.av.root);
-  if (W.rideMesh) { W.holder.remove(W.rideMesh); W.rideMesh = null; }
+  if (W.rideMesh) { W.holder.remove(W.rideMesh); if (W.rideMesh.userData.own) W.rideMesh.geometry.dispose(); W.rideMesh = null; }
   if (W.mode !== 'walk') {
     W.rideMesh = buildRide(W.mode, ACC.pf, W.rideCol); W.holder.add(W.rideMesh);
-    const s = RIDE_SPEC[W.mode][W.av.mixer ? 'seat3' : 'seat']; W.av.root.position.set(s[0], s[1], s[2]);
+    const sp3 = RIDE_SPEC[W.mode], own = W.rideMesh.userData.own || W.mode === 'cycle';
+    const s = W.av.mixer ? (own || !sp3.seat3old ? sp3.seat3 : sp3.seat3old) : sp3.seat; W.av.root.position.set(s[0], s[1], s[2]);
     if (W.av.mixer) chPlay(W.av, 'Sitting', 0);
   }
 }
@@ -6733,7 +6839,7 @@ function stepWalk(dt) {
   // --- avatar / vehicle transform, animation, the people around you
   if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; if (W.mode === 'walk') { W.holder.rotation.x = 0; W.lean = 0; } }
   if (W.av && W.av.mixer) W.av.mixer.update(dt);
-  if (W.av && W.av.mixer && W.mode === 'cycle' && !W.ride) pedalPose(W.av, W.crank || 0);
+  if (W.av && W.av.mixer && W.mode !== 'walk' && !W.ride && (W.mode === 'cycle' || (W.rideMesh && W.rideMesh.userData.own))) ridePose(W.av, W.mode, W.crank || 0);
   stepPedPool(dt);
   // --- camera
   if (W.panel) { W.yaw = lerpAng(W.yaw, Math.atan2(Math.cos(P.th), Math.sin(P.th)), Math.min(1, dt * 4)); W.pitch = lerp(W.pitch, 0.1, Math.min(1, dt * 4)); }
@@ -6820,9 +6926,14 @@ function stepVehicle(dt, spec) {
   if (W.av) W.av.root.rotation.x = 0;
   const sp = W.rideMesh && W.rideMesh.userData.spin;
   if (sp) {
-    for (const w of sp.wheels) w.rotation.z -= P.v * dt / CYC.R;
-    W.crank = (W.crank || 0) - P.v * dt / (CYC.R * 2.4) * (P.v > 0 || f > 0 ? 1 : 0);   // freewheel: no pedalling backwards
-    sp.crank.rotation.z = W.crank;
+    for (const w of sp.wheels) w.rotation.z -= P.v * dt / (sp.R || CYC.R);   // wheels roll with the distance covered
+    // front wheel turns with the steering, less at speed (as a rider would)
+    W.steerA = lerp(W.steerA || 0, -s * (sp.maxSteer || 0.5) * clamp(1.15 - Math.abs(P.v) / 14, 0.35, 1), Math.min(1, dt * 9));
+    for (const pv of sp.steer || []) pv.rotation.y = W.steerA;
+    if (sp.crank) {
+      W.crank = (W.crank || 0) - P.v * dt / (CYC.R * 2.4) * (P.v > 0 || f > 0 ? 1 : 0);   // freewheel: no pedalling backwards
+      sp.crank.rotation.z = W.crank;
+    }
   }
 }
 function moveSolid(P, dx, dz, r) {
@@ -6888,21 +6999,26 @@ function ik2(a, b, c, target, pole) {   // a: upper bone, b: lower bone, c: the 
   boneAim(b, _ib, _ic, _iv);
 }
 const _pw = new THREE.Vector3(), _pp = new THREE.Vector3(), _pl = new THREE.Vector3(), _pm = new THREE.Matrix4();
-function pedalPose(C, crank) {
+// where hands and feet go on each ride (bike frame: +x forward, y up, z right); lean tips the upper body forward
+const RIDE_POSE = { cycle: { lean: 0.27, grip: [CYC.grip[0] - 0.03, CYC.grip[1] + 0.02, CYC.grip[2]], feet: null },
+  scooter: { lean: 0.3, grip: [0.36, 1.04, 0.3], feet: [0.12, 0.37, 0.12] },
+  auto: { lean: 0.06, grip: [0.67, 1.05, 0.27], feet: [0.8, 0.39, 0.13] } };
+function ridePose(C, mode, crank) {
+  const RP = RIDE_POSE[mode]; if (!RP) return;
   const g = (n) => C.rig[n] || (C.rig[n] = C.obj.getObjectByName(n));
   if (!C.rig) C.rig = {};
   const H = WALK.holder; H.updateMatrixWorld(true);
   const toW = (x, y, z, out) => out.set(x, y, z).applyMatrix4(H.matrixWorld);
-  // lean the upper body forward ~15 degrees (about the bike's lateral axis)
+  // lean the upper body forward (about the bike's lateral axis)
   _pl.set(0, 0, 1).transformDirection(H.matrixWorld);
-  const ab = g('Abdomen'); if (ab) { _iq.setFromAxisAngle(_pl, -0.27); boneWorldTurn(ab, _iq); }
+  const ab = g('Abdomen'); if (ab) { _iq.setFromAxisAngle(_pl, -RP.lean); boneWorldTurn(ab, _iq); }
   // feet on the pedals: the left crank is opposite the right one
   _pw.set(1, 0, 0).transformDirection(H.matrixWorld);   // forward: knees point this way
   for (const [sd, ph] of [['L', crank + Math.PI], ['R', crank]]) {
     const up = g('UpperLeg' + sd), lo = g('LowerLeg' + sd), end = g('LowerLeg' + sd + '_end'), foot = g('Foot' + sd); if (!up || !lo || !end) continue;
     const zs = sd === 'L' ? -0.15 : 0.15;   // which side the model's left / right leg is on
-    const px = CYC.bb[0] + Math.sin(ph) * CYC.crank, py = CYC.bb[1] - Math.cos(ph) * CYC.crank;
-    toW(px - 0.03, py + 0.07, zs, _pp);
+    if (RP.feet) toW(RP.feet[0], RP.feet[1], Math.sign(zs) * RP.feet[2], _pp);   // feet on the floorboard
+    else { const px = CYC.bb[0] + Math.sin(ph) * CYC.crank, py = CYC.bb[1] - Math.cos(ph) * CYC.crank; toW(px - 0.03, py + 0.07, zs, _pp); }
     _iu.copy(_pw).addScaledVector(_pl, zs * 0.4);
     ik2(up, lo, end, _pp, _iu.clone().normalize());
     if (foot) { end.getWorldPosition(_ic); foot.parent.updateMatrixWorld(true); _pm.copy(foot.parent.matrixWorld).invert(); foot.position.copy(_ic.applyMatrix4(_pm)); foot.updateMatrixWorld(true); }
@@ -6911,7 +7027,7 @@ function pedalPose(C, crank) {
   for (const sd of ['L', 'R']) {
     const up = g('UpperArm' + sd), lo = g('LowerArm' + sd), end = g('Palm' + sd); if (!up || !lo || !end) continue;
     const zs = sd === 'L' ? -1 : 1;
-    toW(CYC.grip[0] - 0.03, CYC.grip[1] + 0.02, zs * CYC.grip[2], _pp);
+    toW(RP.grip[0], RP.grip[1], zs * RP.grip[2], _pp);
     _iu.copy(_pl).multiplyScalar(zs).addScaledVector(_pw, -0.6).addScaledVector(_by, -0.3).normalize();
     ik2(up, lo, end, _pp, _iu);
   }
