@@ -3,8 +3,9 @@
 A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / WebGL), built from open data.
 
 > **Current main is the base map.** Buildings (and the rooftop details, pol gates, darwajas, construction sites and
-> factories that go with them), weather and golden hour / night are switched off, and only auto rickshaws drive;
-> roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees, the Patang Hotel and walk mode stay. Every layer is still in the
+> factories that go with them), weather and golden hour / night are switched off, and there is no road traffic (only
+> Janmarg buses and the metro run). It opens straight on foot at the foot of the Patang Hotel, with no map view
+> (`CFG.start`). Roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees and the Patang Hotel stay. Every layer is still in the
 > code: flip the switches in the `CFG` object at the top of `public/app.js`. The branch `full-city` has everything on,
 > 
 
@@ -167,7 +168,12 @@ auto rickshaw or scooter beside you (out of traffic, or one you left parked) and
 C gives you your own scooter or auto; E boards a metro train or a Janmarg bus at a station (Q skips the wait). Flyover
 ramps are solid from the side and can be driven up; decks keep you on with their parapets; piers and metro columns
 block; you can pass under high decks. Walking into an area shows its name, getting on a vehicle shows its name, and the
-radar turns round. Sign-in uses Clerk when a publishable key is set in `<meta name="clerk-key">`, otherwise the
+radar turns round.
+Nothing passes through anything: people, tree trunks, the Patang tower, BRTS station glass and busway railings and the
+buses are solid (a bus brakes for you). The riverfront has its two levels: the lower promenade is 4.5 m down, the
+wall-top railing stops you except at the stair landings, the stairs take you down, and you fall if you go over.
+People nearby turn their heads to watch you pass; bump into one and they stop, face you and tell you off in a speech
+bubble ("Hey, watch out!", "Arre, dhyaan thi!"), and they step round you on the footpath. Sign-in uses Clerk when a publishable key is set in `<meta name="clerk-key">`, otherwise the
 profile is kept in localStorage.
 
 ### Janmarg BRTS
@@ -185,6 +191,12 @@ The timetable is turned into a schedule in arrival order. A bus takes the front 
 if only the front is taken (and leaves after the bus ahead), or queues behind. A bus pulling out blocks the stop for
 14 s. Runs average at most ~9 m/s with gentle acceleration, and a bus is never faster than the one ahead on the same
 leg. On top of that, a bus closing on the one ahead in its lane eases off and runs late rather than through it.
+Buses are steered like buses: each path is moved into its lane and then driven by pure pursuit (a point 7 m ahead)
+with a 9.5 m minimum turning radius, so corners are swept and reversals become wide loops; the ends are pulled back
+onto the path so a bus still stops at its bay. Where the busway network has a gap, the build re-routes the leg over the
+road graph instead of a long detour, and strips spurs and hairpins. At a terminus a bus does not vanish: it swings
+round the end of the station island in a U-turn and waits in the first bay of the run back (2,892 of 3,940 runs);
+the railings stand back from termini to leave room for the loop.
 Duplicate trips (same run under several service calendars) are dropped. Every road the corridor runs beside (dual-carriageway halves, partner carriageways, service roads) records
 how much width the busway and its barrier take from it and on which side, and traffic keeps out of that strip; the
 OSM busway pieces themselves are closed to cars and walkers. Where a station sits over a junction opening (30 of 183),

@@ -24,7 +24,9 @@ const CFG = {
   weather: false,            // weather presets and the R key; the sky stays clear
   times: ['morning', 'noon'],// time-of-day buttons offered (of morning, noon, golden, night)
   walk: true,                // explore on foot (third person, animated people, enter autos with F)
-  vehicles: ['auto'],        // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
+  vehicles: [],              // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
+  start: 'patang',           // open straight on foot at the foot of this landmark, with no map view to go back to (null: the map)
+  ride: false,               // F (get on an auto or scooter) and C (your own scooter)
 };
 const TIPS = [
   CFG.buildings && 'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
@@ -1548,10 +1550,11 @@ function buildTaj(o) {
   }
   group.ground.add(G.mesh(LMK));
 }
+let PATANG = null;
 function buildLandmarks3D() {
   for (const o of META.lm3d || []) {
     if (!CFG.landmarks.includes(o.kind)) continue;
-    if (o.kind === 'patang') buildPatang(o);
+    if (o.kind === 'patang') { buildPatang(o); PATANG = { x: o.x, z: o.z }; }
     else if (o.kind === 'iskcon') buildIskcon(o);
     else if (o.kind === 'taj') buildTaj(o);
   }
@@ -2058,23 +2061,25 @@ function buildCells(ch) {
   for (const m of ch.cells) group.near.add(m);
 }
 function buildTrees(ch) {
-  ch.trees = [];
+  ch.trees = []; ch.tcol = null;
   if (!ch.tl || !BUF.trees) return;
   const r = new Reader(BUF.trees, ch.to); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), SC = r.arr(Uint8Array, n), VR = r.arr(Uint8Array, n);
-  const im = new THREE.InstancedMesh(treeGeo, treeMat, n);
+  const im = new THREE.InstancedMesh(treeGeo, treeMat, n), tc = (ch.tcol = new Float32Array(n * 4));   // trunks: x, z, radius, height
   for (let i = 0; i < n; i++) {
     const s = SC[i] / 64, vr = VR[i];
     _p.set(X[i] * 0.1, 0, Z[i] * 0.1);
     _e.set(0, hash1(i + ch.cx * 131 + ch.cy * 977) * 6.283, 0); _q.setFromEuler(_e);
     if (vr === 4) _s.set(s * 0.55, s * 1.5, s * 0.55); else _s.set(s, s * (0.9 + 0.2 * hash1(i * 3)), s);
     _m.compose(_p, _q, _s); im.setMatrixAt(i, _m);
+    tc[i * 4] = ch.ox + _p.x; tc[i * 4 + 1] = ch.oz + _p.z; tc[i * 4 + 2] = 0.3 * _s.x + 0.04; tc[i * 4 + 3] = 3.4 * _s.y;
     const c = TREE_COLS[vr]; const j = 0.88 + 0.22 * hash1(i * 17 + 3);
     im.setColorAt(i, _tmpC.setRGB(c.r * j, c.g * j, c.b * j));
   }
   im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10;
   im.computeBoundingSphere();
   ch.trees.push(im); group.near.add(im);
+  if (WALK.on && Math.abs(ch.ox - WCOL.cx) < WCOL.R + 500 && Math.abs(ch.oz - WCOL.cz) < WCOL.R + 500) WCOL.stale = true;   // new trunks to walk round
 }
 const _tmpC = new THREE.Color();
 // ---------------------------------------------------------------- terrace parapets: waist-high walls round every flat roof
@@ -2484,6 +2489,7 @@ function drawRadar(Q) {
 }
 const bigmap = $('bigmap'), bmc = $('bigmapCanvas'), bml = $('bigmapLabels');
 function openBigMap() {
+  if (CFG.start) return;   // on foot only: no city map to jump around
   const W = innerWidth * 0.86, H = innerHeight * 0.80;
   const sc = Math.min(W / mapCanvas.width, H / mapCanvas.height);
   bmc.width = Math.round(mapCanvas.width * sc * (devicePixelRatio || 1)); bmc.height = Math.round(mapCanvas.height * sc * (devicePixelRatio || 1));
@@ -3541,7 +3547,7 @@ function buildCrossovers(XO) {
 // ---------------------------------------------------------------- Janmarg BRTS
 // Median bus lanes with kerbs and railings on both sides (open at crossing streets), island stations in the middle
 // with glass walls, an arched roof and a ramp down to a zebra crossing, and buses running to the GTFS timetable.
-const BRTS_FINE = [];
+const BRTS_FINE = [], BRTS_RAILS = [];   // BRTS_RAILS: railing runs along the busway (for walking into them)
 const BRTS_ST_LEN = 44, BRTS_ST_W = 4.6, BRTS_HW = 4.1, BRTS_BAY = 8, BRTS_DOORS = [-10.3, -5.7, 5.7, 10.3];   // bays at +-8 m; bus doors at +-2.3 m
 const BRTSMAT = groundMat(`
   float a = vR.x, s = vR.y, hw = vR.z, k = vR.w;
@@ -3581,8 +3587,16 @@ function buildBRTS() {
   const PG = [], RG = [], IG = [];
   const kerbG = new TGeo(), RL = new TGeo();
   const kerbC = lin('#c9c4ba'), kerbY = lin('#d8b23a');
-  const stOn = B.lines.map(() => []);
+  const stOn = B.lines.map(() => []), termOn = B.lines.map(() => []);
   B.stations.forEach((st) => stOn[st.li].push(st.s));
+  // termini (trips both end and start there): buses swing round in a wide loop, so the railings stand back from it
+  {
+    const nearSt = (x, z) => { let bi = -1, bd = 1600; B.stations.forEach((st, i) => { const d = (st.x - x) ** 2 + (st.z - z) ** 2; if (d < bd) { bd = d; bi = i; } }); return bi; };
+    const endOf = (ref, end) => { const p = B.legs[ref < 0 ? -ref - 1 : ref].p, n = p.length / 3, j = (ref < 0) !== !!end ? n - 1 : 0; return nearSt(p[j * 3], p[j * 3 + 1]); };
+    const ends = new Set(), starts = new Set();
+    for (const row of B.trips) { if (row.length < 3) continue; starts.add(endOf(row[1], 0)); ends.add(endOf(row[row.length - 2], 1)); }
+    for (const i of ends) if (i >= 0 && starts.has(i)) termOn[B.stations[i].li].push(B.stations[i].s);
+  }
   B.lines.forEach((ln, li) => {
     if (ln.paint === 0) return;   // bus-only connector through a junction
     const P = densify(ln.pts, 2), n = P.length / 2;
@@ -3610,6 +3624,8 @@ function buildBRTS() {
       const flush = () => {
         if (run.length >= 4) {
           railStrip(RL, run, 0.24, 1.0, 0);
+          { let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (let k = 0; k < run.length; k += 2) { x0 = Math.min(x0, run[k]); x1 = Math.max(x1, run[k]); z0 = Math.min(z0, run[k + 1]); z1 = Math.max(z1, run[k + 1]); }
+            BRTS_RAILS.push({ p: new Float32Array(run), x0, x1, z0, z1 }); }
           for (let k = 0; k + 3 < run.length; k += 2) {
             const ax = run[k], az = run[k + 1], bx = run[k + 2], bz = run[k + 3], L = Math.hypot(bx - ax, bz - az); if (L < 0.05) continue;
             kerbG.box((ax + bx) / 2, (az + bz) / 2, (bx - ax) / L, (bz - az) / L, L / 2 + 0.05, 0.18, 0, 0.24, k % 8 < 4 ? kerbC : kerbY, [0, 0, 0, 0], 1 | 2 | 16);
@@ -3618,7 +3634,7 @@ function buildBRTS() {
         run = [];
       };
       for (let j = 0; j < n; j++) {
-        if (inGap(S[j]) || atZebra(S[j])) { flush(); continue; }
+        if (inGap(S[j]) || atZebra(S[j]) || termOn[li].some((ss) => Math.abs(S[j] - ss) < 58)) { flush(); continue; }
         const h = HW[j] - 0.2;
         run.push(P[j * 2] + N[j * 2] * h * sg, P[j * 2 + 1] + N[j * 2 + 1] * h * sg);
       }
@@ -3706,7 +3722,7 @@ function buildBRTS() {
   const legs = B.legs.map((lg) => {
     const p = lg.p, n = p.length / 3, s = new Float32Array(n);
     for (let j = 1; j < n; j++) s[j] = s[j - 1] + Math.hypot(p[j * 3] - p[j * 3 - 3], p[j * 3 + 1] - p[j * 3 - 2]);
-    return { p, o: lg.o, s, L: s[n - 1] };
+    return { p, o: lg.o, s, L: s[n - 1], F: null, R: null };   // F / R: the line a bus actually drives each way (made on first use)
   });
   const seen = new Set(), trips = [];
   for (const row of B.trips) {   // the feed repeats trips for several service calendars: one bus per run
@@ -3719,7 +3735,71 @@ function buildBRTS() {
   busSchedule(B);
 }
 const _bp = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bs = new THREE.Vector3(1, 1, 1), _by = new THREE.Vector3(0, 1, 0), _bm = new THREE.Matrix4();
-function legAt(L, rev, sv) {   // position on a bus path (rev = driven the other way), with left-lane offset
+// The line a bus drives: the path in its lane (left of travel), then steered like a real bus, which cannot turn tighter
+// than ~9.5 m: it follows a point 7 m ahead (pure pursuit), so corners are swept round and a reversal becomes a wide loop.
+// The ends are pulled back onto the path, so a bus still stops exactly at its bay.
+const BUS_RMIN = 9.5;
+function pursuePath(X, Z, Y) {   // X, Z, Y: the wanted path at ~1 m spacing; returns { x, z, y, s, L } or null if it went astray
+  const N = X.length; if (N < 3) return null;
+  const Ld = 7, ds = 0.5, kmax = 1 / BUS_RMIN;
+  let ex = X[N - 1] - X[N - 2], ez = Z[N - 1] - Z[N - 2]; const el = Math.hypot(ex, ez) || 1; ex /= el; ez /= el;
+  let x = X[0], z = Z[0], h = Math.atan2(Z[1] - Z[0], X[1] - X[0]), prog = 0;
+  const ox = [x], oz = [z], oy = [Y[0]], op = [0];
+  for (let it = 0; it < N * 8; it++) {
+    let best = prog, bd = 1e18;
+    for (let j = Math.max(0, prog - 2), j1 = Math.min(N - 1, prog + 16); j <= j1; j++) { const d = (X[j] - x) ** 2 + (Z[j] - z) ** 2; if (d < bd) { bd = d; best = j; } }
+    prog = Math.max(prog, best);
+    if (bd > 900) return null;
+    const tj = prog + Ld; let tx, tz;
+    if (tj <= N - 1) { tx = X[tj]; tz = Z[tj]; } else { const e = tj - (N - 1); tx = X[N - 1] + ex * e; tz = Z[N - 1] + ez * e; }
+    const ax = tx - x, az = tz - z, la = Math.hypot(ax, az) || 1;
+    const al = wmod(Math.atan2(az, ax) - h + Math.PI, Math.PI * 2) - Math.PI;
+    const k = Math.abs(al) > Math.PI / 2 ? Math.sign(al) * kmax : clamp(2 * Math.sin(al) / la, -kmax, kmax);
+    h += k * ds; x += Math.cos(h) * ds; z += Math.sin(h) * ds;
+    ox.push(x); oz.push(z); oy.push(Y[prog]); op.push(prog);
+    if (prog >= N - 2 && (X[N - 1] - x) * ex + (Z[N - 1] - z) * ez <= 0.25) break;
+    if (it === N * 8 - 1) return null;
+  }
+  // land exactly on the end of the path: spread the last error over the final stretch (25 m or more)
+  const M = ox.length, cx = X[N - 1] - ox[M - 1], cz = Z[N - 1] - oz[M - 1], nb = Math.min(M - 1, Math.max(50, Math.ceil(Math.hypot(cx, cz) * 40)));   // >= 20 m per metre of error
+  for (let q = 0; q <= nb; q++) { const w = q / nb, f = w * w * (3 - 2 * w), i = M - 1 - nb + q; ox[i] += cx * f; oz[i] += cz * f; }
+  const s = new Float32Array(M); for (let i = 1; i < M; i++) s[i] = s[i - 1] + Math.hypot(ox[i] - ox[i - 1], oz[i] - oz[i - 1]);
+  return { x: Float32Array.from(ox), z: Float32Array.from(oz), y: Float32Array.from(oy), s, L: s[M - 1] };
+}
+function resample1(X0, Z0, Y0) {   // a polyline at 1 m spacing
+  const X = [X0[0]], Z = [Z0[0]], Y = [Y0[0]]; let carry = 0;
+  for (let j = 1; j < X0.length; j++) {
+    const dx = X0[j] - X0[j - 1], dz = Z0[j] - Z0[j - 1], l = Math.hypot(dx, dz); if (l < 1e-6) continue;
+    let t = 1 - carry;
+    while (t <= l) { const f = t / l; X.push(X0[j - 1] + dx * f); Z.push(Z0[j - 1] + dz * f); Y.push(Y0[j - 1] + (Y0[j] - Y0[j - 1]) * f); t += 1; }
+    carry = l - (t - 1);
+  }
+  const n = X0.length - 1; if (Math.hypot(X[X.length - 1] - X0[n], Z[Z.length - 1] - Z0[n]) > 0.05) { X.push(X0[n]); Z.push(Z0[n]); Y.push(Y0[n]); }
+  return [X, Z, Y];
+}
+function plainPath(X, Z, Y) { const s = new Float32Array(X.length); for (let i = 1; i < X.length; i++) s[i] = s[i - 1] + Math.hypot(X[i] - X[i - 1], Z[i] - Z[i - 1]); return { x: Float32Array.from(X), z: Float32Array.from(Z), y: Float32Array.from(Y), s, L: s[X.length - 1], plain: true }; }
+function busLine(L, rev) {
+  const key = rev ? 'R' : 'F'; if (L[key]) return L[key];
+  const p = L.p, o = L.o, n = p.length / 3, X0 = [], Z0 = [], Y0 = [];
+  for (let q = 0; q < n; q++) {   // in travel order, moved into the lane on the left
+    const j = rev ? n - 1 - q : q, ja = Math.max(0, j - 1), jb = Math.min(n - 1, j + 1);
+    let dx = p[jb * 3] - p[ja * 3], dz = p[jb * 3 + 1] - p[ja * 3 + 1]; const l = Math.hypot(dx, dz) || 1; dx /= l; dz /= l; if (rev) { dx = -dx; dz = -dz; }
+    X0.push(p[j * 3] + dz * o[j]); Z0.push(p[j * 3 + 1] - dx * o[j]); Y0.push(p[j * 3 + 2]);
+  }
+  const [X, Z, Y] = resample1(X0, Z0, Y0);
+  return (L[key] = pursuePath(X, Z, Y) || plainPath(X, Z, Y));
+}
+function lineAt(Q, d) {   // [x, y, z, hx, hz] at distance d along a driven line
+  const s = Q.s, n = s.length; d = clamp(d, 0, Q.L);
+  let lo = 0, hi = n - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m] <= d) lo = m; else hi = m; }
+  const f = clamp((d - s[lo]) / Math.max(1e-4, s[hi] - s[lo]), 0, 1);
+  let dx = Q.x[hi] - Q.x[lo], dz = Q.z[hi] - Q.z[lo]; const l = Math.hypot(dx, dz) || 1;
+  return [Q.x[lo] + dx * f, Q.y[lo] + (Q.y[hi] - Q.y[lo]) * f, Q.z[lo] + dz * f, dx / l, dz / l];
+}
+function legAt(L, rev, sv) {   // position on a bus leg (rev = driven the other way): along the line it really drives
+  const Q = busLine(L, rev); return lineAt(Q, clamp(sv, 0, L.L) * Q.L / Math.max(1e-3, L.L));
+}
+function legAtRaw(L, rev, sv) {   // the same on the plain path with its lane offset (cheap: used to find stops)
   const p = L.p, s = L.s, n = s.length, d = rev ? L.L - sv : sv;
   let lo = 0, hi = n - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (s[m] <= d) lo = m; else hi = m; }
   const f = clamp((d - s[lo]) / Math.max(1e-3, s[hi] - s[lo]), 0, 1);
@@ -3734,7 +3814,7 @@ function legAt(L, rev, sv) {   // position on a bus path (rev = driven the other
 // bus ahead), otherwise it waits behind; runs average at most ~9 m/s (32 km/h) and never catch up the bus ahead on a leg.
 function busSchedule(B) {
   const BS = BUSES, legs = BS.legs, sts = B.stations, cache = new Map();
-  const at = (ref, end) => { const L = legs[ref < 0 ? -ref - 1 : ref]; return legAt(L, ref < 0, end ? L.L : 0); };
+  const at = (ref, end) => { const L = legs[ref < 0 ? -ref - 1 : ref]; return legAtRaw(L, ref < 0, end ? L.L : 0); };
   const stopInfo = (ref, end) => {
     const key = ref * 2 + end; if (cache.has(key)) return cache.get(key);
     const [x, , z, dx, dz] = at(ref, end); let bi = -1, bd = 900;
@@ -3775,6 +3855,44 @@ function busSchedule(B) {
       push([arr, ti, k + 1]);
     }
   }
+  // turnarounds: a bus that ends its run at a terminus swings round and takes a run back from the same station
+  // (the earliest one leaving 75 s to 30 min later), instead of vanishing there and another appearing
+  const starts = new Map();
+  BS.trips.forEach((tr, ti) => { const inf = stopInfo(tr.lg[0], 0); if (!inf) return; const key = inf.si * 2 + (inf.ts > 0 ? 0 : 1); let l = starts.get(key); if (!l) starts.set(key, (l = [])); l.push(ti); });
+  for (const l of starts.values()) l.sort((a, b) => BS.trips[a].A[0] - BS.trips[b].A[0]);
+  const order = BS.trips.map((_, ti) => ti).sort((a, b) => BS.trips[a].D[BS.trips[a].D.length - 1] - BS.trips[b].D[BS.trips[b].D.length - 1]);
+  const taken = new Uint8Array(BS.trips.length);
+  for (const ti of order) {
+    const tr = BS.trips[ti], n = tr.A.length; if (n < 2) continue;
+    const inf = stopInfo(tr.lg[n - 2], 1); if (!inf) continue;
+    const l = starts.get(inf.si * 2 + (inf.ts > 0 ? 1 : 0)); if (!l) continue;
+    const tEnd = tr.D[n - 1];
+    for (const tj of l) {
+      const a0 = BS.trips[tj].A[0]; if (a0 < tEnd + 75 || taken[tj] || tj === ti) continue; if (a0 > tEnd + 1800) break;
+      taken[tj] = 1; tr.next = BS.trips[tj]; tr.si = inf.si; break;
+    }
+  }
+}
+// the turnaround loop from a run's last bay to the next run's first bay: ahead past the station island and its ramp,
+// across, and back - steered with the bus's turning circle, so it swings wide like a real one
+function busTurn(tr) {
+  if (tr.turn !== undefined) return tr.turn;
+  tr.turn = null;
+  const nt = tr.next, n = tr.A.length, BS = BUSES, kl = n - 2, Lk = BS.legs[tr.lg[kl] < 0 ? -tr.lg[kl] - 1 : tr.lg[kl]];
+  const sv = Lk.L + Math.min(0, tr.off[n - 1]);
+  const f0 = busPos(tr, kl, sv + 3.6), b0 = busPos(tr, kl, sv - 3.6), f1 = busPos(nt, 0, nt.off[0] + 3.6), b1 = busPos(nt, 0, nt.off[0] - 3.6);
+  const P0x = (f0[0] + b0[0]) / 2, P0z = (f0[2] + b0[2]) / 2, P1x = (f1[0] + b1[0]) / 2, P1z = (f1[2] + b1[2]) / 2, y = (f0[1] + b0[1]) / 2;
+  let hx = f0[0] - b0[0], hz = f0[2] - b0[2], l = Math.hypot(hx, hz) || 1; hx /= l; hz /= l;
+  let gx = f1[0] - b1[0], gz = f1[2] - b1[2]; l = Math.hypot(gx, gz) || 1; gx /= l; gz /= l;
+  const vx = -hz, vz = hx, x1 = (P1x - P0x) * hx + (P1z - P0z) * hz, y1 = (P1x - P0x) * vx + (P1z - P0z) * vz;
+  if (hx * gx + hz * gz > -0.8 || Math.abs(x1) > 30 || Math.abs(y1) < 2.5 || Math.abs(y1) > 20) return null;
+  const st = TR.brts.stations[tr.si], xe = st ? (st.x - P0x) * hx + (st.z - P0z) * hz + BRTS_ST_LEN / 2 + 9.5 : 20;
+  const apex = Math.max(xe + 8, x1 + 14, 20), X0 = [], Z0 = [], Y0 = [];
+  const pt = (a, b) => { X0.push(P0x + hx * a + vx * b); Z0.push(P0z + hz * a + vz * b); Y0.push(y); };
+  pt(-5, 0); pt(apex, 0); pt(apex, y1); pt(x1 - 5, y1);
+  const [X, Z, Y] = resample1(X0, Z0, Y0), Q = pursuePath(X, Z, Y); if (!Q) return null;
+  const s0 = 5, s1 = Q.L - 5, len = s1 - s0;
+  return (tr.turn = { Q, s0, s1, T: len / 4.2 + 6 });   // ~15 km/h round the loop, with time to pull away and stop
 }
 function busPos(tr, k, s, out) {   // distance s along leg k, spilling onto the neighbouring legs
   const BS = BUSES, n = tr.lg.length;
@@ -3795,7 +3913,23 @@ function stepBuses(dt) {
   const act = BS.act || (BS.act = []); act.length = 0;
   for (const tr of BS.trips) {
     const A = tr.A, Dp = tr.D, n = A.length, T = T0 - (tr.dl || 0);   // a bus held up by the one ahead runs that much late
-    if (T < A[0] || T > Dp[n - 1]) continue;
+    if (T < A[0]) continue;
+    if (T > Dp[n - 1]) {   // run over: round the turnaround loop, then wait in the first bay of the next run
+      const nt = tr.next; if (!nt || c >= BS.im.instanceMatrix.count) continue;
+      const tu = busTurn(tr); if (!tu) continue;
+      const Tn = T0 - (nt.dl || 0), tt = T - Dp[n - 1]; let d;
+      if (tt < tu.T) {
+        const u = tt / tu.T, f = 0.25, e = u < f ? u * u / (2 * f * (1 - f)) : u > 1 - f ? 1 - (1 - u) ** 2 / (2 * f * (1 - f)) : (u - f / 2) / (1 - f);
+        d = tu.s0 + (tu.s1 - tu.s0) * e;
+        if (Tn >= nt.A[0] - 0.5) nt.dl = T0 - nt.A[0] + 0.5;   // running late: the next run waits for it to come round
+      } else if (Tn >= nt.A[0]) continue;                          // the next run has the bus now
+      else d = tu.s1;
+      const fq = lineAt(tu.Q, d + 3.6), bq = lineAt(tu.Q, d - 3.6);
+      let hx = fq[0] - bq[0], hz = fq[2] - bq[2]; const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
+      putYawP(BS.im.instanceMatrix.array, c++, (fq[0] + bq[0]) / 2, (fq[1] + bq[1]) / 2, (fq[2] + bq[2]) / 2, hx, hz, 1, 0);
+      act.push(tr, (fq[0] + bq[0]) / 2, (fq[2] + bq[2]) / 2, hx, hz);
+      continue;
+    }
     let k = 0; while (k < n - 1 && T >= A[k + 1]) k++;
     let kl = Math.min(k, n - 2), sv;
     const Lk = BS.legs[tr.lg[kl] < 0 ? -tr.lg[kl] - 1 : tr.lg[kl]]; if (!Lk) continue;
@@ -3826,6 +3960,10 @@ function stepBuses(dt) {
       if (o === q) continue; const rx = act[o + 1] - x, rz = act[o + 2] - z, al = rx * hx + rz * hz;
       if (al <= 0 || al > 30 || Math.abs(rx * hz - rz * hx) > 2.4 || hx * act[o + 3] + hz * act[o + 4] < 0.6) continue;
       gap = Math.min(gap, al - 12);
+    }
+    if (WALK.on && !WALK.ride) {   // someone on foot in front of the bus: it brakes and waits
+      const rx = WALK.P.x - x, rz = WALK.P.z - z, al = rx * hx + rz * hz;
+      if (al > 0 && al < 24 && Math.abs(rx * hz - rz * hx) < 2.3 && (WALK.P.y || 0) < 3) gap = Math.min(gap, al - 8.2);
     }
     if (gap < 6) { const tr = act[q]; tr.dl = (tr.dl || 0) + dt * clamp((6 - gap) / 4, 0, 1); }
   }
@@ -4658,6 +4796,7 @@ function stepPeds(dt) {
   P.H.clear();
   for (let k = 0; k < L.length; k++) { const p = L[k], key = hk(Math.floor(p.x / PED_CELL), Math.floor(p.z / PED_CELL)); P.nxt[k] = P.H.get(key) ?? -1; P.H.set(key, k); }
   const arr = P.im.instanceMatrix.array;
+  const YOU = WALK.on && !WALK.ride && WALK.mode === 'walk' ? WALK.P : null;
   for (let k = 0; k < L.length; k++) {
     const p = L[k];
     if (p.fade) p.fa = Math.max(0, p.fa - dt * 1.5); else if (p.fa < 1) p.fa = Math.min(1, p.fa + dt * 1.5);
@@ -4677,12 +4816,32 @@ function stepPeds(dt) {
         if (d < 0.6 && d > 1e-4) { push -= (lat >= 0 ? 1 : -1) * (0.6 - d) * 4; if (al > 0 && al < lead) { lead = al; leadV = Math.min(leadV, q.cv * Math.max(0, hd)); } }
       }
     }
+    if (YOU && p.skin) {   // you, walking about: they keep left of you / overtake / wait like anyone else, and step round you
+      const rx = YOU.x - p.x, rz = YOU.z - p.z, d2 = rx * rx + rz * rz;
+      if (d2 < 9 && Math.abs(YOU.y - p.y) < 1.5) {
+        const al = rx * p.hx + rz * p.hz, lat = rx * p.hz - rz * p.hx, d = Math.sqrt(d2);
+        if (al > 0 && al < 2.8 && Math.abs(lat) < 0.75) {
+          const yhx = Math.cos(YOU.th), yhz = Math.sin(YOU.th), hd = p.hx * yhx + p.hz * yhz;
+          push += (lat > 0.05 ? -0.6 : 0.9) * (hd < -0.2 || YOU.v < 0.4 ? 1 : 0.6);
+          if (al < lead) { lead = al; leadV = Math.max(0, YOU.v * hd); }
+        }
+        if (d < 0.75 && d > 1e-4) push -= (lat >= 0 ? 1 : -1) * (0.75 - d) * 4;
+      }
+    }
+    if (p.skin && WCOL.tmap && WALK.on) {   // tree trunks on the footpath: walk round them
+      const T = WCOL.T, TL = WCOL.tmap.get(colKey(Math.floor((p.x + p.hx * 1.2) / WCOL.cell), Math.floor((p.z + p.hz * 1.2) / WCOL.cell)));
+      if (TL) for (const id of TL) {
+        const o = id * 4, rx = T[o] - p.x, rz = T[o + 1] - p.z, al = rx * p.hx + rz * p.hz, lat = rx * p.hz - rz * p.hx;
+        if (al > -0.3 && al < 2.2 && Math.abs(lat) < T[o + 2] + 0.45) push += lat > 0 ? -0.9 : 0.9;
+      }
+    }
     if (p.mode === 0) {
       const w = pedW(p.i), dl = 1 / (p.side * p.dir * w);
       if (push === 0) p.lat += clamp(p.pl - p.lat, -0.12 * dt, 0.12 * dt); else p.lat += clamp(push, -0.8, 0.8) * dt * dl;
       p.lat = clamp(p.lat, 0.04, 0.96);
     }
     let tv = p.v; if (lead < 1.8) tv = Math.min(tv, Math.max(0, leadV + (lead - 0.75) * 0.9));
+    if (p.bumpT > 0) tv = 0;
     p.cv += clamp(tv - p.cv, -2.5 * dt, 1.0 * dt);
     if (p.mode === 0) {
       p.s += p.cv * dt * p.dir;
@@ -5425,8 +5584,23 @@ function makeChar(pf) {
   });
   obj.scale.setScalar(I.S); obj.rotation.y = Math.PI / 2;   // the models face +z; people in this city face +x
   C.root.add(obj);
+  C.neck = obj.getObjectByName('Neck'); C.head = obj.getObjectByName('Head'); C.look = 0;
   chLook(C, pf);
   return C;
+}
+// turn the head by yaw (radians, + = to the person's left) on top of whatever the animation did this frame:
+// 40% at the neck, 60% at the head, about the world vertical
+const _hq = new THREE.Quaternion(), _hp = new THREE.Quaternion(), _hu = new THREE.Vector3(0, 1, 0);
+function chTurnHead(C, yaw) {
+  if (!C.neck || !C.head || Math.abs(yaw) < 1e-3) return;
+  C.root.updateMatrixWorld(true);
+  for (const [b, w] of [[C.neck, 0.4], [C.head, 0.6]]) {
+    b.parent.getWorldQuaternion(_hp);
+    _hq.setFromAxisAngle(_hu, yaw * w);                    // world-space turn ...
+    _hq.premultiply(_hp.clone().invert()).multiply(_hp);   // ... expressed in the bone's parent space
+    b.quaternion.premultiply(_hq);
+    b.updateMatrixWorld(true);
+  }
 }
 function chLook(C, pf) {
   const o = CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt, I = CHAR.info[C.model];
@@ -5593,7 +5767,29 @@ function waterAt(x, z) {
   }
   return false;
 }
-// walls are [ax, az, bx, bz, y0, y1, kind]: kind 0 building, 1 riverfront wall, 2 flyover side, 3 pier
+// the riverfront's lower promenade (4.5 m below the city, inside the channel walls): triangles on a 40 m grid
+let PROM_GRID = null;
+function promAt(x, z) {
+  const R = TR && TR.river; if (!R || !R.prom) return false;
+  const V = R.prom.v, I = R.prom.i;
+  if (!PROM_GRID) {
+    PROM_GRID = new Map();
+    for (let t = 0; t < I.length; t += 3) {
+      let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+      for (let k = 0; k < 3; k++) { const vx = V[I[t + k] * 2], vz = V[I[t + k] * 2 + 1]; x0 = Math.min(x0, vx); x1 = Math.max(x1, vx); z0 = Math.min(z0, vz); z1 = Math.max(z1, vz); }
+      for (let a = Math.floor(x0 / 40); a <= Math.floor(x1 / 40); a++) for (let b = Math.floor(z0 / 40); b <= Math.floor(z1 / 40); b++) { const k = colKey(a, b); let L = PROM_GRID.get(k); if (!L) PROM_GRID.set(k, (L = [])); L.push(t); }
+    }
+  }
+  const L = PROM_GRID.get(colKey(Math.floor(x / 40), Math.floor(z / 40))); if (!L) return false;
+  for (const t of L) {
+    const ax = V[I[t] * 2], az = V[I[t] * 2 + 1], bx = V[I[t + 1] * 2], bz = V[I[t + 1] * 2 + 1], cx = V[I[t + 2] * 2], cz = V[I[t + 2] * 2 + 1];
+    const d1 = (x - bx) * (az - bz) - (ax - bx) * (z - bz), d2 = (x - cx) * (bz - cz) - (bx - cx) * (z - cz), d3 = (x - ax) * (cz - az) - (cx - ax) * (z - az);
+    if (!((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))) return true;
+  }
+  return false;
+}
+const baseY = (x, z) => (promAt(x, z) ? TR.river.py : 0);   // the ground with nothing built on it
+// walls are [ax, az, bx, bz, y0, y1, kind]: kind 0 building, 1 riverfront wall, 2 flyover side, 3 pier, 4 BRTS station, 5 busway railing
 const CS = 7;
 function colBuild(x, z) {
   const R = WCOL.R, C = WCOL.cell, E = [], map = new Map(), D = [], dmap = new Map();
@@ -5623,7 +5819,38 @@ function colBuild(x, z) {
       }
     }
   }
-  if (TR && TR.river) for (const P of TR.river.walls) for (let j = 0; j + 3 < P.length; j += 2) add(P[j], P[j + 1], P[j + 2], P[j + 3], -12, 1.1, 1);
+  // the riverfront: the retaining wall's face (from the lower promenade it is a 4.5 m wall), the railing on its top
+  // (open where a stair landing joins it), the railing at the lower promenade's water edge (open at the ghats), and the
+  // stairs between the two levels: a landing flush with the upper promenade, a flight down along the wall face
+  if (TR && TR.river) {
+    const RV = TR.river, py = RV.py, ST = { run: 9.6, land: 3.2, c0: -0.3, c1: 2.9 };
+    const inStair = (px, pz) => RV.stairs.some(([sx, sz, ux, uz]) => { const dx = px - sx, dz = pz - sz, a = dx * ux + dz * uz; return Math.abs(dx * uz - dz * ux) < 1.6 && a > -ST.run / 2 - ST.land + 0.1 && a < -ST.run / 2 - 0.05; });
+    const inGhat = (px, pz) => RV.ghats.some(([gx, gz, ux, uz, w]) => { const dx = px - gx, dz = pz - gz; return Math.abs(dx * uz - dz * ux) < 1.6 && Math.abs(dx * ux + dz * uz) < w / 2 - 1.0; });
+    const lineWalls = (P, y0, y1, open, faceY1) => {
+      for (let j = 0; j + 3 < P.length; j += 2) {
+        const ax = P[j], az = P[j + 1], bx = P[j + 2], bz = P[j + 3]; if (!near(ax, az, bx, bz)) continue;
+        if (faceY1 !== undefined) add(ax, az, bx, bz, -12, faceY1, 1);
+        const L = Math.hypot(bx - ax, bz - az), m = Math.max(1, Math.ceil(L / 0.8));
+        let k0 = -1;
+        for (let k = 0; k <= m; k++) {   // railing pieces between the openings
+          const op = k < m && open((ax + (bx - ax) * (k + 0.5) / m), (az + (bz - az) * (k + 0.5) / m));
+          if (!op && k < m) { if (k0 < 0) k0 = k; continue; }
+          if (k0 >= 0) { add(ax + (bx - ax) * k0 / m, az + (bz - az) * k0 / m, ax + (bx - ax) * k / m, az + (bz - az) * k / m, y0, y1, 1); k0 = -1; }
+        }
+      }
+    };
+    for (const P of RV.walls) lineWalls(P, -0.3, 1.6, inStair, 0);
+    for (const P of RV.edges) lineWalls(P, -12, py + 1.6, inGhat);
+    for (const [sx, sz, ux, uz] of RV.stairs) {
+      if (Math.abs(sx - x) > R || Math.abs(sz - z) > R) continue;
+      const nx = uz, nz = -ux, a00 = -ST.run / 2, cm = (ST.c0 + ST.c1) / 2, Pt = (a, c) => [sx + ux * a + nx * c, sz + uz * a + nz * c];
+      const w = (a0, c0, a1, c1, y0, y1) => { const [ax, az] = Pt(a0, c0), [bx, bz] = Pt(a1, c1); add(ax, az, bx, bz, y0, y1, 1); };
+      w(a00 - ST.land, ST.c0, a00 - ST.land, ST.c1, -12, 1.6);   // the landing's open end: handrail over a solid drop
+      w(a00 - ST.land, ST.c1, -a00, ST.c1, -12, 1.6);            // the open side of landing and flight
+      const deck = (a0, a1, h0, h1) => { const [ax, az] = Pt(a0, cm), [bx, bz] = Pt(a1, cm), did = D.length / 7; D.push(ax, az, bx, bz, h0, h1, 1.2); grid(dmap, did, ax, az, bx, bz, 2.2); };
+      deck(a00 - ST.land + 1.2, a00 - 1.2, 0, 0); deck(a00, -a00, 0, py * 26 / 27);   // (deck ends reach 1.6 m beyond their segment)
+    }
+  }
   // flyovers: the deck is a surface you can drive or walk up onto from its ramp; its sides are walls (ground to parapet
   // where it is low enough to be an embankment, just the parapet and girder where you can pass underneath)
   const RD = ROADS;
@@ -5646,12 +5873,45 @@ function colBuild(x, z) {
   };
   for (const [px, pz, ux, uz, h, , , base = 0] of META.piers || []) if (Math.abs(px - x) < R && Math.abs(pz - z) < R) box(px, pz, ux, uz, 0.8, 0.9, base, h - 2.1);
   if (TR && TR.metro) for (const [px, pz, ux, uz, top, base] of TR.metro.piers) if (Math.abs(px - x) < R && Math.abs(pz - z) < R) box(px, pz, ux, uz, 0.95, 1.1, base, top - 2.1);
+  // BRTS: the railings along the busway, and the stations: glass sides, a raised platform you reach up the end ramps
+  for (const rn of BRTS_RAILS) {
+    if (rn.x1 < x - R || rn.x0 > x + R || rn.z1 < z - R || rn.z0 > z + R) continue;
+    const q = rn.p; for (let k = 0; k + 3 < q.length; k += 2) add(q[k], q[k + 1], q[k + 2], q[k + 3], 0, 1.25, 5);
+  }
+  if (TR && TR.brts) for (const st of TR.brts.stations) {
+    if (Math.abs(st.x - x) > R || Math.abs(st.z - z) > R) continue;
+    const L2 = BRTS_ST_LEN / 2, W2 = BRTS_ST_W / 2, ux = st.ux, uz = st.uz, vx = -uz, vz = ux;
+    const P = (a, b) => [st.x + ux * a + vx * b, st.z + uz * a + vz * b];
+    const wall = (a0, b0, a1, b1, y0, y1) => { const [ax, az] = P(a0, b0), [bx, bz] = P(a1, b1); add(ax, az, bx, bz, y0, y1, 4); };
+    for (const sb of [-1, 1]) {
+      wall(-L2, sb * W2, L2, sb * W2, 0, 3.0);                                   // glass sides (the bus doors open onto the bus)
+      for (const se of [-1, 1]) {
+        wall(se * L2, sb * W2, se * L2, sb * 1.2, 0, 0.9);                       // platform end either side of the ramp
+        wall(se * L2, sb * 1.2, se * (L2 + 9.5), sb * 1.2, 0, 1.9);              // ramp side and handrail
+      }
+    }
+    const bk = [[-L2 + 1.5, -W2 + 0.25], [-L2 + 4.5, -W2 + 0.25], [-L2 + 4.5, -1.0], [-L2 + 1.5, -1.0]];   // ticket booth
+    for (let k = 0; k < 4; k++) wall(bk[k][0], bk[k][1], bk[(k + 1) % 4][0], bk[(k + 1) % 4][1], 0.9, 3.0);
+    const deck = (a0, a1, h0, h1, hw) => { const [ax, az] = P(a0, 0), [bx, bz] = P(a1, 0), did = D.length / 7; D.push(ax, az, bx, bz, h0, h1, hw); grid(dmap, did, ax, az, bx, bz, hw + 1); };
+    deck(-L2, L2, 0.9, 0.9, W2 - 0.4);
+    for (const se of [-1, 1]) deck(se * (L2 + 9.5), se * L2, 0.02, 0.9, 0.8);
+  }
+  // round things: tree trunks and the Patang tower ([x, z, radius, height])
+  const T = [], tmap = new Map();
+  const circ = (cx, cz, r, h) => { if (Math.abs(cx - x) > R || Math.abs(cz - z) > R) return; const id = T.length / 4; T.push(cx, cz, r, h); grid(tmap, id, cx, cz, cx, cz, r); };
+  for (const ch of chunks) {
+    const tc = ch.tcol; if (!tc || Math.abs(ch.ox - x) > 500 + R || Math.abs(ch.oz - z) > 500 + R) continue;
+    for (let k = 0; k < tc.length; k += 4) circ(tc[k], tc[k + 1], tc[k + 2], tc[k + 3]);
+  }
+  if (PATANG) circ(PATANG.x, PATANG.z, 4.3, 78);
   WCOL.E = new Float32Array(E); WCOL.map = map; WCOL.D = new Float32Array(D); WCOL.dmap = dmap; WCOL.cx = x; WCOL.cz = z;
+  WCOL.T = new Float32Array(T); WCOL.tmap = tmap; WCOL.stale = false;
 }
 // the highest walkable surface under you: a flyover deck you are on (or stepping up onto from its ramp), else the ground
 function groundAt(x, z, y) {
-  const L = WCOL.dmap && WCOL.dmap.get(colKey(Math.floor(x / WCOL.cell), Math.floor(z / WCOL.cell))); if (!L) return 0;
-  const D = WCOL.D; let g = 0;
+  const g0 = baseY(x, z);
+  const L = WCOL.dmap && WCOL.dmap.get(colKey(Math.floor(x / WCOL.cell), Math.floor(z / WCOL.cell))); if (!L) return g0;
+  const D = WCOL.D; let g = g0;
   for (const id of L) {
     const o = id * 7, ax = D[o], az = D[o + 1], dx = D[o + 2] - ax, dz = D[o + 3] - az, l2 = dx * dx + dz * dz || 1e-6;
     const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), qx = ax + dx * t, qz = az + dz * t;
@@ -5689,6 +5949,15 @@ function colPush(p, r) {   // push a circle out of every wall it overlaps at you
         if (d < 1e-5) { const l = Math.sqrt(l2); nx = -dz / l; nz = dx / l; } else { nx /= d; nz /= d; }
         p.x += nx * (r - d + 1e-3); p.z += nz * (r - d + 1e-3); moved = hit = true;
       }
+      const TL = WCOL.tmap && WCOL.tmap.get(colKey(a, b)); if (!TL) continue;
+      const T = WCOL.T;
+      for (const id of TL) {
+        const o = id * 4; if (T[o + 3] < py + 0.45) continue;
+        let nx = p.x - T[o], nz = p.z - T[o + 1]; const d = Math.hypot(nx, nz), rr = r + T[o + 2];
+        if (d >= rr) continue;
+        if (d < 1e-5) { nx = 1; nz = 0; } else { nx /= d; nz /= d; }
+        p.x += nx * (rr - d + 1e-3); p.z += nz * (rr - d + 1e-3); moved = hit = true;
+      }
     }
     if (!moved) break;
   }
@@ -5715,6 +5984,7 @@ function camClip(tx, ty, tz, ox, oy, oz, d) {   // pull the camera in front of a
       const L = WCOL.map.get(colKey(a, b)); if (!L) continue;
       for (const id of L) {
         if (seen.has(id)) continue; seen.add(id);
+        if (E[id * CS + 6] >= 4) continue;   // station glass and busway railings: you see through them
         const o = id * CS, ax = E[o], az = E[o + 1], bx = E[o + 2] - ax, bz = E[o + 3] - az, rx = ex - tx, rz = ez - tz;
         const den = rx * bz - rz * bx; if (Math.abs(den) < 1e-9) continue;
         const t = ((ax - tx) * bz - (az - tz) * bx) / den, u = ((ax - tx) * rz - (az - tz) * rx) / den;
@@ -5869,7 +6139,7 @@ function enterWalk(x, z) {
   const W = WALK; if (W.on || !ready) return;
   ACC.pf = currentProfile();
   const [sx, sz] = findSpawn(x ?? view.tx, z ?? view.tz);
-  Object.assign(W.P, { x: sx, z: sz, y: 0, vy: 0, v: 0, ph: 0, th: -view.az - Math.PI / 2 });
+  Object.assign(W.P, { x: sx, z: sz, y: groundAt(sx, sz, 0), vy: 0, v: 0, ph: 0, th: -view.az - Math.PI / 2 });
   W.on = true; W.mode = 'walk'; W.ride = null; W.prevAz = view.az; W.prevMpp = view.mpp; W.sunAz = view.az;
   W.yaw = view.az; W.pitch = 0.3; W.dist = 4.6; W.dcur = 4.6;
   if (!W.holder) { W.holder = new THREE.Group(); scene.add(W.holder); }
@@ -5880,11 +6150,11 @@ function enterWalk(x, z) {
   view.mpp = 0.06; fly = null; rot = null;
   document.body.classList.add('walking'); bigmap.classList.remove('show');
   walkUI();
-  if (!localProfile() && !(ACC.user && ACC.user.unsafeMetadata && ACC.user.unsafeMetadata.gta)) openAvatar();
+  if (!CFG.start && !localProfile() && !(ACC.user && ACC.user.unsafeMetadata && ACC.user.unsafeMetadata.gta)) openAvatar();
   dirty = true; lastInteract = performance.now();
 }
 function exitWalk() {
-  const W = WALK; if (!W.on) return;
+  const W = WALK; if (!W.on || CFG.start) return;   // on foot only: there is no map to go back to
   if (document.pointerLockElement) document.exitPointerLock();
   ACC.pf.last = [Math.round(W.P.x), Math.round(W.P.z)]; saveProfile(true);
   W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); $('wkPop').classList.remove('show');
@@ -5907,6 +6177,7 @@ function cycleRide() {
 // ---- GTA-style: F gets into the auto or scooter next to you (out of traffic, or one you left parked), F gets out
 const VEH_NAME = { auto: 'Auto Rickshaw', scooter: 'Scooter' };
 function nearVehicle() {
+  if (CFG.ride === false) return null;
   const W = WALK, P = W.P; let best = null, bd = 2.6;
   if (TRAF && TRAF.shown) for (const c of TRAF.cars) {
     if (c.dead || (c.t !== 3 && c.t !== 4) || Math.abs(c.x - P.x) > 6 || Math.abs(c.z - P.z) > 6) continue;
@@ -5958,7 +6229,7 @@ function act() {   // E: board, get off, or cancel waiting
   } else toast('Wait for the next stop');
 }
 function landAt(x, z, msg) {
-  const W = WALK, [sx, sz] = findSpawn(x, z); W.ride = null; W.P.x = sx; W.P.z = sz; W.P.y = 0; W.P.v = 0;
+  const W = WALK, [sx, sz] = findSpawn(x, z); W.ride = null; W.P.x = sx; W.P.z = sz; W.P.y = groundAt(sx, sz, 0); W.P.v = 0; W.P.vy = 0;
   W.holder.visible = true; W.dist = 4.6; walkUI(); if (msg) toast(msg);
 }
 function skipWait() {
@@ -6010,7 +6281,7 @@ function stepWalk(dt) {
   $('wkPrompt').style.display = $('wkPrompt').innerHTML ? '' : 'none';
   // --- keep the collision set around the player
   const F = walkFocus();
-  if (!W.ride && Math.hypot(F.x - WCOL.cx, F.z - WCOL.cz) > 70) colBuild(F.x, F.z);
+  if (!W.ride && (WCOL.stale || Math.hypot(F.x - WCOL.cx, F.z - WCOL.cz) > 70)) colBuild(F.x, F.z);
   // --- avatar / vehicle transform, animation, the people around you
   if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; }
   if (W.av && W.av.mixer) W.av.mixer.update(dt);
@@ -6034,7 +6305,9 @@ function stepWalk(dt) {
   if (Math.abs(W.pitchEff - pitch) > 0.01) { cp = Math.cos(W.pitchEff); ox = Math.sin(W.yaw) * cp; oy = Math.sin(W.pitchEff); oz = Math.cos(W.yaw) * cp; d = W.ride ? dist : camClip(tgt[0], tgt[1], tgt[2], ox, oy, oz, dist); }
   W.dcur = d < W.dcur ? d : lerp(W.dcur, d, Math.min(1, dt * 3));
   const under = W.ride ? Infinity : deckOver(P.x, P.z, P.y);
-  pcam.position.set(tgt[0] + ox * W.dcur, clamp(tgt[1] + oy * W.dcur, P.y + 0.35, under - 0.4), tgt[2] + oz * W.dcur);
+  const cx = tgt[0] + ox * W.dcur, cz = tgt[2] + oz * W.dcur; let cy = clamp(tgt[1] + oy * W.dcur, P.y + 0.35, under - 0.4);
+  if (!W.ride) cy = Math.max(cy, groundAt(cx, cz, cy) + 0.4);   // never inside a stair landing or the ground of a higher level
+  pcam.position.set(cx, cy, cz);
   pcam.lookAt(tgt[0], tgt[1], tgt[2]);
   view.tx = F.x; view.tz = F.z; view.mpp = 0.06; view.az = W.yaw;
   scene.fog.color.copy(scene.background);
@@ -6100,7 +6373,7 @@ function moveSolid(P, dx, dz, r) {
     const ox = P.x, oz = P.z; P.x += dx / n; P.z += dz / n;
     colPush(P, r);
     if (waterAt(P.x, P.z)) { P.x = ox; P.z = oz; break; }
-    carPush(P, r);
+    carPush(P, r); pedPush(P, r); colPush(P, r);   // the last colPush: never shoved into a wall by a bus or a person
   }
 }
 function carPush(P, r) {   // traffic is solid too, and so is anything you left parked
@@ -6110,6 +6383,15 @@ function carPush(P, r) {   // traffic is solid too, and so is anything you left 
     const ca = clamp(a, -pk.len / 2, pk.len / 2), cb = clamp(b, -pk.w / 2, pk.w / 2), da = a - ca, db = b - cb, d = Math.hypot(da, db);
     if (d >= r || d < 1e-4) continue;
     const push = r - d + 0.01, na = da / d, nb = db / d; P.x += (na * hx - nb * hz) * push; P.z += (na * hz + nb * hx) * push;
+  }
+  const BA = BUSES && BUSES.im.visible ? BUSES.act : null;
+  if (BA && !WALK.ride) for (let q = 0; q < BA.length; q += 5) {   // the 12 m Janmarg buses (2.6 m wide)
+    const bx = BA[q + 1], bz = BA[q + 2], hx = BA[q + 3], hz = BA[q + 4]; if (Math.abs(bx - P.x) > 9 || Math.abs(bz - P.z) > 9) continue;
+    const rx = P.x - bx, rz = P.z - bz, a = rx * hx + rz * hz, b = -rx * hz + rz * hx;
+    const ca = clamp(a, -6.05, 6.05), cb = clamp(b, -1.3, 1.3), da = a - ca, db = b - cb, d = Math.hypot(da, db);
+    if (d >= r || (P.y || 0) > 3.4) continue;
+    let na, nb; if (d < 1e-4) { if (6.05 - Math.abs(a) < 1.3 - Math.abs(b)) { na = Math.sign(a) || 1; nb = 0; } else { na = 0; nb = Math.sign(b) || 1; } } else { na = da / d; nb = db / d; }
+    const push = r - d + 0.01; P.x += (na * hx - nb * hz) * push; P.z += (na * hz + nb * hx) * push;
   }
   const T = TRAF; if (!T || !T.shown) return;
   for (const c of T.cars) {
@@ -6124,7 +6406,7 @@ function carPush(P, r) {   // traffic is solid too, and so is anything you left 
 
 // ---- the people around you: in walk mode the nearest pedestrians become animated people (the rest stay figures)
 const PEDPOOL = { list: [], men: 14, women: 10 };   // up to 24 people at a time; idle ones are reused
-function pedPoolRelease() { for (const C of PEDPOOL.list) { if (C.ped) C.ped.skin = null; C.ped = null; C.root.visible = false; } }
+function pedPoolRelease() { for (const C of PEDPOOL.list) { if (C.ped) C.ped.skin = null; C.ped = null; C.root.visible = false; sayDrop(C); } }
 function stepPedPool(dt) {
   if (!PEDS || !PEDS.shown || CHAR.state !== 2) { pedPoolRelease(); return; }
   const F = walkFocus(), near = [];
@@ -6132,7 +6414,7 @@ function stepPedPool(dt) {
   near.sort((a, b) => a[0] - b[0]);
   const want = new Set(); let nm = 0, nw = 0;
   for (const [, p] of near) { const w = !p.pants; if (w ? nw < PEDPOOL.women : nm < PEDPOOL.men) { want.add(p); if (w) nw++; else nm++; } }
-  for (const C of PEDPOOL.list) if (C.ped && !want.has(C.ped)) { C.ped.skin = null; C.ped = null; C.root.visible = false; }
+  for (const C of PEDPOOL.list) if (C.ped && !want.has(C.ped)) { C.ped.skin = null; C.ped = null; C.root.visible = false; sayDrop(C); }
   for (const p of want) {
     if (p.skin) continue;
     if (p.hh == null) p.hh = Math.random();
@@ -6141,13 +6423,64 @@ function stepPedPool(dt) {
     let C = PEDPOOL.list.find((c) => !c.ped && c.model === model);
     if (!C) { if (PEDPOOL.list.length >= 40) continue; C = makeChar({ outfit }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
     chLook(C, { outfit, topC: p.shirt, botC: p.pants ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length], skin: (h * 97 | 0) % 4, hairc: (h * 13) % 1 < 0.12 ? 3 : (h * 7) % 1 < 0.2 ? 1 : 0 });
-    C.ped = p; p.skin = C; C.root.visible = true; C.idleT = 0;
+    C.ped = p; p.skin = C; C.root.visible = true; C.idleT = 0; C.face = undefined; C.look = 0;
   }
+  const W = WALK, P = W.P, onFoot = W.on && !W.ride && W.mode === 'walk';
   for (const C of PEDPOOL.list) {
-    if (!C.ped) continue;
+    if (!C.ped) { if (C.say) sayDrop(C); continue; }
     const p = C.ped, f = p.fa, sc = p.sc * (f >= 1 ? 1 : 0.2 + 0.8 * f * f * (3 - 2 * f));
-    C.root.position.set(p.x, p.y, p.z); C.root.rotation.y = -Math.atan2(p.rz, p.rx); C.root.scale.setScalar(0.94 + (sc - 1) * 0.5);
-    chMove(C, p.mode === 2 ? 0 : p.cv, dt, 0.25); C.mixer.update(dt);
+    const rx = P.x - p.x, rz = P.z - p.z, d = Math.hypot(rx, rz) || 1e-3;
+    // someone who was bumped stops and turns to face you while they tell you off; otherwise they face where they walk
+    let fy = Math.atan2(p.rz, p.rx);
+    if (p.bumpT > 0) fy = Math.atan2(rz, rx);
+    C.face = C.face === undefined ? fy : lerpAng(C.face, fy, Math.min(1, dt * (p.bumpT > 0 ? 6 : 12)));
+    C.root.position.set(p.x, p.y, p.z); C.root.rotation.y = -C.face; C.root.scale.setScalar(0.94 + (sc - 1) * 0.5);
+    chMove(C, p.mode === 2 || p.bumpT > 0 ? 0 : p.cv, dt, 0.25); C.mixer.update(dt);
+    // passers-by glance at you: the head follows you while you are close and not behind them
+    let want = 0;
+    if (onFoot && d < 6.5 && Math.abs(P.y - p.y) < 2) {
+      const rel = wmod(Math.atan2(rz, rx) - C.face + Math.PI, Math.PI * 2) - Math.PI;   // + = to their left (map angle)
+      if (Math.abs(rel) < 1.95) want = clamp(-rel, -1.15, 1.15);
+    }
+    C.look += (want - C.look) * Math.min(1, dt * 5);
+    chTurnHead(C, C.look);
+    if (p.bumpT > 0) p.bumpT -= dt;
+    if (p.bumpCd > 0) p.bumpCd -= dt;
+    if (C.say) sayPlace(C, p, dt);
+  }
+}
+// ---- what people say when you walk into them: a speech bubble over their head
+const SAY_LINES = ['Hey, watch out!', 'Arre, dhyaan thi!', 'Oye, dekh ke chalo!', 'Bhai, jara jo ne!', 'Watch where you are going!', 'Arre arre, dhire!'];
+const _sv = new THREE.Vector3();
+function pedBump(p) {
+  if (!p.skin || (p.bumpCd || 0) > 0) return;
+  p.bumpT = 2.4; p.bumpCd = 4.5;
+  const C = p.skin; if (C.say) sayDrop(C);
+  const host = $('npcSay'); if (!host) return;
+  const e = document.createElement('div'); e.className = 'say';
+  e.textContent = SAY_LINES[(Math.random() * SAY_LINES.length) | 0]; host.appendChild(e);
+  C.say = { e, t: 2.4 };
+}
+function sayPlace(C, p, dt) {
+  const S = C.say; S.t -= dt; if (S.t <= 0 || !WALK.on) { sayDrop(C); return; }
+  if (C.head) { C.head.getWorldPosition(_sv); _sv.y += 0.42; } else _sv.set(p.x, p.y + 2.1, p.z);   // just over their head
+  _sv.project(pcam);
+  const vis = _sv.z < 1 && Math.abs(_sv.x) < 1.2 && Math.abs(_sv.y) < 1.2;
+  S.e.style.opacity = vis ? Math.min(1, S.t / 0.35, (2.4 - S.t) / 0.15 + 0.2) : 0;
+  S.e.style.transform = `translate(${((_sv.x + 1) / 2 * innerWidth).toFixed(1)}px,${((1 - _sv.y) / 2 * innerHeight).toFixed(1)}px) translate(-50%,-100%)`;
+}
+function sayDrop(C) { if (C.say) { C.say.e.remove(); C.say = null; } }
+// people are solid: you can't walk through them, and walking into one at more than a stroll gets a reaction
+function pedPush(P, r) {
+  const L = PEDS && PEDS.shown ? PEDS.list : null; if (!L) return;
+  const PR = 0.3;
+  for (const C of PEDPOOL.list) {
+    const p = C.ped; if (!p || Math.abs(p.y - (P.y || 0)) > 1.2) continue;
+    let nx = P.x - p.x, nz = P.z - p.z; const d = Math.hypot(nx, nz), rr = r + PR;
+    if (d >= rr) continue;
+    if (d < 1e-4) { nx = Math.cos(P.th); nz = Math.sin(P.th); } else { nx /= d; nz /= d; }
+    P.x += nx * (rr - d + 1e-3); P.z += nz * (rr - d + 1e-3);
+    if (WALK.mode === 'walk' && P.v > 0.9 && (Math.cos(P.th) * -nx + Math.sin(P.th) * -nz) > 0.3) pedBump(p);
   }
 }
 // ---- GTA-style pop-ups: the area you walk into, the vehicle you get on
@@ -6183,8 +6516,9 @@ function walkUI() {
   $('wkName').textContent = (ACC.pf && ACC.pf.name) || 'Guest';
   $('wkSign').textContent = ACC.user ? 'Account' : 'Sign in';
   $('wkHint').innerHTML = R ? 'Drag / mouse to look around · Scroll zoom · E ' + (R.phase === 'wait' ? 'cancel' : 'get off at a stop')
-    : W.mode === 'walk' ? '<b>WASD</b> run · <b>Shift</b> sprint · <b>Caps</b> walk · <b>Space</b> jump · <b>F</b> get on an auto · <b>E</b> metro & BRTS · <b>C</b> own scooter · click to look · <b>Esc</b> map'
-      : '<b>W/S</b> throttle / brake · <b>A/D</b> steer · <b>F</b> get off · click to look · <b>Esc</b> map';
+    : W.mode === 'walk' ? '<b>WASD</b> run · <b>Shift</b> sprint · <b>Caps</b> walk · <b>Space</b> jump · ' + (CFG.ride !== false ? '<b>F</b> get on an auto · ' : '') + '<b>E</b> metro & BRTS · '
+        + (CFG.ride !== false ? '<b>C</b> own scooter · ' : '') + 'click to look' + (CFG.start ? '' : ' · <b>Esc</b> map')
+      : '<b>W/S</b> throttle / brake · <b>A/D</b> steer · <b>F</b> get off · click to look' + (CFG.start ? '' : ' · <b>Esc</b> map');
 }
 function initWalkUI() {
   $('walkBtn').onclick = () => enterWalk();
@@ -6229,9 +6563,9 @@ function walkWheel(e) {
 function walkKey(e, k) {
   if (WALK.panel && e.target && e.target.id === 'avName') return true;
   if (k === 'e') { act(); return true; }
-  if (k === 'f') { enterVehicle(); return true; }
+  if (k === 'f') { if (CFG.ride !== false) enterVehicle(); return true; }
   if (k === 'capslock') { WALK.walkT = !WALK.walkT; return true; }
-  if (k === 'c') { cycleRide(); return true; }
+  if (k === 'c') { if (CFG.ride !== false) cycleRide(); return true; }
   if (k === 'q') { skipWait(); return true; }
   if (k === 'escape') { if (WALK.panel) closeAvatar(); else if (WALK.ride && WALK.ride.phase === 'wait') { WALK.ride = null; walkUI(); } else exitWalk(); return true; }
   if (k === ' ') { e.preventDefault(); keys.add(' '); return true; }
@@ -6245,6 +6579,8 @@ function initSwitchUI() {
   document.querySelectorAll('#timebar button').forEach((b) => { if (!CFG.times.includes(b.dataset.t)) gone(b); });
   if (!CFG.weather) { gone($('wxbar')); document.body.classList.add('nowx'); }
   if (!CFG.walk) for (const id of ['walkBtn', 'walkHud', 'wkToast', 'wkPop', 'avPanel', 'wkTouch']) gone($(id));
+  if (CFG.walk && CFG.ride === false && $('wkRide')) $('wkRide').style.display = 'none';
+  if (CFG.walk && CFG.start) document.body.classList.add('onfoot');   // on foot only: CSS hides every map control
   if (!CFG.buildings && !CFG.trees) gone($('bTrees'));
   else if (!CFG.buildings) { const t = document.querySelector('#bTrees .tip'); if (t) t.textContent = 'Trees'; }
   const help = $('help');
@@ -6289,17 +6625,44 @@ async function boot() {
   ready = true; dirty = true;
   if (CFG.walk) { initWalkUI(); initAccount(); }
   try { sessionStorage.removeItem('amd-retry'); } catch (_) {}
-  setProgress(1, 'Ready');
-  $('loader').classList.add('hide');
   const [sx, sz] = [(72.5745 - o.lon) * o.kx, -(23.0255 - o.lat) * o.ky];
-  setTimeout(() => flyTo(sx, sz, 1.25, 3.2), 500);
-  setTimeout(() => ($('help').style.opacity = 0), 14000);
+  if (CFG.walk && CFG.start) {   // no city overview: straight onto the street at the foot of the landmark
+    const lm = (META.lm3d || []).find((q) => q.kind === CFG.start) || { x: sx, z: sz };
+    setProgress(0.97, 'Getting dressed…');
+    await loadChars().catch(() => {});
+    view.tx = lm.x; view.tz = lm.z; view.mpp = 0.06;
+    enterWalk(lm.x, lm.z);
+    const W = WALK, P = W.P;
+    P.th = Math.atan2(lm.z - P.z, lm.x - P.x);                    // facing the tower ...
+    W.yaw = Math.atan2(-Math.cos(P.th), -Math.sin(P.th)); W.pitch = 0.12; W.dist = 5.2; W.dcur = 5.2; W.tgtS = null;   // ... from behind, looking up at it
+    setProgress(1, 'Ready');
+    $('loader').classList.add('hide');
+  } else {
+    setProgress(1, 'Ready');
+    $('loader').classList.add('hide');
+    setTimeout(() => flyTo(sx, sz, 1.25, 3.2), 500);
+    setTimeout(() => ($('help').style.opacity = 0), 14000);
+  }
   // stream detail layers in the background
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
   const layers = [CFG.buildings && 'cells', CFG.trees && 'trees', CFG.buildings && 'props'].filter(Boolean);
   layers.reduce((p, k) => p.then(() => later(k)), Promise.resolve()).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
-window.AMD = { enterWalk, exitWalk, WALK, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn (radius over 6 m arcs), worst jump at the ends
+  const out = { legs: 0, plain: 0, tight: [], gap: 0 };
+  BUSES.legs.forEach((L, li) => { for (const rev of [false, true]) {
+    const Q = busLine(L, rev); out.legs++; if (Q.plain) out.plain++;
+    let rmin = 1e9, at = 0;
+    for (let i = 12; i + 12 < Q.s.length; i += 2) {
+      const ax = Q.x[i] - Q.x[i - 12], az = Q.z[i] - Q.z[i - 12], bx = Q.x[i + 12] - Q.x[i], bz = Q.z[i + 12] - Q.z[i];
+      const da = Math.abs(wmod(Math.atan2(bz, bx) - Math.atan2(az, ax) + Math.PI, Math.PI * 2) - Math.PI), arc = (Q.s[i + 12] - Q.s[i - 12]) / 2;
+      if (da > 1e-3 && arc / da < rmin) { rmin = arc / da; at = i; }
+    }
+    if (rmin < 8) out.tight.push([li, rev, +rmin.toFixed(1), Q.x[at] | 0, Q.z[at] | 0]);
+  } });
+  return out;
+}
+window.AMD = { enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);

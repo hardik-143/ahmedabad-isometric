@@ -122,6 +122,15 @@ body:not(.nowx) #wkPop{bottom:150px}
 body.walking #where{display:none}
 body.walking #radarWrap{border-radius:50%;overflow:hidden;box-shadow:0 0 0 4px rgba(10,10,14,.7),0 0 0 7px rgba(255,255,255,.28)}
 body.walking #radarWrap canvas{border-radius:50%}
+/* on foot only: no way back to the city map */
+body.onfoot #walkBtn,body.onfoot #wkExit,body.onfoot #tools,body.onfoot #search,body.onfoot #results,body.onfoot #timebar,body.onfoot #stats,body.onfoot #radarHint,body.onfoot #help,body.onfoot #bigmap,body.onfoot #labels{display:none!important}
+body.onfoot #radarWrap{cursor:default}
+/* what the people you bump into say */
+#npcSay{position:fixed;inset:0;pointer-events:none;z-index:19}
+#npcSay .say{position:absolute;left:0;top:0;transform:translate(-50%,-100%);white-space:nowrap;background:#fff;color:#14100d;border:2.5px solid #14100d;border-radius:14px;padding:5px 11px 6px;
+  font:800 italic 17px/1.1 'Barlow Condensed',sans-serif;letter-spacing:.02em;box-shadow:3px 3px 0 rgba(0,0,0,.35);transition:opacity .25s;will-change:transform}
+#npcSay .say::after{content:'';position:absolute;left:50%;bottom:-11px;margin-left:-7px;border:7px solid transparent;border-top:9px solid #14100d;border-bottom:0}
+#npcSay .say::before{content:'';position:absolute;left:50%;bottom:-6.5px;margin-left:-5px;border:5px solid transparent;border-top:7px solid #fff;border-bottom:0;z-index:1}
 #where .d{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-style:italic;font-size:30px;letter-spacing:.02em;line-height:1;
   text-shadow:0 2px 0 #000,0 0 14px rgba(0,0,0,.5)}
 #where .r{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:17px;letter-spacing:.05em;color:#ffd9a8;margin-top:4px;
@@ -231,6 +240,7 @@ body.walking #radarWrap canvas{border-radius:50%}
 
   <div id="where" class="hud"><div class="d" id="wD">—</div><div class="r" id="wR"></div><div class="m" id="wM"></div></div>
 
+  <div id="npcSay"></div>
   <div id="radarWrap" class="hud"><canvas id="radar" width="440" height="440"></canvas></div>
   <div id="radarHint" class="hud">Click radar for city map</div>
   <div id="help" class="hud"><kbd>Drag</kbd> pan · <kbd>Scroll</kbd> zoom · <kbd>Q</kbd><kbd>E</kbd> rotate · <kbd>Right-drag</kbd> free rotate · <kbd>N</kbd> night · <kbd>R</kbd> weather · <kbd>F</kbd> explore on foot · <kbd>M</kbd> map</div>
