@@ -527,13 +527,29 @@ def tri_flat(g):
 
 
 x0, y0, x1, y1 = bbox_m()
+# final check on flyover piers: the roads under them are only at their final width now (BRTS widening comes after
+# the piers are placed), so drop any pier that ended up standing in a road crossing beneath the flyover
+_pf_roads = [r for r in G['roads'] if not r['bridge']]
+_pf_lines = [shapely.LineString(r['xy']) for r in _pf_roads]
+_pf_tree = shapely.STRtree(_pf_lines)
+def _pier_clear(x, y, ux, uy):
+    P = shapely.Point(x, y)
+    for j in _pf_tree.query(P, predicate='dwithin', distance=16.0):
+        ln = _pf_lines[j]
+        if ln.distance(P) >= _pf_roads[j]['hw'] + 1.0:
+            continue
+        t = ln.project(P); a_ = ln.interpolate(max(0, t - 3)); b_ = ln.interpolate(min(ln.length, t + 3))
+        vx, vy = b_.x - a_.x, b_.y - a_.y; vl = (vx * vx + vy * vy) ** 0.5 or 1
+        if abs(vx / vl * ux + vy / vl * uy) < 0.9:
+            return False
+    return True
 meta = dict(
     version=1, chunk=CHUNK, origin=dict(lon=LON0, lat=LAT0, kx=KX, ky=KY),
     bounds=dict(minX=round(x0), maxX=round(x1), minZ=round(-y1), maxZ=round(-y0)),
     chunks=chunks, palette=B['palette'], roadNames=names, roadLabels=rl, searchRoads=sr,
     wards=wards, stations=stations, landmarks=lms,
     piers=[[round(x, 1), round(-y, 1), round(ux, 3), round(-uy, 3), round(h, 1), round(hc, 1), ch,
-            round(RV['water_y'] - 0.6, 1) if shapely.contains_xy(_H, x, y) else 0] for x, y, ux, uy, h, hc, ch in G['piers']],
+            round(RV['water_y'] - 0.6, 1) if shapely.contains_xy(_H, x, y) else 0] for x, y, ux, uy, h, hc, ch in G['piers'] if _pier_clear(x, y, ux, uy)],
     deckChain=G['deck_chain'],
     gates=[[round(x, 1), round(-y, 1), round(math.cos(a), 3), round(-math.sin(a), 3), round(w, 1)] for x, y, a, w in B['gates']],
     chabutros=[[round(x, 1), round(-y, 1)] for x, y in B['chab']],

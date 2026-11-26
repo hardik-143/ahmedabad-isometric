@@ -345,6 +345,111 @@ R2 = newR
 R2.sort(key=lambda r: (r['cls'], r['bridge']))
 print(f'elevated pieces {n_el}, {el_len / 1000:.1f} km of deck+ramps')
 
+# ---- service roads beside flyovers: OSM often draws a side road closer to the flyover axis than the deck is wide, so
+# it disappears under the deck and the ramp walls. Push every such parallel road out until it clears the deck edge
+# (parapet + 0.8 m), tapering back over 30 m where it leaves the flyover. Roads that contain the deck (the at-grade
+# carriageway the flyover sits in the middle of) and trunk roads stay where they are; the one-way carriageways that
+# flank a flyover are pushed out like service roads. Junction
+# nodes move with the road and every other road meeting there follows, so the network stays connected.
+SVC_GAP, SVC_TAPER = 0.8, 30.0
+decks = [r for r in R2 if r['bridge'] and float(np.max(r['z'])) > 0.3]
+dlines = [shapely.LineString(r['xy']) for r in decks]
+dcs = [np.concatenate([[0], np.cumsum(np.hypot(*np.diff(np.asarray(r['xy']), axis=0).T))]) for r in decks]
+dtree = shapely.STRtree(dlines)
+def _u(v):
+    l = float(np.hypot(*v)) or 1.0
+    return v / l
+disp = {}            # road index -> per-vertex displacement (n, 2) on its (densified) coords
+n_svc = 0
+for k, o in enumerate(R2):
+    if o['bridge'] or o['cls'] > 6:
+        continue
+    g = shapely.LineString(o['xy'])
+    if g.length < 10:
+        continue
+    near = dtree.query(g, predicate='dwithin', distance=o['hw'] + 12.0)
+    if not len(near):
+        continue
+    c = np.asarray(shapely.segmentize(g, 5.0).coords)
+    cs = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))])
+    D = np.zeros_like(c); hit = np.zeros(len(c), bool)
+    for v in range(len(c)):
+        p = shapely.Point(*c[v]); v0, v1 = max(0, v - 1), min(len(c) - 1, v + 1)
+        t2 = _u(c[v1] - c[v0])
+        for j in near:
+            dl, r = dlines[j], decks[j]
+            sb = dl.project(p)
+            if sb <= 0.5 or sb >= dl.length - 0.5:
+                continue
+            if float(np.interp(sb, dcs[j], r['z'])) < 0.3:
+                continue
+            q = np.array(dl.interpolate(sb).coords[0])
+            a_, b_ = dl.interpolate(max(0, sb - 3)), dl.interpolate(min(dl.length, sb + 3))
+            t = _u(np.array([b_.x - a_.x, b_.y - a_.y]))
+            if abs(float(t @ t2)) < 0.9:
+                continue                                   # crossing under it, not running beside it
+            nrm = np.array([-t[1], t[0]]); lat = float((c[v] - q) @ nrm)
+            if o['hw'] >= r['hw'] + 1.5 and abs(lat) <= o['hw'] - r['hw']:
+                continue                                   # the road the flyover stands in
+            if abs(lat) < 1.0:
+                continue                                   # directly underneath: a road below, not a side road
+            need = r['hw'] + 0.6 + SVC_GAP + o['hw']
+            if abs(lat) >= need:
+                continue
+            d = nrm * np.sign(lat) * (need - abs(lat))
+            if float(np.hypot(*d)) > float(np.hypot(*D[v])):
+                D[v] = d; hit[v] = True
+    if not hit.any():
+        continue
+    # spread each displaced vertex's push to its neighbours with a linear taper (largest push wins)
+    E = np.zeros_like(D)
+    hv = np.nonzero(hit)[0]
+    for v in range(len(c)):
+        best = None
+        for m in hv:
+            w = max(0.0, 1.0 - abs(cs[v] - cs[m]) / SVC_TAPER) if v != m else 1.0
+            if w <= 0:
+                continue
+            cand = D[m] * w
+            if best is None or float(np.hypot(*cand)) > float(np.hypot(*best)):
+                best = cand
+        if best is not None:
+            E[v] = best
+    disp[k] = (c, E); n_svc += 1
+# node moves: endpoints of shifted roads; every road ending at a moved node follows it there
+key = lambda pt: (round(float(pt[0]), 1), round(float(pt[1]), 1))
+node = {}
+for k, (c, E) in disp.items():
+    for e in (0, -1):
+        if float(np.hypot(*E[e])) > 0.05:
+            node.setdefault(key(R2[k]['xy'][e]), []).append(E[e])
+node = {kk: np.mean(v, axis=0) for kk, v in node.items()}
+n_follow = 0
+for k, r in enumerate(R2):
+    if k in disp:
+        c, E = disp[k]
+        for e in (0, -1):
+            kk = key(r['xy'][e])
+            if kk in node:
+                E[e] = node[kk]
+        r['xy'] = c + E
+        continue
+    ends = [(e, node[key(r['xy'][e])]) for e in (0, -1) if key(r['xy'][e]) in node]
+    if not ends:
+        continue
+    c = np.asarray(r['xy'], float)
+    if not r['bridge']:
+        c = np.asarray(shapely.segmentize(shapely.LineString(c), 5.0).coords)
+    cs = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(c, axis=0).T))]); L = cs[-1]
+    T = min(SVC_TAPER, max(L * 0.5, 1.0))
+    E = np.zeros_like(c)
+    for e, d in ends:
+        s_ = cs if e == 0 else (L - cs)
+        E += d[None, :] * np.clip(1.0 - s_ / T, 0, 1)[:, None]
+    r['xy'] = c + E
+    n_follow += 1
+print(f'service roads pushed clear of flyover decks: {n_svc} pieces, {n_follow} connecting roads followed')
+
 # ---- piers: ~28 m apart under decks over 3.5 m; twin carriageways share aligned positions ----
 pieces = [r for r in R2 if r['bridge']]
 plines = [shapely.LineString(r['xy']) for r in pieces]
@@ -369,6 +474,32 @@ for i in range(len(pieces)):   # parallel twin decks within 30 m also share a ch
             parent_[_f(i)] = _f(j)
 roots = {}
 chain_of = [roots.setdefault(_f(i), len(roots)) for i in range(len(pieces))]
+# a flyover pier never stands in a road crossing underneath, on a railway track or on another deck
+_fl = [r for r in R2 if not r['bridge']]
+_fl_lines = np.array([shapely.LineString(r['xy']) for r in _fl], dtype=object); _fl_tree = shapely.STRtree(_fl_lines)
+_rl_tree = shapely.STRtree(np.array([shapely.LineString(c) for c in rail], dtype=object)) if rail else None
+def pier_clear(px, py, ux_, uy_, i_self, h_self):
+    P = shapely.Point(px, py)
+    for j in _fl_tree.query(P, predicate='dwithin', distance=16.0):
+        ln = _fl_lines[j]; d = ln.distance(P)
+        if d >= _fl[j]['hw'] + 1.6:
+            continue
+        t = ln.project(P); a_ = ln.interpolate(max(0, t - 3)); b_ = ln.interpolate(min(ln.length, t + 3))
+        vx, vy = b_.x - a_.x, b_.y - a_.y; vl = np.hypot(vx, vy) or 1
+        if abs(vx / vl * ux_ + vy / vl * uy_) < 0.9:      # crossing the flyover, not the road it stands in
+            return False
+    if _rl_tree is not None and len(_rl_tree.query(P, predicate='dwithin', distance=3.5)):
+        return False
+    for j in ptree.query(P, predicate='dwithin', distance=14.0):
+        if j == i_self:
+            continue
+        o = pieces[j]; d = plines[j].distance(P)
+        if d < o['hw'] + 0.8:
+            zo = float(np.interp(plines[j].project(P), np.concatenate([[0], np.cumsum(np.hypot(*np.diff(np.asarray(o['xy']), axis=0).T))]), o['z']))
+            if 0.5 < zo < h_self - 1.0:                    # a lower deck: the pier would stand on it
+                return False
+    return True
+n_skip = 0
 piers, grid = [], {}
 order = sorted(range(len(pieces)), key=lambda i: -plines[i].length)
 for i in order:
@@ -399,9 +530,11 @@ for i in order:
         p = ln.interpolate(sp); a_ = ln.interpolate(max(0, sp - 3)); b_ = ln.interpolate(min(L, sp + 3))
         tx, ty = b_.x - a_.x, b_.y - a_.y; tl = np.hypot(tx, ty) or 1
         ux_, uy_ = tx / tl, ty / tl
+        if not pier_clear(p.x, p.y, ux_, uy_, i, h):
+            n_skip += 1; continue
         piers.append((p.x, p.y, ux_, uy_, h, (r['hw'] + max(r['sw'], 0.6)) * 0.82, chain_of[i]))
         grid.setdefault((int(p.x // 60), int(p.y // 60)), []).append((p.x, p.y, ux_, uy_, i))
-print('piers', len(piers), 'flyover chains', len(roots))
+print('piers', len(piers), 'flyover chains', len(roots), 'skipped over roads/rail/decks', n_skip)
 
 # Janmarg BRTS: corridors on the medians, widened carriageways (before junction discs are sized)
 from p_brts import build_brts

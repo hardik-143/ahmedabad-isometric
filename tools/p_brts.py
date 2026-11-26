@@ -11,6 +11,13 @@ FAC = {2: 3.0, 3: 1.6, 4: 1.4}
 LANE_HW = 4.1          # two 3.5 m bus lanes + barrier kerbs
 ST_LEN, ST_W = 44.0, 4.6
 ROAD_HW = 12.0         # single carriageway carrying the corridor: bus lanes + 2 x 2 general lanes each side
+# Janmarg runs ~160 km of routes but only ~89 km of dedicated corridor; on the rest the buses share the road. The GTFS
+# does not say which legs are which, so list them here (stop-name chains, either direction). On these legs the
+# buses ride the normal lanes: no busway, no widening, no median islands for the stops in between.
+MIXED_CHAINS = [
+    # SG Highway: route 16 (Nehrunagar - Sarkhej Sanand Cross Road via ISKCON); the corridor from ISKCON goes to Bopal only
+    ['ISKCON Cross Road', 'Karnavati Club', 'Prahalad Nagar Cross Road', 'Makarba Road', 'Sanand Circle'],
+]
 
 
 def _unit(v):
@@ -27,6 +34,21 @@ def build_brts(R2, log=print):
         if sid in STOPS:
             SEQ.setdefault(rid, []).append(sid)
     RNAME = {r: n for r, n in db.execute('select route_id, long_name from routes')}
+    MIX = set()
+    for ch in MIXED_CHAINS:          # any leg between two stops of a chain (routes skip stops)
+        for a in ch:
+            for b in ch:
+                if a != b:
+                    MIX.add((a, b))
+    is_mixed = lambda a, b: (STOPS[a][0], STOPS[b][0]) in MIX
+    # stops served only by mixed legs get no median station
+    adj = {}
+    for seq in SEQ.values():
+        for a, b in zip(seq[:-1], seq[1:]):
+            if a != b:
+                adj.setdefault(a, set()).add(is_mixed(a, b)); adj.setdefault(b, set()).add(is_mixed(a, b))
+    NOSTATION = {s for s, m in adj.items() if m == {True}}
+    log(f'brts: {sum(len(c) - 1 for c in MIXED_CHAINS)} mixed-traffic stretches; no station at ' + ', '.join(sorted({STOPS[s][0] for s in NOSTATION})))
 
     # ---- road graph over the major network; nodes = piece endpoints merged within 1.5 m
     cand = [i for i, r in enumerate(R2) if r['cls'] >= 2]
@@ -61,7 +83,7 @@ def build_brts(R2, log=print):
             NG.add_edge(('s', sid), a, w=t * f, i=i, part=(t, 0.0))
             NG.add_edge(('s', sid), b, w=(L - t) * f, i=i, part=(t, L))
     # ---- route every leg; remember which road stretches each route uses (and in which order, for the buses)
-    legs, USE, RPATH = {}, {}, {}
+    legs, USE, USE_MIX, RPATH = {}, {}, {}, {}
     for rid, seq in SEQ.items():
         rp = []
         for a, b in zip(seq[:-1], seq[1:]):
@@ -88,7 +110,7 @@ def build_brts(R2, log=print):
                             segs.append((i, 0.0, lines[i].length) if pos[i][0] == u else (i, lines[i].length, 0.0))
                 legs[pk] = [s for s in segs if abs(s[2] - s[1]) > 0.5]
             for (i, s0, s1) in legs[pk]:
-                USE.setdefault((i, min(s0, s1), max(s0, s1)), set()).add(rid)
+                (USE_MIX if is_mixed(a, b) else USE).setdefault((i, min(s0, s1), max(s0, s1)), set()).add(rid)
             rp.append((a, b))
         RPATH[rid] = rp
     cover = {}
@@ -105,6 +127,26 @@ def build_brts(R2, log=print):
                     parts.append((i, *cur))
                 cur = (s0, s1, set(rs))
         parts.append((i, *cur))
+    mcov = {}
+    for (i, s0, s1), rs in USE_MIX.items():
+        mcov.setdefault(i, []).append((s0, s1))
+    parts_mix = []
+    for i, iv in mcov.items():
+        iv.sort(); cur = None; merged = []
+        for s0, s1 in iv:
+            if cur and s0 <= cur[1] + 1.0:
+                cur = (cur[0], max(cur[1], s1))
+            else:
+                if cur:
+                    merged.append(cur)
+                cur = (s0, s1)
+        merged.append(cur)
+        ded = [(a, b) for (j, a, b, _) in parts if j == i]
+        for s0, s1 in merged:
+            ov = sum(max(0.0, min(s1, b) - max(s0, a)) for a, b in ded)
+            if ov < 0.5 * (s1 - s0):
+                parts_mix.append((i, s0, s1, set()))
+    log(f'brts: {sum(p[2] - p[1] for p in parts_mix) / 1000:.1f} km of route in mixed traffic')
     log(f'brts: {len(STOPS)} stations, {len(SEQ)} routes, {len(SNAP)} snapped, {len(legs)} legs, '
         f'{sum(p[2] - p[1] for p in parts) / 1000:.1f} km of road used')
 
@@ -223,7 +265,41 @@ def build_brts(R2, log=print):
     log(f'brts: {len(cl)} corridor lines, {sum(g.length for g in cl) / 1000:.1f} km; '
         f'{sum(1 for m in med if m[1])} of {len(med)} stretches on dual-carriageway medians')
 
-    # ---- widen single carriageways that carry the corridor
+    # ---- widen single carriageways that carry the corridor, but never in under a flyover deck beside them
+    _dk = [r for r in R2 if r['bridge'] and float(np.max(r['z'])) > 0.3]
+    _dl = [shapely.LineString(r['xy']) for r in _dk]
+    _dt = shapely.STRtree(_dl)
+    def max_hw(i):
+        g = lines[i]; lim = 1e9
+        for j in _dt.query(g, predicate='dwithin', distance=ROAD_HW + 12.0):
+            dl = _dl[j]
+            for f in np.linspace(0.05, 0.95, 10):
+                p = g.interpolate(f, normalized=True); sb = dl.project(p)
+                if sb <= 0.5 or sb >= dl.length - 0.5:
+                    continue
+                a_, b_ = dl.interpolate(max(0, sb - 3)), dl.interpolate(min(dl.length, sb + 3))
+                t = _unit((b_.x - a_.x, b_.y - a_.y)); sp = g.project(p)
+                c_, d_ = g.interpolate(max(0, sp - 3)), g.interpolate(min(g.length, sp + 3))
+                t2 = _unit((d_.x - c_.x, d_.y - c_.y))
+                if abs(t[0] * t2[0] + t[1] * t2[1]) < 0.9:
+                    continue
+                lat = dl.distance(p)
+                if lat < 1.0:
+                    continue                      # the road the flyover stands in: it may be wide
+                lim = min(lim, lat - _dk[j]['hw'] - 0.6 - 0.8)
+        return lim
+    n_cap = 0
+    def widen(r, i):
+        nonlocal n_cap
+        if r['hw'] >= ROAD_HW:
+            return False
+        cap = max_hw(i)
+        new = min(ROAD_HW, max(r['hw'], cap))
+        if new < ROAD_HW:
+            n_cap += 1
+        if new > r['hw']:
+            r['hw'] = new; return True
+        return False
     covered = {}
     for (i, s0, s1, rs) in parts:
         covered[i] = covered.get(i, 0) + (s1 - s0)
@@ -234,8 +310,8 @@ def build_brts(R2, log=print):
             continue
         if c > 0.4 * lines[i].length or c > 60:
             r['brts'] = True
-            if r['hw'] < ROAD_HW:
-                r['hw'] = ROAD_HW; nw += 1
+            if widen(r, i):
+                nw += 1
     # every road the finished corridor runs along: down its middle -> a BRTS road (general lanes outside the bus
     # lanes); beside it (dual-carriageway medians, partner carriageways, service roads) -> record how much width the
     # busway and its barrier take from the carriageway, and on which side of the drawn direction, so traffic keeps out
@@ -274,14 +350,16 @@ def build_brts(R2, log=print):
         m = float(np.median(hits))
         if abs(m) < 2.5:
             r['brts'] = True; nc += 1
-            if r['hw'] < ROAD_HW:
+            if i in lines and widen(r, i):
+                nw += 1
+            elif i not in lines and r['hw'] < ROAD_HW:
                 r['hw'] = ROAD_HW; nw += 1
         else:
             intr = LANE_HW + 0.6 - (abs(m) - r['hw'])
             if intr > 0.05:
                 r['bclr'] = float(min(intr, 2 * r['hw'] - 2.6)); r['bleft'] = m > 0; nb += 1
     log(f'brts: widened {nw} road pieces to {ROAD_HW * 2:.0f} m carriageways ({nc} found by geometry); '
-        f'{nb} pieces beside the busway give up width to it')
+        f'{nb} pieces beside the busway give up width to it; {n_cap} kept narrower beside flyovers')
 
     # ---- barrier gaps where streets cross or join the corridor
     ctree = shapely.STRtree(cl)
@@ -315,7 +393,7 @@ def build_brts(R2, log=print):
     import re as _re
     groups = {}
     for sid, (nm, x, y) in STOPS.items():
-        if sid not in SNAP:
+        if sid not in SNAP or sid in NOSTATION:
             continue
         base = _re.sub(r'[\s-]+([A-Da-d]|[0-9])$', '', nm).strip()
         groups.setdefault(base, []).append((x, y, sid))
@@ -380,16 +458,15 @@ def build_brts(R2, log=print):
         return ('n', round(x / 2.0), round(y / 2.0))
     # bridge stretches (river bridges, flyovers): mixed traffic, no lane paint, but buses ride them at deck height
     gl2 = shapely.STRtree(cl)
-    for (i, s0, s1, rs) in parts:
+    # mixed-traffic stretches likewise: buses in the kerb-side general lane
+    for (i, s0, s1, rs) in [p for p in parts if R2[p[0]]['bridge']] + parts_mix:
         r = R2[i]
-        if not r['bridge']:
-            continue
         g = shapely.ops.substring(lines[i], s0, s1)
         if g.geom_type != 'LineString' or g.length < 2:
             continue
         xy = np.asarray(r['xy']); sv = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
         c = np.asarray(g.coords); ss = np.array([lines[i].project(shapely.Point(*q)) for q in c])
-        h = np.interp(ss, sv, np.asarray(r['z'], float))
+        h = np.interp(ss, sv, np.asarray(r['z'], float)) if r['bridge'] else np.zeros(len(c))
         geom = np.column_stack([c, h])
         ends_ = []
         for e in (0, -1):

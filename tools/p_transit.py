@@ -469,8 +469,23 @@ rl_hw = np.array([r['hw'] + 0.6 for r in G['roads'] if not r['bridge']])
 rtree = shapely.STRtree(rl_lines)
 
 
+# elevated road pieces (decks and ramp walls) and rail tracks: a metro pier must stand clear of both
+_dk = [r for r in G['roads'] if r['bridge'] and float(np.max(r['z'])) > 0.3]
+dk_lines = np.array([shapely.LineString(r['xy']) for r in _dk], dtype=object)
+dk_hw = np.array([r['hw'] + 0.6 for r in _dk])
+dk_tree = shapely.STRtree(dk_lines)
+rail_lines = np.array([shapely.LineString(r) for r in G['rail']], dtype=object)
+rail_tree = shapely.STRtree(rail_lines)
+PIER_R = 1.2
+
+
 def pier_ok(p, u):
     P = shapely.Point(*p)
+    for j in dk_tree.query(P, predicate='dwithin', distance=20.0):
+        if dk_lines[j].distance(P) < dk_hw[j] + 1.5 + PIER_R:
+            return False
+    if len(rail_tree.query(P, predicate='dwithin', distance=2.5 + PIER_R)):
+        return False
     for j in rtree.query(P, predicate='dwithin', distance=14.0):
         ln = rl_lines[j]
         d = ln.distance(P)
@@ -496,7 +511,7 @@ for k, c in CORR.items():
             v += 4.0; continue
         u = dir_at(c, s, v)
         placed = False
-        for dv in (0, 4, -4, 8, -8, 12, -12):
+        for dv in (0, 4, -4, 8, -8, 12, -12, 16, -16):
             p = at(c, s, v + dv)
             if pier_ok(p, u):
                 r2 = float(np.interp(v + dv, s, rl))
