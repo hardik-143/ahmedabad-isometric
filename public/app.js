@@ -92,6 +92,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#c9d8e6');
+scene.fog = new THREE.Fog(0xc9d8e6, 1e7, 2e7);   // only near in walk mode; always on the scene so every material compiles with fog
 const EL = Math.PI / 6;                       // 2:1 isometric camera (30° elevation)
 const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 100, 160000);
 const view = { tx: 0, tz: 0, mpp: 1.6, az: Math.PI / 4 };
@@ -107,7 +108,8 @@ sun.shadow.bias = -0.00025;
 scene.add(sun); scene.add(sun.target);
 
 const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, cam));
+const RENDERPASS = new RenderPass(scene, cam); composer.addPass(RENDERPASS);
+const pcam = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.25, 1500);   // walk mode
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.85, 0.5, 0.78);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
@@ -120,6 +122,8 @@ const U = {
   uSunCol: { value: new THREE.Color(1, 1, 1) }, uHover: { value: -1 }, uFlow: { value: 0 }, uMpp: { value: 26 },
   uWind: { value: new THREE.Vector2(0.6, -0.8) },   // smoke drifts north-east, on the prevailing south-westerly
 };
+const WALK = { on: false, mode: 'walk', P: { x: 0, z: 0, y: 0, vy: 0, v: 0, ph: 0, th: 0 }, yaw: 0, pitch: 0.3, dist: 4.6, dcur: 4.6, ride: null, holder: null, av: null,
+  rideMesh: null, panel: false, joy: null, runT: false, jumpQ: false, drag: null, locked: false, lookT: 0, saveT: 0, sunAz: 0, prevAz: 0 };
 // ---------------------------------------------------------------- weather: shared uniforms + shader library
 // rain falls only under a few storm cells drifting south-west -> north-east (the monsoon's direction); the ground
 // stays dark and wet along each cell's track and dries behind it; clouds cast moving shadows; fog / heat haze is a
@@ -889,6 +893,7 @@ function buildGround() {
   for (const [mat, order, color] of [[WATER, 2, '#2c5f87'], [PARK, 1, '#3f5a3a']]) {
     const nv = r.u32(), ni = r.u32();
     const V = r.arr(Int16Array, nv * 2); const I = r.arr(Uint32Array, ni);
+    if (mat === WATER) WATER_GEO = { V, I };
     out.push(...triMeshes(V, I, mat, order));
     // map canvas
     mapCtx.fillStyle = color; mapCtx.beginPath();
@@ -2251,7 +2256,7 @@ let tod = { ...TIMES.noon }, todFrom = null, todTo = null, todT = 1, todName = '
 const sunDir = new THREE.Vector3();
 function updateSunDir() {
   const p = tod, e = THREE.MathUtils.degToRad(p.elev), f = THREE.MathUtils.degToRad(p.bear);
-  const ca = Math.cos(view.az), sa = Math.sin(view.az);
+  const az = WALK.on ? WALK.sunAz : view.az, ca = Math.cos(az), sa = Math.sin(az);
   // screen-left on the ground = (-ca, sa); towards camera = (sa, ca)
   const hx = -ca * Math.cos(f) + sa * Math.sin(f), hz = sa * Math.cos(f) + ca * Math.sin(f);
   sunDir.set(hx * Math.cos(e), Math.sin(e), hz * Math.cos(e)).normalize();
@@ -2589,6 +2594,7 @@ function stepAnims(dt) {
 let drag = null; const pointers = new Map();
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('pointerdown', (e) => {
+  if (WALK.on) { canvas.setPointerCapture(e.pointerId); walkPointerDown(e); return; }
   canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   fly = null;
   if (pointers.size === 2) {
@@ -2598,6 +2604,7 @@ canvas.addEventListener('pointerdown', (e) => {
   canvas.classList.add('dragging');
 });
 canvas.addEventListener('pointermove', (e) => {
+  if (WALK.on) { walkPointerMove(e); return; }
   mouse.x = e.clientX; mouse.y = e.clientY; mouse.in = true;
   if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (!drag) { whereDirty = true; return; }
@@ -2617,11 +2624,12 @@ canvas.addEventListener('pointermove', (e) => {
   }
   clampView(); dirty = true;
 });
-const endDrag = (e) => { pointers.delete(e.pointerId); if (pointers.size === 0) { drag = null; canvas.classList.remove('dragging'); } else if (pointers.size === 1) { const [p] = pointers.values(); drag = { x: p.x, y: p.y }; } };
+const endDrag = (e) => { if (WALK.on) { WALK.drag = null; pointers.clear(); drag = null; return; } pointers.delete(e.pointerId); if (pointers.size === 0) { drag = null; canvas.classList.remove('dragging'); } else if (pointers.size === 1) { const [p] = pointers.values(); drag = { x: p.x, y: p.y }; } };
 canvas.addEventListener('pointerup', endDrag); canvas.addEventListener('pointercancel', endDrag);
 canvas.addEventListener('pointerleave', () => { mouse.in = false; whereDirty = true; });
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault(); fly = null;
+  if (WALK.on) { walkWheel(e); return; }
   const f = Math.exp(clamp(e.deltaY, -120, 120) * (e.ctrlKey ? 0.01 : 0.0022));
   zoomAt(e.clientX, e.clientY, f);
 }, { passive: false });
@@ -2636,11 +2644,13 @@ const keys = new Set();
 window.addEventListener('keydown', (e) => {
   if (e.target === qEl) return;
   const k = e.key.toLowerCase();
+  if (WALK.on && walkKey(e, k)) return;
+  if (k === 'f' && !WALK.on && e.target.tagName !== 'INPUT') { enterWalk(); return; }
   if (k === 'q') rotateBy(Math.PI / 2);
   else if (k === 'e') rotateBy(-Math.PI / 2);
   else if (k === 'n') setTime(todName === 'night' ? 'noon' : 'night');
   else if (k === 't') { const o = ['morning', 'noon', 'golden', 'night']; setTime(o[(o.indexOf(todName) + 1) % 4]); }
-  else if (k === 'w') { const o = Object.keys(WXK); setWeather(o[(o.indexOf(wxName) + 1) % o.length]); }
+  else if (k === 'r') { const o = Object.keys(WXK); setWeather(o[(o.indexOf(wxName) + 1) % o.length]); }
   else if (k === 'm') bigmap.classList.contains('show') ? bigmap.classList.remove('show') : openBigMap();
   else if (k === 'escape') bigmap.classList.remove('show');
   else if (k === '/') { e.preventDefault(); qEl.focus(); }
@@ -2650,6 +2660,7 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 function stepKeys(dt) {
+  if (WALK.on) return false;
   let dx = 0, dy = 0;
   if (keys.has('w') || keys.has('arrowup')) dy += 1; if (keys.has('s') || keys.has('arrowdown')) dy -= 1;
   if (keys.has('a') || keys.has('arrowleft')) dx -= 1; if (keys.has('d') || keys.has('arrowright')) dx += 1;
@@ -2670,6 +2681,7 @@ toggle('bRetro', 'retro', () => {
 });
 document.querySelectorAll('#timebar button').forEach((b) => (b.onclick = () => setTime(b.dataset.t)));
 window.addEventListener('resize', () => {
+  pcam.aspect = innerWidth / innerHeight; pcam.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight, false); composer.setSize(innerWidth, innerHeight); bloom.setSize(innerWidth, innerHeight); dirty = true;
 });
 
@@ -4369,6 +4381,10 @@ function stepTraffic(dt) {
         else if (g < 5) { const yieldTo = (d.mode === 1 && c.mode === 0) || ((d.mode === 1) === (c.mode === 1) && d.id < c.id); if (yieldTo && g < gap) { gap = g; vl = 0; } }
       }
     }
+    if (WALK.on && !WALK.ride) {   // somebody (you) on the road ahead: stop short of them
+      const Pw = WALK.P, rr = RIDE_SPEC[WALK.mode].r, wx = Pw.x - c.x, wz = Pw.z - c.z, al = wx * c.hx + wz * c.hz;
+      if (al > 0 && al < 40 && Math.abs(wx * c.hz - wz * c.hx) < c.w / 2 + rr + 0.5) { const g = al - c.len / 2 - rr - 1.5; if (g < gap) { gap = Math.max(0, g); vl = 0; } }
+    }
     // rain: drivers ease off, and wade through waterlogged stretches; the factor changes gradually, never a slam
     if (WXD.wetRoads || c.wk < 1) { const w0 = c.wk ?? 1; c.wk = w0 + ((WXD.wetRoads ? wxCarK(c) : 1) - w0) * Math.min(1, dt * 0.7); }
     let v0 = c.vmax * (c.wk ?? 1), og = 1e9;   // og: distance to a point we must be able to stop at (red light, busy junction, dead end)
@@ -5092,7 +5108,8 @@ function stepWeather(dt) {
   if (M.pud) { M.pud.visible = wet && view.mpp < 3; if (M.pud.visible) { M.lvA.array.set(WXD.lv); M.lvA.needsUpdate = true; } }
   if (M.rain) {
     const vis = W.rain > 0.01 && view.mpp < 0.9 && VBOX; M.rain.visible = !!vis; M.spl.visible = !!vis && view.mpp < 0.32;
-    if (vis) { const S = 2 ** Math.ceil(Math.log2(Math.max(VBOX.x1 - VBOX.x0, VBOX.z1 - VBOX.z0) + 80)); U.uWxBox.value.set(VBOX.x0 - 40, VBOX.z0 - 40, S, 0); }
+    if (vis && WALK.on) U.uWxBox.value.set(view.tx - 64, view.tz - 64, 128, 0);
+    else if (vis) { const S = 2 ** Math.ceil(Math.log2(Math.max(VBOX.x1 - VBOX.x0, VBOX.z1 - VBOX.z0) + 80)); U.uWxBox.value.set(VBOX.x0 - 40, VBOX.z0 - 40, S, 0); }
   }
   if (M.cloud) { M.cloud.visible = W.cloudA > 0.01 && W.cover > 0.002 && view.mpp > 1.4; M.cloud.position.set(view.tx, 900, view.tz); }
   // lightning while a storm is near the view
@@ -5280,16 +5297,17 @@ function frame(now) {
   let changed = stepAnims(dt) | stepKeys(dt);
   if (stepTod(dt)) changed = true;
   if (stepWeather(dt)) changed = true;
+  if (WALK.on) { stepWalk(dt); changed = true; }
   if (changed) dirty = true;
   if (dirty) {
     clampView(); updateCamera();
-    const Q = visibleQuad(); setViewBox(Q);
-    updateSunDir(); updateLOD(Q); fitShadow(Q); updateLabels(); drawRadar(Q);
+    const Q = WALK.on ? walkQuad(480) : visibleQuad(); setViewBox(Q);
+    updateSunDir(); updateLOD(Q); fitShadow(WALK.on ? walkQuad(110) : Q); if (!WALK.on) updateLabels(); drawRadar(Q);
     whereDirty = true;
   }
   const built = runQueue(dirty ? 6 : 12);
   if (whereDirty) {
-    const [x, z] = mouse.in && !drag ? screenToGround(mouse.x, mouse.y) : [view.tx, view.tz];
+    const [x, z] = WALK.on ? [WALK.P.x, WALK.P.z] : mouse.in && !drag ? screenToGround(mouse.x, mouse.y) : [view.tx, view.tz];
     updateWhere(x, z); whereDirty = false;
   }
   // while nothing is being dragged the scene redraws at a capped rate: ~30 fps with traffic on screen, ~20 fps with
@@ -5305,10 +5323,620 @@ function frame(now) {
     STATS.simMs = (STATS.simMs || 0) * 0.9 + (performance.now() - t0s) * 0.1; STATS.simMax = Math.max((STATS.simMax || 0) * 0.995, performance.now() - t0s);
     liveLvl = st ? 2 : tr || bs || U.uFlow.value > 0.01 ? 1 : 0;
     if (WXD.anim) liveLvl = Math.max(liveLvl, WXD.anim);
-    if (U.uNight.value > 0.02) { bloom.strength = 0.85 * U.uNight.value; composer.render(); } else renderer.render(scene, cam);
+    const CAM = WALK.on ? pcam : cam; RENDERPASS.camera = CAM;
+    if (U.uNight.value > 0.02) { bloom.strength = 0.85 * U.uNight.value; composer.render(); } else renderer.render(scene, CAM);
     lastRender = now;
   }
   dirty = false;
+}
+
+// ================================================================ walk mode: wander the city on foot, by scooter or
+// auto, and on the metro and BRTS. Third-person camera; buildings, the river walls and water are solid.
+const AV_SKIN = ['#5e3a24', '#8d5a3b', '#a8704a', '#c99a6e'];
+const AV_TOP = ['#c0392b', '#e67e22', '#f1c40f', '#27ae60', '#16a085', '#2980b9', '#8e44ad', '#f4f1ea', '#2c3e50', '#e84393'];
+const AV_BOT = ['#2c3e50', '#1f3a5f', '#3b5b8c', '#7f6a4f', '#f4f1ea', '#5d4037', '#151515'];
+const AV_OUTFIT = { shirt: 'Shirt', tshirt: 'T-shirt', kurta: 'Kurta', saree: 'Saree', salwar: 'Salwar kameez' };
+const AV_HAIR = { short: 'Short', long: 'Long', bun: 'Bun', cap: 'Cap', none: 'Bald' };
+const AV_DEFAULT = { name: '', outfit: 'shirt', top: 5, bot: 0, skin: 1, hair: 'short', scoot: 0 };
+const AV_HAIRC = '#1b1410', AV_SHOE = '#3a2a1e';
+const _avMats = new Map();
+const avMat = (hex) => { let m = _avMats.get(hex); if (!m) { m = new THREE.MeshLambertMaterial({ color: hex }); _avMats.set(hex, m); } return m; };
+function avBox(parent, w, h, d, x, y, z, hex) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), avMat(hex)); m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
+}
+// a ~1.7 m low-poly person, facing +x; hips, knees, shoulders and elbows are pivots
+function buildAvatar(pf) {
+  const skin = AV_SKIN[pf.skin] || AV_SKIN[1], top = AV_TOP[pf.top] || AV_TOP[0], bot = AV_BOT[pf.bot] || AV_BOT[0], o = pf.outfit;
+  const fem = o === 'saree' || o === 'salwar', sw = fem ? 0.2 : 0.235;
+  const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
+  const legs = [], arms = [];
+  const legCol = o === 'kurta' ? '#efe9dc' : bot;
+  for (const sd of [-1, 1]) {
+    const hip = new THREE.Group(); hip.position.set(0, 0.9, sd * 0.095); body.add(hip);
+    avBox(hip, o === 'salwar' ? 0.18 : 0.15, 0.46, o === 'salwar' ? 0.17 : 0.15, 0, -0.22, 0, legCol);
+    const knee = new THREE.Group(); knee.position.set(0, -0.44, 0); hip.add(knee);
+    avBox(knee, 0.12, 0.42, 0.13, 0, -0.21, 0, o === 'saree' ? skin : legCol);
+    avBox(knee, 0.25, 0.07, 0.11, 0.05, -0.425, 0, AV_SHOE);
+    legs.push({ hip, knee });
+  }
+  const up = new THREE.Group(); up.position.set(0, 0.92, 0); body.add(up);   // waist pivot: lean when running
+  avBox(up, 0.21, 0.14, sw * 2 - 0.1, 0, 0.02, 0, fem || o === 'kurta' ? top : bot);
+  avBox(up, 0.22, 0.5, sw * 2 - 0.06, 0, 0.3, 0, top);
+  if (o === 'kurta' || o === 'salwar') avBox(up, 0.25, 0.46, sw * 2 - 0.02, 0, -0.2, 0, top);                    // long kurta / kameez
+  if (o === 'saree') {
+    const sk = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.29, 0.9, 10), avMat(top)); sk.position.set(0, -0.43, 0); sk.castShadow = true; up.add(sk);
+    const pl = avBox(up, 0.03, 0.66, 0.2, -0.12, 0.26, 0.06, top); pl.rotation.x = 0.55;                          // pallu over the left shoulder
+  }
+  if (o === 'salwar') { const d = avBox(up, 0.24, 0.05, sw * 2 + 0.02, 0.01, 0.46, 0, bot); d.rotation.z = 0.12; } // dupatta
+  avBox(up, 0.08, 0.07, 0.08, 0, 0.58, 0, skin);
+  const head = new THREE.Group(); head.position.set(0, 0.7, 0); up.add(head);
+  avBox(head, 0.21, 0.24, 0.2, 0, 0, 0, skin);
+  for (const z of [-0.05, 0.05]) avBox(head, 0.012, 0.03, 0.03, 0.106, 0.02, z, '#111111');
+  const h = pf.hair;
+  if (h === 'short' || h === 'long' || h === 'bun') { avBox(head, 0.225, 0.07, 0.215, -0.005, 0.13, 0, AV_HAIRC); avBox(head, 0.05, 0.17, 0.215, -0.095, 0.03, 0, AV_HAIRC); }
+  if (h === 'long') avBox(head, 0.05, 0.42, 0.2, -0.12, -0.15, 0, AV_HAIRC);
+  if (h === 'bun') avBox(head, 0.1, 0.1, 0.1, -0.15, 0.06, 0, AV_HAIRC);
+  if (h === 'cap') { avBox(head, 0.23, 0.07, 0.22, -0.005, 0.135, 0, bot === '#f4f1ea' ? '#c0392b' : bot); avBox(head, 0.12, 0.02, 0.18, 0.15, 0.11, 0, bot === '#f4f1ea' ? '#c0392b' : bot); }
+  for (const sd of [-1, 1]) {
+    const sh = new THREE.Group(); sh.position.set(0, 0.5, sd * sw); up.add(sh);
+    const shortSl = o === 'tshirt' || o === 'saree';
+    avBox(sh, 0.1, shortSl ? 0.15 : 0.3, 0.1, 0, shortSl ? -0.075 : -0.15, 0, top);
+    if (shortSl) avBox(sh, 0.085, 0.15, 0.085, 0, -0.225, 0, skin);
+    const el = new THREE.Group(); el.position.set(0, -0.3, 0); sh.add(el);
+    avBox(el, 0.09, 0.26, 0.09, 0, -0.13, 0, o === 'tshirt' || o === 'saree' ? skin : top);
+    avBox(el, 0.085, 0.085, 0.085, 0, -0.3, 0, skin);
+    arms.push({ sh, el });
+  }
+  return { root, body, up, head, legs, arms, fem };
+}
+function poseAvatar(A, mode, ph, amp, lean) {
+  const [L, R] = A.legs, [la, ra] = A.arms;
+  if (mode === 'seat') {
+    for (const g of A.legs) { g.hip.rotation.z = 1.45; g.knee.rotation.z = -1.45; }
+    for (const a of A.arms) { a.sh.rotation.z = 1.0; a.el.rotation.z = 0.45; }
+    A.up.rotation.z = 0; A.body.position.y = 0; return;
+  }
+  if (mode === 'air') {
+    L.hip.rotation.z = 0.6; L.knee.rotation.z = -1.1; R.hip.rotation.z = -0.15; R.knee.rotation.z = -0.5;
+    la.sh.rotation.z = -0.6; ra.sh.rotation.z = 0.9; la.el.rotation.z = 0.5; ra.el.rotation.z = 0.6; A.up.rotation.z = -0.1; return;
+  }
+  const s = Math.sin(ph), c = Math.cos(ph);
+  L.hip.rotation.z = s * amp; R.hip.rotation.z = -s * amp;
+  L.knee.rotation.z = -Math.max(0, -c) * amp * 1.4 - 0.04; R.knee.rotation.z = -Math.max(0, c) * amp * 1.4 - 0.04;
+  la.sh.rotation.z = -s * amp * 0.85; ra.sh.rotation.z = s * amp * 0.85;
+  la.el.rotation.z = 0.12 + amp * 0.7; ra.el.rotation.z = 0.12 + amp * 0.7;
+  A.up.rotation.z = -lean; A.body.position.y = Math.abs(s) * 0.07 * amp;
+}
+function buildRide(kind, pf) {
+  const G = new Geo(true), C = VCOL;
+  if (kind === 'auto') VTYPES[3].build(G);
+  else {   // scooter, no rider (you are the rider)
+    const B = lin(['#c0392b', '#2980b9', '#f4f1ea', '#151515', '#f1c40f'][pf.scoot || 0]);
+    vbox(G, -0.75, 0.45, 0.25, 0.72, -0.21, 0.21, B); vbox(G, 0.45, 0.63, 0.25, 1.0, -0.24, 0.24, B); vbox(G, 0.52, 0.62, 1.0, 1.07, -0.36, 0.36, C.dark);
+    vbox(G, -0.62, 0.12, 0.72, 0.8, -0.19, 0.19, C.dark); vbox(G, 0.6, 0.65, 0.82, 0.92, -0.1, 0.1, C.lamp, 1); vbox(G, -0.78, -0.74, 0.55, 0.65, -0.1, 0.1, C.tail, 2);
+    vbox(G, 0.42, 0.88, 0, 0.46, -0.05, 0.05, C.tyre); vbox(G, -0.85, -0.39, 0, 0.46, -0.05, 0.05, C.tyre);
+  }
+  const m = G.mesh(VEHMAT); m.castShadow = true; return m;
+}
+const RIDE_SPEC = {
+  walk: { r: 0.3, seat: null },
+  scooter: { r: 0.55, vmax: 13, acc: 3.4, brk: 7.5, rev: 2.5, steer: 2.1, seat: [-0.24, -0.16, 0], cam: 5.5 },
+  auto: { r: 0.9, vmax: 10.5, acc: 2.2, brk: 5.5, rev: 2.5, steer: 1.55, seat: [0.42, -0.3, 0], cam: 7 },
+};
+const wmod = (a, m) => ((a % m) + m) % m;
+
+// ---- collision: building outlines (and their heights), the riverfront walls, water
+const WCOL = { cell: 6, map: new Map(), E: new Float32Array(0), cx: 1e9, cz: 1e9, R: 230 };
+const colKey = (a, b) => (a + 40000) * 80000 + (b + 40000);
+let WATER_GEO = null, WATER_GRID = null;
+function waterGrid() {
+  if (WATER_GRID || !WATER_GEO) return WATER_GRID;
+  const { V, I } = WATER_GEO, G = new Map(), C = 40;
+  for (let t = 0; t < I.length; t += 3) {
+    let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+    for (let k = 0; k < 3; k++) { const x = V[I[t + k] * 2] * 0.5, z = V[I[t + k] * 2 + 1] * 0.5; x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    for (let a = Math.floor(x0 / C); a <= Math.floor(x1 / C); a++) for (let b = Math.floor(z0 / C); b <= Math.floor(z1 / C); b++) { const k = colKey(a, b); let L = G.get(k); if (!L) G.set(k, (L = [])); L.push(t); }
+  }
+  return (WATER_GRID = G);
+}
+function waterAt(x, z) {
+  const G = waterGrid(); if (!G) return false;
+  const L = G.get(colKey(Math.floor(x / 40), Math.floor(z / 40))); if (!L) return false;
+  const { V, I } = WATER_GEO;
+  for (const t of L) {
+    const ax = V[I[t] * 2] * 0.5, az = V[I[t] * 2 + 1] * 0.5, bx = V[I[t + 1] * 2] * 0.5, bz = V[I[t + 1] * 2 + 1] * 0.5, cx = V[I[t + 2] * 2] * 0.5, cz = V[I[t + 2] * 2 + 1] * 0.5;
+    const d1 = (x - bx) * (az - bz) - (ax - bx) * (z - bz), d2 = (x - cx) * (bz - cz) - (bx - cx) * (z - cz), d3 = (x - ax) * (cz - az) - (cx - ax) * (z - az);
+    if (!((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0))) return true;
+  }
+  return false;
+}
+function colBuild(x, z) {
+  const R = WCOL.R, C = WCOL.cell, E = [], map = new Map();
+  const add = (ax, az, bx, bz, h) => {
+    if (Math.max(ax, bx) < x - R || Math.min(ax, bx) > x + R || Math.max(az, bz) < z - R || Math.min(az, bz) > z + R) return;
+    const id = E.length / 5; E.push(ax, az, bx, bz, h);
+    for (let a = Math.floor(Math.min(ax, bx) / C); a <= Math.floor(Math.max(ax, bx) / C); a++)
+      for (let b = Math.floor(Math.min(az, bz) / C); b <= Math.floor(Math.max(az, bz) / C); b++) { const k = colKey(a, b); let L = map.get(k); if (!L) map.set(k, (L = [])); L.push(id); }
+  };
+  const hasCells = !!BUF.cells;
+  for (const ch of chunks) {
+    if (Math.abs(ch.ox - x) > 500 + R || Math.abs(ch.oz - z) > 500 + R) continue;
+    if (!ch.wS || ch.wS.hc !== hasCells) ch.wS = { hc: hasCells, b: ch.bl ? decodeBld(BUF.bld, ch.bo) : null, c: hasCells && ch.cl ? decodeBld(BUF.cells, ch.co) : null };
+    for (const [S, skipBlk] of [[ch.wS.b, !!ch.wS.c], [ch.wS.c, false]]) {
+      if (!S) continue;
+      const { n, floors, kind, rc, rl, abs } = S; let rr = 0, pp = 0;
+      for (let b = 0; b < n; b++) {
+        const skip = skipBlk && kind[b] === 1, H = floors[b] * 3.1 + 0.5;
+        for (let k = 0; k < rc[b]; k++) {
+          const m = rl[rr++];
+          if (!skip) for (let e = 0; e < m; e++) {
+            const a = (pp + e) * 2, c = (pp + (e + 1) % m) * 2;
+            add(ch.ox + abs[a] * 0.1, ch.oz + abs[a + 1] * 0.1, ch.ox + abs[c] * 0.1, ch.oz + abs[c + 1] * 0.1, H);
+          }
+          pp += m;
+        }
+      }
+    }
+  }
+  if (TR && TR.river) for (const P of TR.river.walls) for (let j = 0; j + 3 < P.length; j += 2) add(P[j], P[j + 1], P[j + 2], P[j + 3], 1.1);
+  WCOL.E = new Float32Array(E); WCOL.map = map; WCOL.cx = x; WCOL.cz = z;
+}
+function colPush(p, r) {   // push a circle out of every outline it overlaps
+  const C = WCOL.cell, E = WCOL.E; let hit = false;
+  for (let it = 0; it < 3; it++) {
+    let moved = false;
+    for (let a = Math.floor((p.x - r) / C); a <= Math.floor((p.x + r) / C); a++) for (let b = Math.floor((p.z - r) / C); b <= Math.floor((p.z + r) / C); b++) {
+      const L = WCOL.map.get(colKey(a, b)); if (!L) continue;
+      for (const id of L) {
+        const o = id * 5, ax = E[o], az = E[o + 1], dx = E[o + 2] - ax, dz = E[o + 3] - az, l2 = dx * dx + dz * dz || 1e-6;
+        const t = clamp(((p.x - ax) * dx + (p.z - az) * dz) / l2, 0, 1), qx = ax + dx * t, qz = az + dz * t;
+        let nx = p.x - qx, nz = p.z - qz; const d = Math.hypot(nx, nz);
+        if (d >= r) continue;
+        if (d < 1e-5) { const l = Math.sqrt(l2); nx = -dz / l; nz = dx / l; } else { nx /= d; nz /= d; }
+        p.x += nx * (r - d + 1e-3); p.z += nz * (r - d + 1e-3); moved = hit = true;
+      }
+    }
+    if (!moved) break;
+  }
+  return hit;
+}
+function insideBuilding(x, z) {   // ray-crossing parity over the loaded outlines
+  const E = WCOL.E, C = WCOL.cell, seen = new Set(); let n = 0; const b = Math.floor(z / C);
+  for (let a = Math.floor(x / C); a <= Math.floor((x + WCOL.R) / C); a++) {
+    const L = WCOL.map.get(colKey(a, b)); if (!L) continue;
+    for (const id of L) {
+      if (seen.has(id)) continue; seen.add(id);
+      const o = id * 5, ax = E[o], az = E[o + 1], bx = E[o + 2], bz = E[o + 3];
+      if (E[o + 4] > 1.5 && (az > z) !== (bz > z) && x < ax + (z - az) * (bx - ax) / (bz - az)) n++;
+    }
+  }
+  return n % 2 === 1;
+}
+function camClip(tx, ty, tz, ox, oy, oz, d) {   // pull the camera in front of any building between it and the player
+  const E = WCOL.E, C = WCOL.cell, ex = tx + ox * d, ez = tz + oz * d, seen = new Set(); let best = d;
+  const steps = Math.ceil(d / (C * 0.5)) + 1;
+  for (let s = 0; s <= steps; s++) {
+    const px = tx + (ex - tx) * s / steps, pz = tz + (ez - tz) * s / steps;
+    for (let a = Math.floor(px / C) - 1; a <= Math.floor(px / C) + 1; a++) for (let b = Math.floor(pz / C) - 1; b <= Math.floor(pz / C) + 1; b++) {
+      const L = WCOL.map.get(colKey(a, b)); if (!L) continue;
+      for (const id of L) {
+        if (seen.has(id)) continue; seen.add(id);
+        const o = id * 5, ax = E[o], az = E[o + 1], bx = E[o + 2] - ax, bz = E[o + 3] - az, rx = ex - tx, rz = ez - tz;
+        const den = rx * bz - rz * bx; if (Math.abs(den) < 1e-9) continue;
+        const t = ((ax - tx) * bz - (az - tz) * bx) / den, u = ((ax - tx) * rz - (az - tz) * rx) / den;
+        if (t <= 0 || t >= 1 || u < 0 || u > 1) continue;
+        if (ty + oy * d * t < E[o + 4]) best = Math.min(best, Math.max(0.6, d * t - 0.35));
+      }
+    }
+  }
+  return best;
+}
+function findSpawn(x, z) {   // a footpath next to the nearest road, outside buildings and water
+  colBuild(x, z);
+  const i = nearestRoad(x, z), R = ROADS, cands = [];
+  if (i >= 0) {
+    const p0 = R.start[i], c = R.lens[i]; let bd = 1e18, bx = x, bz = z, nx = 0, nz = 1;
+    for (let j = 0; j < c - 1; j++) {
+      const ax = R.xy[(p0 + j) * 2] * 0.5, az = R.xy[(p0 + j) * 2 + 1] * 0.5, dx = R.xy[(p0 + j + 1) * 2] * 0.5 - ax, dz = R.xy[(p0 + j + 1) * 2 + 1] * 0.5 - az, l2 = dx * dx + dz * dz || 1;
+      const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), qx = ax + dx * t, qz = az + dz * t, d = (qx - x) ** 2 + (qz - z) ** 2;
+      if (d < bd) { bd = d; bx = qx; bz = qz; const l = Math.sqrt(l2); nx = -dz / l; nz = dx / l; }
+    }
+    const off = R.hw[i] / 10 + Math.max(0.9, R.sw[i] / 20), sd = ((x - bx) * nx + (z - bz) * nz) >= 0 ? 1 : -1;
+    cands.push([bx + nx * off * sd, bz + nz * off * sd], [bx - nx * off * sd, bz - nz * off * sd], [bx, bz]);
+  }
+  cands.push([x, z]);
+  for (const [cx, cz] of cands) { if (!insideBuilding(cx, cz) && !waterAt(cx, cz)) { const p = { x: cx, z: cz }; colPush(p, 0.4); return [p.x, p.z]; } }
+  return cands[0];
+}
+
+// ---- metro and BRTS rides
+function metroStations() { const m = new Map(); if (TR) for (const s of TR.metro.stations) m.set(s.id, s); return m; }
+function metroNext(sid) {
+  const TT = TRAINS; if (!TT) return null; let best = null;
+  for (const sv of TT.svc) {
+    const e = sv.r.st && sv.r.st.find((q) => q[1] === sid); if (!e) continue;
+    for (let k = 0; k < sv.N; k++) {
+      const tau = wmod(TT.clock + sv.ph + k * sv.H, sv.Tc);
+      sv.segs.forEach((g, gi) => {
+        if (g.run || Math.abs(g.s0 - e[0]) > 1) return;
+        let w = wmod(g.t0 - tau, sv.Tc); if (tau >= g.t0 && tau < g.t0 + g.d - 5) w = 0;
+        if (!best || w < best.w) best = { sv, k, w, gi };
+      });
+    }
+  }
+  return best;
+}
+function trainPose(sv, k) {
+  const TT = TRAINS, G = sv.segs, tau = wmod(TT.clock + sv.ph + k * sv.H, sv.Tc);
+  let lo = 0, hi = G.length - 1; while (lo < hi) { const q = (lo + hi + 1) >> 1; if (G[q].t0 <= tau) lo = q; else hi = q - 1; }
+  const sg = G[lo], sc = sg.run ? sg.s0 + sg.sg * runPos(tau - sg.t0, sg.D, sg.V, sg.a) : sg.s0;
+  const a = routeAt(sv.r, sc + 6, { ..._ta }), b = routeAt(sv.r, sc - 6, { ..._tb }), va = trackOff(sg, sc + 6), vb = trackOff(sg, sc - 6);
+  const ax = a.x + a.nx * va, az = a.z + a.nz * va, bx = b.x + b.nx * vb, bz = b.z + b.nz * vb;
+  let hx = ax - bx, hz = az - bz; const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
+  const st = !sg.run && sv.r.st.find((q) => Math.abs(q[0] - sg.s0) < 1);
+  return { x: (ax + bx) / 2, y: (a.y + b.y) / 2, z: (az + bz) / 2, hx, hz, ug: a.ug || b.ug, sid: st ? st[1] : null, left: sg.t0 + sg.d - tau, gi: lo };
+}
+function nextMetroStop(sv, gi) {
+  const G = sv.segs;
+  for (let q = 1; q < G.length; q++) { const g = G[(gi + q) % G.length]; if (g.run) continue; const st = sv.r.st.find((e) => Math.abs(e[0] - g.s0) < 1); if (st) return st[1]; }
+  return null;
+}
+function busNext(si) {
+  const BS = BUSES; if (!BS) return null; const T0 = wmod(BS.clock, 86400); let best = null;
+  for (const tr of BS.trips) {
+    const T = T0 - (tr.dl || 0);
+    for (let k = 0; k < tr.bay.length; k++) {
+      if (tr.bay[k] < 0 || (tr.bay[k] >> 2) !== si) continue;
+      let w = tr.A[k] - T; if (T >= tr.A[k] && T < tr.D[k] - 4) w = 0;
+      if (w >= 0 && (!best || w < best.w)) best = { tr, k, w };
+    }
+  }
+  return best;
+}
+function busPose(tr) {
+  const BS = BUSES, T = wmod(BS.clock, 86400) - (tr.dl || 0), A = tr.A, Dp = tr.D, n = A.length;
+  if (T < A[0] || T > Dp[n - 1]) return null;
+  let k = 0; while (k < n - 1 && T >= A[k + 1]) k++;
+  const kl = Math.min(k, n - 2), Lk = BS.legs[tr.lg[kl] < 0 ? -tr.lg[kl] - 1 : tr.lg[kl]]; if (!Lk) return null;
+  const docked = T <= Dp[k]; let sv;
+  if (docked) sv = k === n - 1 ? Lk.L + Math.min(0, tr.off[k]) : tr.off[k];
+  else {
+    const u = clamp((T - Dp[k]) / Math.max(1, A[k + 1] - Dp[k]), 0, 1), f = 0.2;
+    const e = u < f ? u * u / (2 * f * (1 - f)) : u > 1 - f ? 1 - (1 - u) ** 2 / (2 * f * (1 - f)) : (u - f / 2) / (1 - f);
+    const s0 = tr.off[k], s1 = Lk.L + (k + 1 === n - 1 ? Math.min(0, tr.off[k + 1]) : tr.off[k + 1]); sv = s0 + (s1 - s0) * e;
+  }
+  const [fx, fy, fz] = busPos(tr, kl, sv + 3.6), [bx, by, bz] = busPos(tr, kl, sv - 3.6);
+  let hx = fx - bx, hz = fz - bz; const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
+  return { x: (fx + bx) / 2, y: (fy + by) / 2, z: (fz + bz) / 2, hx, hz, docked, k, si: docked && tr.bay[k] >= 0 ? tr.bay[k] >> 2 : -1, last: k === n - 1, left: Dp[k] - T };
+}
+function nearStation(x, z) {
+  if (!TR) return null;
+  for (const s of TR.metro.stations) {
+    if (s.ug) { for (const [ex, ez] of s.ent || []) if (Math.hypot(x - ex, z - ez) < 14) return { kind: 'metro', s }; continue; }
+    const rx = x - s.x, rz = z - s.z, a = rx * s.ux + rz * s.uz, b = -rx * s.uz + rz * s.ux;
+    if (Math.abs(a) < (s.L || 140) / 2 + 6 && Math.abs(b) < (s.W || 22) / 2 + 10) return { kind: 'metro', s };
+  }
+  const B = TR.brts.stations;
+  for (let i = 0; i < B.length; i++) {
+    const s = B[i], rx = x - s.x, rz = z - s.z, a = rx * s.ux + rz * s.uz, b = -rx * s.uz + rz * s.ux;
+    if (Math.abs(a) < 36 && Math.abs(b) < 9) return { kind: 'bus', s, i };
+  }
+  return null;
+}
+
+// ---- account: Clerk when a publishable key is set in index.html, otherwise a guest profile in this browser
+const ACC = { clerk: null, user: null, pf: null, saveAt: 0, dirty: false };
+const PF_KEY = 'gta-amd-profile';
+function localProfile() { try { return JSON.parse(localStorage.getItem(PF_KEY) || 'null'); } catch (_) { return null; } }
+function currentProfile() {
+  const u = ACC.user, fromUser = u && u.unsafeMetadata && u.unsafeMetadata.gta;
+  const pf = { ...AV_DEFAULT, ...(localProfile() || {}), ...(fromUser || {}) };
+  if (!pf.name && u) pf.name = u.firstName || u.username || '';
+  return pf;
+}
+function saveProfile(now) {
+  try { localStorage.setItem(PF_KEY, JSON.stringify(ACC.pf)); } catch (_) {}
+  ACC.dirty = true;
+  if (ACC.user && (now || performance.now() - ACC.saveAt > 20000)) {
+    ACC.saveAt = performance.now(); ACC.dirty = false;
+    ACC.user.update({ unsafeMetadata: { ...(ACC.user.unsafeMetadata || {}), gta: ACC.pf } }).catch((e) => console.warn('profile save failed', e));
+  }
+}
+async function initAccount() {
+  const key = (document.querySelector('meta[name="clerk-key"]') || {}).content || '';
+  if (!key) return;
+  try {
+    const fapi = atob(key.split('_')[2]).replace(/\$$/, '');
+    await new Promise((res, rej) => {
+      const s = document.createElement('script'); s.async = true; s.crossOrigin = 'anonymous'; s.setAttribute('data-clerk-publishable-key', key);
+      s.src = `https://${fapi}/npm/@clerk/clerk-js@5/dist/clerk.browser.js`; s.onload = res; s.onerror = rej; document.head.appendChild(s);
+    });
+    await window.Clerk.load(); ACC.clerk = window.Clerk; ACC.user = ACC.clerk.user || null;
+    ACC.clerk.addListener(({ user }) => { const was = ACC.user; ACC.user = user || null; if (!!was !== !!ACC.user || (was && user && was.id !== user.id)) { ACC.pf = currentProfile(); if (WALK.on) rebuildAvatar(); } walkUI(); });
+    walkUI();
+  } catch (e) { console.warn('sign-in unavailable', e); }
+}
+
+// ---- the walk state
+function rebuildAvatar() {
+  const W = WALK;
+  if (W.av) W.holder.remove(W.av.root);
+  W.av = buildAvatar(ACC.pf); W.holder.add(W.av.root);
+  if (W.rideMesh) { W.holder.remove(W.rideMesh); W.rideMesh = null; }
+  if (W.mode !== 'walk') { W.rideMesh = buildRide(W.mode, ACC.pf); W.holder.add(W.rideMesh); const s = RIDE_SPEC[W.mode].seat; W.av.root.position.set(s[0], s[1], s[2]); }
+}
+function enterWalk(x, z) {
+  const W = WALK; if (W.on || !ready) return;
+  ACC.pf = currentProfile();
+  const [sx, sz] = findSpawn(x ?? view.tx, z ?? view.tz);
+  Object.assign(W.P, { x: sx, z: sz, y: 0, vy: 0, v: 0, ph: 0, th: -view.az - Math.PI / 2 });
+  W.on = true; W.mode = 'walk'; W.ride = null; W.prevAz = view.az; W.prevMpp = view.mpp; W.sunAz = view.az;
+  W.yaw = view.az; W.pitch = 0.3; W.dist = 4.6; W.dcur = 4.6;
+  if (!W.holder) { W.holder = new THREE.Group(); scene.add(W.holder); }
+  W.holder.visible = true; rebuildAvatar();
+  scene.fog.near = 170; scene.fog.far = 1350;
+  view.mpp = 0.06; fly = null; rot = null;
+  document.body.classList.add('walking'); bigmap.classList.remove('show');
+  walkUI();
+  if (!localProfile() && !(ACC.user && ACC.user.unsafeMetadata && ACC.user.unsafeMetadata.gta)) openAvatar();
+  dirty = true; lastInteract = performance.now();
+}
+function exitWalk() {
+  const W = WALK; if (!W.on) return;
+  if (document.pointerLockElement) document.exitPointerLock();
+  ACC.pf.last = [Math.round(W.P.x), Math.round(W.P.z)]; saveProfile(true);
+  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar();
+  scene.fog.near = 1e7; scene.fog.far = 2e7;
+  view.tx = W.P.x; view.tz = W.P.z; view.az = W.prevAz; view.mpp = 0.3;
+  document.body.classList.remove('walking'); dirty = true; updateSunDir();
+}
+function walkFocus() { const W = WALK; return W.ride && W.ride.pose ? W.ride.pose : W.P; }
+function walkQuad(r) { const f = walkFocus(); return [[f.x - r, f.z - r], [f.x + r, f.z - r], [f.x + r, f.z + r], [f.x - r, f.z + r]]; }
+function cycleRide() {
+  const W = WALK; if (W.ride) return;
+  const order = ['walk', 'scooter', 'auto'], next = order[(order.indexOf(W.mode) + 1) % 3], P = W.P;
+  if (next === 'walk') {   // step off beside the vehicle
+    const vx = -Math.sin(P.th), vz = Math.cos(P.th); P.x += vx * 1.3; P.z += vz * 1.3;
+  }
+  W.mode = next; P.v = 0; P.y = 0; P.vy = 0; rebuildAvatar(); colPush(P, RIDE_SPEC[next].r); walkUI();
+}
+function act() {   // E: board, get off, or cancel waiting
+  const W = WALK, R = W.ride;
+  if (!R) {
+    if (W.mode !== 'walk') { toast('Get off first (C) to take the metro or a bus'); return; }
+    const ns = nearStation(W.P.x, W.P.z); if (!ns) return;
+    if (ns.kind === 'metro') { const nx = metroNext(ns.s.id); if (!nx) { toast('No trains stop here in the simulation'); return; } W.ride = { kind: 'metro', st: ns.s, nx, phase: 'wait' }; }
+    else { const nx = busNext(ns.i); if (!nx) { toast('No more buses from here today — try another time of day'); return; } W.ride = { kind: 'bus', st: ns.s, si: ns.i, nx, phase: 'wait' }; }
+    walkUI(); return;
+  }
+  if (R.phase === 'wait') { W.ride = null; walkUI(); return; }
+  const p = R.pose; if (!p) return;
+  if (R.kind === 'metro' && p.sid && p.left > 2) {
+    const s = metroStations().get(p.sid); let x, z;
+    if (s.ug && s.ent && s.ent.length) [x, z] = s.ent[0]; else { x = s.x - s.uz * ((s.W || 22) / 2 + 6); z = s.z + s.ux * ((s.W || 22) / 2 + 6); }
+    landAt(x, z, `Got off at ${s.n}`);
+  } else if (R.kind === 'bus' && p.docked && p.si >= 0) {
+    const s = TR.brts.stations[p.si]; landAt(s.x + s.ux * 30, s.z + s.uz * 30, `Got off at ${s.n}`);
+  } else toast('Wait for the next stop');
+}
+function landAt(x, z, msg) {
+  const W = WALK, [sx, sz] = findSpawn(x, z); W.ride = null; W.P.x = sx; W.P.z = sz; W.P.y = 0; W.P.v = 0;
+  W.holder.visible = true; W.dist = 4.6; walkUI(); if (msg) toast(msg);
+}
+function skipWait() {
+  const R = WALK.ride; if (!R || R.phase !== 'wait' || R.nx.w < 6) return;
+  if (R.kind === 'metro') TRAINS.clock += R.nx.w - 4; else BUSES.clock += R.nx.w - 4;
+}
+let toastT = 0;
+function toast(t) { const e = $('wkToast'); if (!e) return; e.textContent = t; e.classList.add('show'); toastT = 3.2; }
+const fmtWait = (w) => { w = Math.max(0, Math.round(w)); return w >= 60 ? `${Math.floor(w / 60)}:${String(w % 60).padStart(2, '0')}` : `${w}s`; };
+
+function stepWalk(dt) {
+  const W = WALK, P = W.P, spec = RIDE_SPEC[W.mode];
+  if (toastT > 0) { toastT -= dt; if (toastT <= 0) $('wkToast').classList.remove('show'); }
+  // --- transit
+  if (W.ride) {
+    const R = W.ride;
+    if (R.phase === 'wait') {
+      if (R.kind === 'metro') { R.nx = metroNext(R.st.id) || R.nx; }
+      else { const tr = R.nx.tr, k = R.nx.k, T = wmod(BUSES.clock, 86400) - (tr.dl || 0); R.nx.w = T >= tr.A[k] && T < tr.D[k] - 4 ? 0 : tr.A[k] - T; if (R.nx.w < -5) R.nx = busNext(R.si) || R.nx; }
+      if (R.nx.w <= 0) { R.phase = 'ride'; R.boardT = 0; W.holder.visible = false; W.dist = R.kind === 'metro' ? 30 : 17; walkUI(); }
+      $('wkPrompt').innerHTML = `${R.kind === 'metro' ? 'Next train' : 'Next bus'} in <b>${fmtWait(R.nx.w)}</b><small>${R.nx.w >= 6 ? 'Q skip the wait · ' : ''}E cancel</small>`;
+    }
+    if (R.phase === 'ride') {
+      R.boardT += dt;
+      const p = R.kind === 'metro' ? trainPose(R.nx.sv, R.nx.k) : busPose(R.nx.tr);
+      if (!p) { landAt(R.pose ? R.pose.x : P.x, R.pose ? R.pose.z : P.z, 'End of the line'); return; }
+      R.pose = p; P.x = p.x; P.z = p.z;
+      let msg;
+      if (R.kind === 'metro') {
+        const names = metroStations(), here = p.sid && names.get(p.sid), nxt = names.get(nextMetroStop(R.nx.sv, p.gi));
+        msg = here && p.left > 2 ? `At <b>${here.n}</b><small>E get off · next: ${nxt ? nxt.n : '—'}</small>` : `${p.ug ? 'Underground · ' : ''}Next station: <b>${nxt ? nxt.n : '—'}</b>`;
+      } else {
+        const tr = R.nx.tr, here = p.si >= 0 && TR.brts.stations[p.si];
+        let nk = p.k + 1; while (nk < tr.bay.length && tr.bay[nk] < 0) nk++;
+        const nxt = nk < tr.bay.length && TR.brts.stations[tr.bay[nk] >> 2];
+        msg = here && p.docked ? `At <b>${here.n}</b><small>E get off${p.last ? ' · last stop' : ''}</small>` : `Next stop: <b>${nxt ? nxt.n : '—'}</b>`;
+        if (p.last && p.docked && p.left < 3) { const s = TR.brts.stations[p.si] || R.st; landAt(s.x + s.ux * 30, s.z + s.uz * 30, `Last stop: ${s.n}`); return; }
+      }
+      $('wkPrompt').innerHTML = msg;
+    }
+    if (R.phase === 'wait') standStill(dt);
+  } else {
+    const ns = W.mode === 'walk' ? nearStation(P.x, P.z) : null;
+    $('wkPrompt').innerHTML = ns ? `<b>E</b> ${ns.kind === 'metro' ? 'take the Metro from' : 'wait for a Janmarg bus at'} <b>${ns.s.n}</b>` : '';
+    if (W.mode === 'walk') stepFoot(dt, spec); else stepVehicle(dt, spec);
+  }
+  $('wkPrompt').style.display = $('wkPrompt').innerHTML ? '' : 'none';
+  // --- keep the collision set around the player
+  const F = walkFocus();
+  if (!W.ride && Math.hypot(F.x - WCOL.cx, F.z - WCOL.cz) > 70) colBuild(F.x, F.z);
+  // --- avatar / vehicle transform
+  if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; }
+  // --- camera
+  if (W.panel) { W.yaw = lerpAng(W.yaw, Math.atan2(Math.cos(P.th), Math.sin(P.th)), Math.min(1, dt * 4)); W.pitch = lerp(W.pitch, 0.1, Math.min(1, dt * 4)); }
+  else if (W.mode !== 'walk' && !W.ride && performance.now() - W.lookT > 1500 && Math.abs(P.v) > 1.5) W.yaw = lerpAng(W.yaw, Math.atan2(-Math.cos(P.th), -Math.sin(P.th)), Math.min(1, dt * 2.2));
+  const tgt = W.ride && W.ride.pose ? [F.x, (W.ride.pose.y || 0) + (W.ride.kind === 'metro' ? 3 : 2), F.z] : [P.x, P.y + (W.panel ? 1.1 : W.mode === 'walk' ? 1.5 : 1.6), P.z];
+  // a wall right behind you: rather than pushing the camera into your head, look down from higher up
+  const dist = W.panel ? 3.0 : W.dist; let pitch = W.pitch, cp, ox, oy, oz, d;
+  for (;;) {
+    cp = Math.cos(pitch); ox = Math.sin(W.yaw) * cp; oy = Math.sin(pitch); oz = Math.cos(W.yaw) * cp;
+    d = W.ride ? dist : camClip(tgt[0], tgt[1], tgt[2], ox, oy, oz, dist);
+    if (W.ride || d >= Math.min(dist, 2.8) || pitch >= 1.4) break;
+    pitch = Math.min(1.4, pitch + 0.12);
+  }
+  W.pitchEff = lerp(W.pitchEff ?? pitch, pitch, Math.min(1, dt * 6));
+  if (Math.abs(W.pitchEff - pitch) > 0.01) { cp = Math.cos(W.pitchEff); ox = Math.sin(W.yaw) * cp; oy = Math.sin(W.pitchEff); oz = Math.cos(W.yaw) * cp; d = W.ride ? dist : camClip(tgt[0], tgt[1], tgt[2], ox, oy, oz, dist); }
+  W.dcur = d < W.dcur ? d : lerp(W.dcur, d, Math.min(1, dt * 3));
+  pcam.position.set(tgt[0] + ox * W.dcur, Math.max(0.35, tgt[1] + oy * W.dcur), tgt[2] + oz * W.dcur);
+  pcam.lookAt(tgt[0], tgt[1], tgt[2]);
+  view.tx = F.x; view.tz = F.z; view.mpp = 0.06; view.az = W.yaw;
+  scene.fog.color.copy(scene.background);
+  if (performance.now() - (W.saveT || 0) > 30000) { W.saveT = performance.now(); ACC.pf.last = [Math.round(P.x), Math.round(P.z)]; saveProfile(); }
+  whereDirty = true;
+}
+const lerpAng = (a, b, t) => { let d = wmod(b - a + Math.PI, Math.PI * 2) - Math.PI; return a + d * t; };
+function moveInput() {
+  const W = WALK; let f = 0, s = 0;
+  if (keys.has('w') || keys.has('arrowup')) f += 1; if (keys.has('s') || keys.has('arrowdown')) f -= 1;
+  if (keys.has('d') || keys.has('arrowright')) s += 1; if (keys.has('a') || keys.has('arrowleft')) s -= 1;
+  if (W.joy) { f += -W.joy.y; s += W.joy.x; }
+  return [clamp(f, -1, 1), clamp(s, -1, 1)];
+}
+function standStill(dt) { const P = WALK.P; P.ph += dt * 0.5; if (WALK.av) poseAvatar(WALK.av, 'walk', 0, 0, 0); }
+function stepFoot(dt, spec) {
+  const W = WALK, P = W.P;
+  if (W.panel) { poseAvatar(W.av, 'walk', 0, 0, 0); return; }
+  const [f, s] = moveInput(), run = keys.has('shift') || W.runT;
+  const fx = -Math.sin(W.yaw), fz = -Math.cos(W.yaw), rx = -fz, rz = fx;   // camera forward / right on the ground
+  let mx = fx * f + rx * s, mz = fz * f + rz * s; const ml = Math.hypot(mx, mz);
+  const target = ml > 0.05 ? (run ? 4.4 : 1.65) : 0;
+  P.v += clamp(target - P.v, -9 * dt, 6 * dt);
+  if (ml > 0.05) { mx /= ml; mz /= ml; P.th = lerpAng(P.th, Math.atan2(mz, mx), Math.min(1, dt * 10)); }
+  const hx = Math.cos(P.th), hz = Math.sin(P.th);
+  moveSolid(P, hx * P.v * dt, hz * P.v * dt, spec.r);
+  if ((keys.has(' ') || W.jumpQ) && P.y <= 0.001) { P.vy = 4.3; W.jumpQ = false; }
+  if (P.y > 0 || P.vy > 0) { P.vy -= 12 * dt; P.y = Math.max(0, P.y + P.vy * dt); if (P.y === 0) P.vy = 0; }
+  P.ph += dt * (P.v < 2.5 ? P.v * 3.9 : P.v * 2.35);
+  const amp = P.v < 0.05 ? 0 : P.v < 2.5 ? 0.42 * Math.min(1, P.v / 1.2) : 0.85;
+  poseAvatar(W.av, P.y > 0.05 ? 'air' : 'walk', P.ph, amp * (W.av.fem && ACC.pf.outfit === 'saree' ? 0.6 : 1), P.v > 2.5 ? 0.22 : 0.03);
+}
+function stepVehicle(dt, spec) {
+  const W = WALK, P = W.P, [f, s] = moveInput();
+  if (f > 0) P.v += (P.v < 0 ? spec.brk : spec.acc * (1 - Math.max(0, P.v) / spec.vmax)) * dt * f;
+  else if (f < 0) P.v += (P.v > 0 ? -spec.brk : -spec.acc * 0.6) * dt * -f;
+  else P.v -= Math.sign(P.v) * Math.min(Math.abs(P.v), 1.2 * dt);
+  P.v = clamp(P.v, -spec.rev, spec.vmax);
+  P.th += s * spec.steer * dt * clamp(P.v / 3, -1, 1) / (1 + Math.abs(P.v) * 0.04);
+  const hx = Math.cos(P.th), hz = Math.sin(P.th), x0 = P.x, z0 = P.z;
+  moveSolid(P, hx * P.v * dt, hz * P.v * dt, spec.r);
+  const moved = Math.hypot(P.x - x0, P.z - z0); if (moved < Math.abs(P.v * dt) * 0.4) P.v *= 0.6;   // ran into something
+  poseAvatar(W.av, 'seat', 0, 0, 0);
+  if (W.rideMesh && W.mode === 'scooter') W.holder.rotation.x = 0;
+  if (W.mode === 'scooter' && W.av) W.av.root.rotation.x = -s * clamp(P.v / 10, 0, 1) * 0.25;
+}
+function moveSolid(P, dx, dz, r) {
+  const n = Math.max(1, Math.ceil(Math.hypot(dx, dz) / (r * 0.6)));
+  for (let k = 0; k < n; k++) {
+    const ox = P.x, oz = P.z; P.x += dx / n; P.z += dz / n;
+    colPush(P, r);
+    if (waterAt(P.x, P.z)) { P.x = ox; P.z = oz; break; }
+    carPush(P, r);
+  }
+}
+function carPush(P, r) {   // traffic is solid too
+  const T = TRAF; if (!T || !T.shown) return;
+  for (const c of T.cars) {
+    if (c.dead || Math.abs(c.x - P.x) > 8 || Math.abs(c.z - P.z) > 8) continue;
+    const rx = P.x - c.x, rz = P.z - c.z, a = rx * c.hx + rz * c.hz, b = -rx * c.hz + rz * c.hx;
+    const ca = clamp(a, -c.len / 2, c.len / 2), cb = clamp(b, -c.w / 2, c.w / 2), da = a - ca, db = b - cb, d = Math.hypot(da, db);
+    if (d >= r) continue;
+    let na, nb; if (d < 1e-4) { if (c.len / 2 - Math.abs(a) < c.w / 2 - Math.abs(b)) { na = Math.sign(a) || 1; nb = 0; } else { na = 0; nb = Math.sign(b) || 1; } } else { na = da / d; nb = db / d; }
+    const push = r - d + 0.01, wx = na * c.hx - nb * c.hz, wz = na * c.hz + nb * c.hx; P.x += wx * push; P.z += wz * push;
+  }
+}
+
+// ---- avatar picker
+function openAvatar() { WALK.panel = true; $('avPanel').classList.add('show'); renderAvatarPanel(); if (document.pointerLockElement) document.exitPointerLock(); }
+function closeAvatar() { const W = WALK; if (W.panel) W.yaw = Math.atan2(-Math.cos(W.P.th), -Math.sin(W.P.th)); W.panel = false; $('avPanel').classList.remove('show'); }
+function renderAvatarPanel() {
+  const pf = ACC.pf, el = $('avPanel');
+  const opts = (key, dict) => Object.entries(dict).map(([k, v]) => `<button class="opt${pf[key] === k ? ' on' : ''}" data-k="${key}" data-v="${k}">${v}</button>`).join('');
+  const sw = (key, list) => list.map((c, i) => `<button class="sw${pf[key] === i ? ' on' : ''}" data-k="${key}" data-i="${i}" style="background:${c}"></button>`).join('');
+  el.innerHTML = `<div class="hd">Who's out in Amdavad today?</div>
+    <label>Name<input id="avName" maxlength="20" placeholder="Your name" value="${(pf.name || '').replace(/"/g, '&quot;')}"></label>
+    <div class="row"><span>Outfit</span><div>${opts('outfit', AV_OUTFIT)}</div></div>
+    <div class="row"><span>Top</span><div>${sw('top', AV_TOP)}</div></div>
+    <div class="row"><span>${pf.outfit === 'kurta' ? 'Pyjama' : pf.outfit === 'saree' ? 'Blouse' : 'Bottom'}</span><div>${sw('bot', AV_BOT)}</div></div>
+    <div class="row"><span>Skin</span><div>${sw('skin', AV_SKIN)}</div></div>
+    <div class="row"><span>Hair</span><div>${opts('hair', AV_HAIR)}</div></div>
+    <div class="row"><span>Scooter</span><div>${sw('scoot', ['#c0392b', '#2980b9', '#f4f1ea', '#151515', '#f1c40f'])}</div></div>
+    <button class="go" id="avGo">Start exploring</button>
+    <div class="acct">${ACC.clerk ? (ACC.user ? `Signed in as <b>${ACC.user.firstName || ACC.user.username || 'you'}</b> · saved to your account` : `<a href="#" id="avSign">Sign in</a> to keep your avatar on every device`) : 'Playing as a guest · saved on this device'}</div>`;
+  el.querySelectorAll('button[data-k]').forEach((b) => (b.onclick = () => { const k = b.dataset.k; pf[k] = b.dataset.v !== undefined ? b.dataset.v : +b.dataset.i; saveProfile(); rebuildAvatar(); renderAvatarPanel(); }));
+  $('avName').oninput = (e) => { pf.name = e.target.value.slice(0, 20); saveProfile(); walkUI(); };
+  $('avGo').onclick = () => { saveProfile(true); closeAvatar(); walkUI(); };
+  const s = $('avSign'); if (s) s.onclick = (e) => { e.preventDefault(); ACC.clerk.openSignIn({}); };
+}
+function walkUI() {
+  if (!$('walkHud')) return;
+  const W = WALK, R = W.ride;
+  $('wkMode').textContent = R ? (R.phase === 'wait' ? `Waiting at ${R.st.n}` : R.kind === 'metro' ? 'On the Metro' : 'On a Janmarg bus') : { walk: 'On foot', scooter: 'Scooter', auto: 'Auto rickshaw' }[W.mode];
+  $('wkName').textContent = (ACC.pf && ACC.pf.name) || 'Guest';
+  $('wkSign').textContent = ACC.user ? 'Account' : 'Sign in';
+  $('wkHint').innerHTML = R ? 'Drag / mouse to look around · Scroll zoom · E ' + (R.phase === 'wait' ? 'cancel' : 'get off at a stop')
+    : W.mode === 'walk' ? '<b>WASD</b> move · <b>Shift</b> run · <b>Space</b> jump · <b>C</b> scooter / auto · <b>E</b> metro & BRTS · click to look · <b>Esc</b> map'
+      : '<b>W/S</b> throttle / brake · <b>A/D</b> steer · <b>C</b> switch · click to look · <b>Esc</b> map';
+}
+function initWalkUI() {
+  $('walkBtn').onclick = () => enterWalk();
+  $('wkExit').onclick = () => exitWalk();
+  $('wkAvatar').onclick = () => (WALK.panel ? closeAvatar() : openAvatar());
+  $('wkSign').onclick = () => {
+    if (!ACC.clerk) { toast('Sign-in is coming soon. For now you play as a guest, saved on this device.'); return; }
+    if (ACC.user) ACC.clerk.openUserProfile(); else ACC.clerk.openSignIn({});
+  };
+  // touch: joystick on the left, buttons on the right, drag anywhere else to look
+  const J = $('wkJoy'), K = $('wkKnob'); let jid = null, jc = null;
+  J.addEventListener('pointerdown', (e) => { jid = e.pointerId; J.setPointerCapture(jid); const r = J.getBoundingClientRect(); jc = [r.left + r.width / 2, r.top + r.height / 2]; e.stopPropagation(); });
+  J.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== jid) return; let dx = (e.clientX - jc[0]) / 50, dy = (e.clientY - jc[1]) / 50; const l = Math.hypot(dx, dy); if (l > 1) { dx /= l; dy /= l; }
+    WALK.joy = { x: dx, y: dy }; WALK.runT = l > 0.95; K.style.transform = `translate(${dx * 40}px,${dy * 40}px)`;
+  });
+  const jend = () => { jid = null; WALK.joy = null; WALK.runT = false; K.style.transform = ''; };
+  J.addEventListener('pointerup', jend); J.addEventListener('pointercancel', jend);
+  $('wkJump').onpointerdown = (e) => { e.stopPropagation(); WALK.jumpQ = true; };
+  $('wkAct').onpointerdown = (e) => { e.stopPropagation(); act(); };
+  $('wkRide').onpointerdown = (e) => { e.stopPropagation(); cycleRide(); };
+  document.addEventListener('pointerlockchange', () => { WALK.locked = document.pointerLockElement === canvas; });
+  document.addEventListener('mousemove', (e) => {
+    if (!WALK.on || !WALK.locked) return;
+    WALK.yaw -= e.movementX * 0.0026; WALK.pitch = clamp(WALK.pitch + e.movementY * 0.0022, 0.04, 1.3); WALK.lookT = performance.now();
+  });
+}
+function walkPointerDown(e) {
+  const W = WALK;
+  if (e.pointerType === 'mouse' && !W.panel && e.button === 0 && canvas.requestPointerLock) { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (_) {} }
+  W.drag = { x: e.clientX, y: e.clientY, id: e.pointerId };
+}
+function walkPointerMove(e) {
+  const W = WALK; if (!W.drag || W.locked || e.pointerId !== W.drag.id) return;
+  const dx = e.clientX - W.drag.x, dy = e.clientY - W.drag.y; W.drag.x = e.clientX; W.drag.y = e.clientY;
+  W.yaw -= dx * 0.006; W.pitch = clamp(W.pitch + dy * 0.004, 0.04, 1.3); W.lookT = performance.now();
+}
+function walkWheel(e) {
+  const W = WALK, lo = W.ride ? 10 : W.mode === 'walk' ? 2.2 : 3.5, hi = W.ride ? 70 : W.mode === 'walk' ? 14 : 20;
+  W.dist = clamp(W.dist * Math.exp(clamp(e.deltaY, -120, 120) * 0.002), lo, hi);
+}
+function walkKey(e, k) {
+  if (WALK.panel && e.target && e.target.id === 'avName') return true;
+  if (k === 'e') { act(); return true; }
+  if (k === 'c') { cycleRide(); return true; }
+  if (k === 'q') { skipWait(); return true; }
+  if (k === 'escape') { if (WALK.panel) closeAvatar(); else if (WALK.ride && WALK.ride.phase === 'wait') { WALK.ride = null; walkUI(); } else exitWalk(); return true; }
+  if (k === ' ') { e.preventDefault(); keys.add(' '); return true; }
+  if (k === 'n' || k === 't' || k === 'r') return false;   // time of day / weather still work
+  keys.add(k); return true;
 }
 
 // ---------------------------------------------------------------- boot
@@ -5341,6 +5969,7 @@ async function boot() {
   view.tx = 0; view.tz = 0; view.mpp = 26; view.az = Math.PI / 4;
   applyTod(tod);
   ready = true; dirty = true;
+  initWalkUI(); initAccount();
   try { sessionStorage.removeItem('amd-retry'); } catch (_) {}
   setProgress(1, 'Ready');
   $('loader').classList.add('hide');
@@ -5351,7 +5980,7 @@ async function boot() {
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
   later('cells').then(() => later('trees')).then(() => later('props')).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
-window.AMD = { setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { enterWalk, exitWalk, WALK, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);

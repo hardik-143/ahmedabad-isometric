@@ -127,7 +127,7 @@ Not modelled: Pirana landfill (biomining is reported complete and the site is be
 canal.
 
 ### Weather
-Five presets (buttons above the time bar, or W): clear, cloudy, monsoon, fog and heatwave; they combine with any time
+Five presets (buttons above the time bar, or R): clear, cloudy, monsoon, fog and heatwave; they combine with any time
 of day and blend over 2.5 s. Every material in the scene gets a small shared shader pass for wet ground, cloud
 shadows, height fog and heat haze, so nothing needs its own weather code.
 Monsoon: rain never covers the whole city. Six storm cells (2.6-3.6 km across) drift south-west to north-east at
@@ -144,6 +144,15 @@ quickly. Each fills only while rain falls on it and drains at its own rate. Zoom
 cloud deck with moving shadows.
 Fog: a ground fog about 35 m deep, so towers rise out of it. Heatwave: a strong, warm sun, washed-out colours and a
 dusty haze.
+
+### Explore on foot (work in progress)
+Press F (or the button at the top) to drop into the street at the map centre with a third-person camera. WASD to move,
+Shift to run, Space to jump, mouse drag or click-to-lock to look, wheel to zoom. C cycles on foot / scooter / auto
+rickshaw; E boards a metro train or BRTS bus at a station (Q skips the wait) and gets off at the next stop. Buildings,
+river walls and water block you; traffic brakes for you. The avatar picker sets name, outfit (shirt, t-shirt, kurta,
+saree, salwar), colours, skin and hair. Sign-in uses Clerk when a publishable key is set in
+`<meta name="clerk-key">`; without one the profile is kept in localStorage. Esc returns to the map.
+Known issues: collision can over-block near the riverfront; boarding and riding are not fully tested yet.
 
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
