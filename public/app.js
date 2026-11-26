@@ -5369,167 +5369,118 @@ function frame(now) {
 const AV_SKIN = ['#5e3a24', '#8d5a3b', '#a8704a', '#c99a6e'];
 const AV_TOP = ['#c0392b', '#e67e22', '#f1c40f', '#27ae60', '#16a085', '#2980b9', '#8e44ad', '#f4f1ea', '#2c3e50', '#e84393'];
 const AV_BOT = ['#2c3e50', '#1f3a5f', '#3b5b8c', '#7f6a4f', '#f4f1ea', '#5d4037', '#151515'];
-const AV_OUTFIT = { shirt: 'Shirt', tshirt: 'T-shirt', kurta: 'Kurta', saree: 'Saree', salwar: 'Salwar kameez' };
+const AV_OUTFIT = { shirt: 'Shirt', tshirt: 'T-shirt', kurta: 'Kurta', office: 'Shirt & tie', suit: 'Suit', saree: 'Saree', salwar: 'Salwar kameez', western: 'Jacket & jeans' };
 const AV_HAIR = { short: 'Short', long: 'Long', bun: 'Bun', cap: 'Cap', none: 'Bald' };
-const AV_DEFAULT = { name: '', outfit: 'shirt', top: 5, bot: 0, skin: 1, hair: 'short', scoot: 0 };
+const AV_DEFAULT = { name: '', outfit: 'shirt', top: 5, bot: 0, skin: 1, hair: 'short', hairc: 0, scoot: 0 };
 const AV_HAIRC = '#1b1410', AV_SHOE = '#3a2a1e';
 // ---------------------------------------------------------------- walk mode: animated people (Quaternius, CC0)
-// Two base bodies (man, woman) share one 65-bone rig with the animation library. Clothes are painted in the shader
-// from the bind-pose position (shirt, t-shirt, kurta, saree, salwar kameez; trousers; shoes) by height bands and arm
-// reach, so every person can look different from a single shader program; hair, caps and the saree / kurta skirt are
-// small meshes riding on the head and pelvis bones.
-const CHAR = { state: 0, p: null, tpl: {}, clips: {}, SK: null };
-const CH_DIM = {   // bind pose, metres: hip y, knee y, neck y, shoulder x, elbow x, wrist x, head centre y
-  man: [0.949, 0.542, 1.52, 0.212, 0.463, 0.706, 1.705], woman: [0.932, 0.535, 1.485, 0.152, 0.392, 0.641, 1.672] };
-const CH_STY = { shirt: 0, tshirt: 1, kurta: 2, saree: 3, salwar: 4 };
-const CH_REF_SKIN = new THREE.Color('#c48a66');    // the body texture's own skin tone: skin choices tint relative to it
-const CH_KEY = 'amdChar';
+// Quaternius's Animated Men and Animated Women packs: low-poly people whose clothes are real geometry with their own
+// materials (Shirt, Pants, Jacket, Shoes, Hair, Skin), so everybody is recoloured, never repainted. Each model carries
+// its own clips (idle, walk, run, jump, running jump, sitting, standing up, clapping). The walk and run speeds were
+// measured from the planted foot (4.383 and 9.706 model units a second), and every clip plays at ground speed / clip
+// speed, so feet never slide. Saree and kurta / kameez add a skirt that rides on the hip bone.
+const CHAR = { state: 0, p: null, tpl: {}, info: {}, SK: null };
+const CH_MODELS = ['man', 'suit', 'longsleeve', 'casual', 'woman', 'woman2'];
+const CH_FEM = { woman: 1, woman2: 1 };
+const CH_WALK_U = 4.383, CH_RUN_U = 9.706;
+const CH_OUTFIT = {
+  shirt: { m: 'longsleeve' }, tshirt: { m: 'man' }, kurta: { m: 'longsleeve', skirt: 'knee' }, suit: { m: 'suit' }, office: { m: 'casual' },
+  saree: { m: 'woman2', skirt: 'ankle' }, salwar: { m: 'woman', skirt: 'knee' }, western: { m: 'woman' },
+};
+const CH_HAIR = ['#14100d', '#3b2a20', '#6b4a2e', '#8f8a85'];
 function loadChars() {
   if (CHAR.p) return CHAR.p;
   CHAR.state = 1;
   CHAR.p = (async () => {
-    const [{ GLTFLoader }, SK] = await Promise.all([import('three/addons/loaders/GLTFLoader.js'), import('three/addons/utils/SkeletonUtils.js')]);
+    const [{ GLTFLoader }, SK, { MeshoptDecoder }] = await Promise.all([import('three/addons/loaders/GLTFLoader.js'),
+      import('three/addons/utils/SkeletonUtils.js'), import('three/addons/libs/meshopt_decoder.module.js')]);
     CHAR.SK = SK;
-    const L = new GLTFLoader(), ld = (u) => new Promise((res, rej) => L.load(u, res, undefined, rej));
-    const [m, w, a] = await Promise.all([ld('models/man.glb'), ld('models/woman.glb'), ld('models/anims.glb')]);
-    for (const [k, g] of [['man', m], ['woman', w]]) {
-      const pel = g.scene.getObjectByName('pelvis'), s = pel ? pel.position.z / 0.88 : 1;   // the animation rig's hips sit a little lower
-      CHAR.tpl[k] = g.scene; CHAR.clips[k] = {};
-      for (const c of a.animations) {
-        const tr = c.tracks.map((t) => t.name === 'pelvis.position' ? new THREE.VectorKeyframeTrack(t.name, t.times.slice(), Array.from(t.values, (v) => v * s)) : t);
-        CHAR.clips[k][c.name] = new THREE.AnimationClip(c.name, c.duration, tr);
-      }
-    }
+    const L = new GLTFLoader(); L.setMeshoptDecoder(MeshoptDecoder);
+    const gs = await Promise.all(CH_MODELS.map((m) => L.loadAsync(`models/people/${m}.glb`)));
+    gs.forEach((g, k) => {
+      const m = CH_MODELS[k], sc = g.scene; sc.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(sc), H = box.max.y - box.min.y, S = (CH_FEM[m] ? 1.62 : 1.72) / H;
+      const P = (n) => { const b = sc.getObjectByName(n); return b ? b.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(); };
+      const clips = {}; for (const c of g.animations) clips[c.name] = c;
+      CHAR.tpl[m] = sc;
+      CHAR.info[m] = { S, H, clips, walk: CH_WALK_U * S, run: CH_RUN_U * S, hipsRest: sc.getObjectByName('Hips').matrixWorld.clone(),
+        hipY: P('Hips').y, kneeY: P('LowerLegL').y, footY: P('FootL').y, legX: Math.abs(P('UpperLegL').x - P('Hips').x), cx: P('Hips').x, cz: P('Hips').z };
+    });
     CHAR.state = 2;
   })().catch((e) => { CHAR.state = -1; console.error('characters', e); });
   return CHAR.p;
 }
-const CH_GLSL = `{
-  vec3 p = vBP; float ax = abs(p.x);
-  vec3 tex = diffuseColor.rgb;
-  float lum = clamp(dot(tex, vec3(0.299, 0.587, 0.114)) * 2.6, 0.86, 1.04);  // a little of the base mesh's shading, not its muscles
-  vec3 skin = tex * cSkin, chC = skin;
-  float sty = cSty.z;
-  float nk = cDim.z + 0.015 - 0.05 * smoothstep(0.0, 0.07, 0.07 - ax);         // round neckline, a little lower at the front
-  bool head = p.y > nk && ax < 0.13 || p.y > cDim.z + 0.06 && ax < 0.16;
-  bool arm = ax > cDim.w + 0.05 && p.y > 1.2;
-  if (!head) {
-    if (arm) { if (ax < cSty.x) chC = cTop * lum; }
-    else if (sty > 2.5 && sty < 3.5) {                                    // saree: blouse, midriff, drape, pallu
-      if (p.y > cDim.x + 0.27) chC = cBot * lum;
-      else if (p.y > cDim.x + 0.12) chC = skin;
-      else if (p.y > cSty.w) chC = cTop * lum;
-      else chC = cShoe;
-      if (p.y > cDim.x + 0.05 && p.y < cDim.z - 0.02 && abs((p.y - cDim.x - 0.05) - (p.x + 0.16) * 1.25) < 0.075) chC = cTop * lum * 1.06;
-    }
-    else if (p.y >= cSty.y) chC = cTop * lum;                             // shirt / kurta / kameez to its hem
-    else if (p.y > cSty.w) chC = cBot * lum;                              // trousers / pyjama / salwar
-    else chC = cShoe;
-  }
-  diffuseColor.rgb = chC;
-}`;
-function chBodyMat(map, u) {
-  const m = new THREE.MeshLambertMaterial({ map });
-  m.customProgramCacheKey = () => CH_KEY;          // one program for everybody; colours are per-person uniforms
-  m.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, U, u);
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vBP;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBP = position;');
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vBP;\nuniform vec3 cTop, cBot, cSkin, cShoe;\nuniform vec4 cDim, cSty;')
-      .replace('#include <map_fragment>', '#include <map_fragment>\n' + CH_GLSL);
-    wxPatch(sh);
-  };
-  return m;
-}
-const CH_HAIRMAT = new THREE.MeshLambertMaterial({ color: '#1b1410' });
 const chCol = (v, list, dflt) => v instanceof THREE.Color ? v : new THREE.Color(list && list[v] != null ? list[v] : (typeof v === 'string' ? v : dflt));
 function makeChar(pf) {
-  const kind = pf.outfit === 'saree' || pf.outfit === 'salwar' ? 'woman' : 'man';
-  const obj = CHAR.SK.clone(CHAR.tpl[kind]);
-  const V3 = () => ({ value: new THREE.Color() }), V4 = () => ({ value: new THREE.Vector4() });
-  const u = { cTop: V3(), cBot: V3(), cSkin: V3(), cShoe: V3(), cDim: V4(), cSty: V4() };
-  const C = { kind, obj, root: new THREE.Group(), u, mixer: new THREE.AnimationMixer(obj), acts: {}, cur: null, extra: [], body: null, mats: [] };
-  obj.traverse((o) => {
-    if (!o.isSkinnedMesh) return;
-    o.frustumCulled = false; o.castShadow = true; o.receiveShadow = true;
-    const isBody = /Superhero/.test(o.material.name || '');
-    o.material = isBody ? chBodyMat(o.material.map, u) : new THREE.MeshLambertMaterial({ map: o.material.map });
-    C.mats.push(o.material);
-    if (isBody) C.body = o;
+  const m = (CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt).m, I = CHAR.info[m];
+  const obj = CHAR.SK.clone(CHAR.tpl[m]);
+  const C = { model: m, obj, root: new THREE.Group(), mixer: new THREE.AnimationMixer(obj), acts: {}, cur: null, extra: [], mats: {}, idleT: 0 };
+  obj.traverse((n) => {
+    n.renderOrder = 12;                                   // after the ground layers, which draw without a depth test
+    if (!n.isMesh) return;
+    n.frustumCulled = false; n.castShadow = true; n.receiveShadow = true;
+    const x = n.material; let L = C.mats[x.name];
+    if (!L) { L = C.mats[x.name] = new THREE.MeshLambertMaterial({ color: x.color.clone() }); L.name = x.name; }
+    n.material = L;
   });
-  obj.rotation.y = Math.PI / 2;                    // the bodies face +z; people in this city face +x
-  obj.traverse((o) => { o.renderOrder = 12; });     // after the ground layers, which draw without a depth test
+  obj.scale.setScalar(I.S); obj.rotation.y = Math.PI / 2;   // the models face +z; people in this city face +x
   C.root.add(obj);
   chLook(C, pf);
   return C;
 }
-// an extra mesh built in bind-pose (mesh) space, carried by a bone so it follows the animation
-function chAttach(C, boneName, mesh) {
-  const B = C.body, sk = B.skeleton, i = sk.bones.findIndex((b) => b.name === boneName); if (i < 0) return;
-  mesh.updateMatrix();
-  const L = sk.boneInverses[i].clone().multiply(B.bindMatrix).multiply(mesh.matrix);
-  L.decompose(mesh.position, mesh.quaternion, mesh.scale);
-  mesh.castShadow = true; mesh.renderOrder = 12; sk.bones[i].add(mesh); C.extra.push(mesh);
-}
 function chLook(C, pf) {
-  const D = CH_DIM[C.kind], o = pf.outfit || 'shirt', st = CH_STY[o] ?? 0, u = C.u;
-  u.cTop.value.copy(chCol(pf.topC ?? pf.top, AV_TOP, '#2980b9'));
-  u.cBot.value.copy(chCol(pf.botC ?? pf.bot, AV_BOT, '#2c3e50'));
-  const sk = chCol(pf.skinC ?? pf.skin, AV_SKIN, '#8d5a3b');
-  u.cSkin.value.setRGB(sk.r / CH_REF_SKIN.r, sk.g / CH_REF_SKIN.g, sk.b / CH_REF_SKIN.b);
-  u.cShoe.value.set(o === 'saree' || o === 'salwar' || o === 'kurta' ? '#4a3020' : '#262322');
-  const longSl = o === 'shirt' || o === 'kurta' || o === 'salwar';
-  const sleeve = longSl ? D[5] - 0.045 : D[3] + (D[4] - D[3]) * 0.55;
-  const hem = o === 'kurta' || o === 'salwar' ? D[1] + 0.04 : D[0] - 0.09;
-  u.cDim.value.set(D[0], D[1], D[2], D[3]); u.cSty.value.set(sleeve, hem, st, o === 'saree' ? 0.06 : 0.135);
-  // hair, cap and skirt meshes
-  for (const m of C.extra) { m.removeFromParent(); m.geometry.dispose(); if (m.material !== CH_HAIRMAT) m.material.dispose(); }
+  const o = CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt, I = CHAR.info[C.model];
+  const top = chCol(pf.topC ?? pf.top, AV_TOP, '#2980b9'), bot = chCol(pf.botC ?? pf.bot, AV_BOT, '#2c3e50'), skin = chCol(pf.skinC ?? pf.skin, AV_SKIN, '#8d5a3b');
+  const hair = new THREE.Color(CH_HAIR[pf.hairc | 0] || CH_HAIR[0]), dark = new THREE.Color('#2a2624');
+  const set = (n, c) => { const L = C.mats[n]; if (L) L.color.copy(c); };
+  const saree = pf.outfit === 'saree';
+  set('Shirt', saree ? bot : top); set('Shirt2', top.clone().multiplyScalar(0.82)); set('Jacket', top); set('LightJacket', top.clone().lerp(new THREE.Color('#ffffff'), 0.3));
+  set('Pants', pf.outfit === 'kurta' && pf.bot == null && pf.botC == null ? new THREE.Color('#ece6d8') : saree ? top : bot);
+  set('Skin', skin); for (const n of ['Hair', 'Hair2', 'HairBase', 'Eyebrows']) set(n, hair);
+  set('Shoes', dark); set('Socks', dark);
+  for (const e of C.extra) { e.removeFromParent(); e.geometry.dispose(); e.material.dispose(); }
   C.extra.length = 0;
-  if (!C.body) return;
-  const hy = D[6], hz = -0.02, r = C.kind === 'man' ? 0.112 : 0.104, h = pf.hair || 'short';
-  if (h !== 'none') {
-    if (h === 'cap') {
-      const capM = new THREE.MeshLambertMaterial({ color: pf.capC || u.cTop.value.clone().multiplyScalar(0.8) });
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(r * 1.08, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5), capM);
-      dome.position.set(0, hy + 0.02, hz); chAttach(C, 'Head', dome);
-      const brim = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.012, 0.11), capM);
-      brim.position.set(0, hy + 0.03, hz + r * 1.05); brim.rotation.x = 0.12; chAttach(C, 'Head', brim);
-    } else {
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(r * 1.06, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52), CH_HAIRMAT);
-      dome.position.set(0, hy + 0.03, hz - 0.012); dome.rotation.x = -0.62; dome.scale.set(1.0, 0.92, 1.08); chAttach(C, 'Head', dome);
-      if (h === 'long') { const b = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.36, 0.06), CH_HAIRMAT); b.position.set(0, hy - 0.17, hz - r * 0.78); b.rotation.x = 0.12; chAttach(C, 'Head', b); }
-      if (h === 'bun') { const b = new THREE.Mesh(new THREE.SphereGeometry(0.052, 10, 8), CH_HAIRMAT); b.position.set(0, hy + 0.0, hz - r * 1.15); chAttach(C, 'Head', b); }
-    }
-  }
-  if (o === 'saree' || o === 'kurta' || o === 'salwar') {
-    const top = D[0] + (o === 'saree' ? 0.1 : 0.05), bot = o === 'saree' ? 0.07 : D[1] + 0.03, H = top - bot;
-    const skM = new THREE.MeshLambertMaterial({ color: u.cTop.value.clone().multiplyScalar(0.96), side: THREE.DoubleSide });
-    const sk = new THREE.Mesh(new THREE.CylinderGeometry(C.kind === 'man' ? 0.2 : 0.17, o === 'saree' ? 0.25 : 0.24, H, 16, 1, true), skM);
-    sk.position.set(0, bot + H / 2, -0.02); sk.scale.set(1, 1, 0.78); chAttach(C, 'pelvis', sk);
+  if (o.skirt) {   // the saree drape / kurta or kameez hem: a flared skirt riding on the hip bone
+    const H = I.H, y1 = I.hipY + 0.045 * H, y0 = o.skirt === 'ankle' ? I.footY + 0.01 * H : I.kneeY - 0.02 * H, h = y1 - y0;
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(I.legX * (o.skirt === 'ankle' ? 1.5 : 1.38), I.legX * (o.skirt === 'ankle' ? 2.1 : 1.7), h, 20, 1, true),
+      new THREE.MeshLambertMaterial({ color: top.clone().multiplyScalar(0.97), side: THREE.DoubleSide }));
+    mesh.position.set(I.cx, y0 + h / 2, I.cz); mesh.scale.z = 0.86; mesh.updateMatrix();
+    const hips = C.obj.getObjectByName('Hips');
+    new THREE.Matrix4().copy(I.hipsRest).invert().multiply(mesh.matrix).decompose(mesh.position, mesh.quaternion, mesh.scale);
+    mesh.castShadow = true; mesh.renderOrder = 12; hips.add(mesh); C.extra.push(mesh);
   }
 }
-function chPlay(C, name, fade = 0.22, ts = 1) {
-  const clip = CHAR.clips[C.kind][name]; if (!clip) return null;
+function chPlay(C, name, fade = 0.18, ts = 1) {
+  const clip = CHAR.info[C.model].clips[name]; if (!clip) return null;
   let a = C.acts[name];
-  if (!a) { a = C.acts[name] = C.mixer.clipAction(clip); if (!/_Loop$/.test(name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; } }
+  if (!a) { a = C.acts[name] = C.mixer.clipAction(clip); if (!/^(Idle|Walk|Run|Sitting)$/.test(name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; } }
   a.timeScale = ts;
   if (C.cur === name) return a;
   const prev = C.cur ? C.acts[C.cur] : null;
-  a.reset(); a.setEffectiveWeight(1); a.play();
-  if (prev) { if (fade > 0) a.crossFadeFrom(prev, fade, false); else prev.stop(); }
+  a.reset().setEffectiveWeight(1);
+  if (prev && /^(Walk|Run)$/.test(name) && /^(Walk|Run)$/.test(C.cur)) {   // keep the stride's phase: no leg jump
+    const pd = prev.getClip().duration; a.time = ((prev.time % pd) / pd) * clip.duration;
+  }
+  a.fadeIn(fade).play();
+  if (prev) prev.fadeOut(fade);
   C.cur = name; return a;
 }
 function chDispose(C) {
   C.mixer.stopAllAction(); C.root.removeFromParent();
-  for (const m of C.extra) { m.geometry.dispose(); if (m.material !== CH_HAIRMAT) m.material.dispose(); }
-  for (const m of C.mats) m.dispose();
+  for (const e of C.extra) { e.geometry.dispose(); e.material.dispose(); }
+  for (const k in C.mats) C.mats[k].dispose();
 }
-// locomotion clip for a ground speed (m/s): idle, walk, jog or sprint, played at the speed that keeps feet planted
-function chMove(C, v, fade = 0.25, formal = false) {
-  if (v < 0.15) return chPlay(C, 'Idle_Loop', fade);
-  if (v < 2.5) return chPlay(C, formal ? 'Walk_Formal_Loop' : 'Walk_Loop', fade, clamp(v / 1.4, 0.55, 1.6));
-  if (v < 5.0) return chPlay(C, 'Jog_Fwd_Loop', fade, clamp(v / 3.6, 0.7, 1.4));
-  return chPlay(C, 'Sprint_Loop', fade, clamp(v / 6.0, 0.8, 1.3));
+// walk or run for a ground speed (m/s), with hysteresis so the gait never flickers, and a short pause before idling
+function chMove(C, v, dt, fade = 0.18) {
+  const I = CHAR.info[C.model];
+  if (v < 0.3) {
+    C.idleT += dt;
+    if (C.idleT < 0.15 && (C.cur === 'Walk' || C.cur === 'Run')) return C.acts[C.cur];
+    return chPlay(C, 'Idle', 0.25);
+  }
+  C.idleT = 0;
+  const run = C.cur === 'Run' ? v > 2.3 : v > 2.8;
+  return run ? chPlay(C, 'Run', fade, clamp(v / I.run, 0.7, 1.6)) : chPlay(C, 'Walk', fade, clamp(v / I.walk, 0.55, 1.75));
 }
 const _avMats = new Map();
 const avMat = (hex) => { let m = _avMats.get(hex); if (!m) { m = new THREE.MeshLambertMaterial({ color: hex }); _avMats.set(hex, m); } return m; };
@@ -5911,7 +5862,7 @@ function rebuildAvatar() {
   if (W.mode !== 'walk') {
     W.rideMesh = buildRide(W.mode, ACC.pf, W.rideCol); W.holder.add(W.rideMesh);
     const s = RIDE_SPEC[W.mode][W.av.mixer ? 'seat3' : 'seat']; W.av.root.position.set(s[0], s[1], s[2]);
-    if (W.av.mixer) chPlay(W.av, 'Driving_Loop', 0);
+    if (W.av.mixer) chPlay(W.av, 'Sitting', 0);
   }
 }
 function enterWalk(x, z) {
@@ -6067,7 +6018,10 @@ function stepWalk(dt) {
   // --- camera
   if (W.panel) { W.yaw = lerpAng(W.yaw, Math.atan2(Math.cos(P.th), Math.sin(P.th)), Math.min(1, dt * 4)); W.pitch = lerp(W.pitch, 0.1, Math.min(1, dt * 4)); }
   else if (!W.ride && performance.now() - W.lookT > (W.mode === 'walk' ? 2500 : 1500) && Math.abs(P.v) > 1.5) W.yaw = lerpAng(W.yaw, Math.atan2(-Math.cos(P.th), -Math.sin(P.th)), Math.min(1, dt * (W.mode === 'walk' ? 1.2 : 2.2)));   // swing in behind, GTA style
-  const tgt = W.ride && W.ride.pose ? [F.x, (W.ride.pose.y || 0) + (W.ride.kind === 'metro' ? 3 : 2), F.z] : [P.x, P.y + (W.panel ? 1.1 : W.mode === 'walk' ? 1.5 : 1.6), P.z];
+  const tgt0 = W.ride && W.ride.pose ? [F.x, (W.ride.pose.y || 0) + (W.ride.kind === 'metro' ? 3 : 2), F.z] : [P.x, P.y + (W.panel ? 1.1 : W.mode === 'walk' ? 1.45 : 1.6), P.z];
+  if (!W.tgtS || Math.hypot(W.tgtS[0] - tgt0[0], W.tgtS[2] - tgt0[2]) > 6) W.tgtS = tgt0.slice();
+  const kT = Math.min(1, dt * 16); for (let i = 0; i < 3; i++) W.tgtS[i] += (tgt0[i] - W.tgtS[i]) * kT;
+  const tgt = W.tgtS;
   // a wall right behind you: rather than pushing the camera into your head, look down from higher up
   const dist = W.panel ? 3.0 : W.dist; let pitch = W.pitch, cp, ox, oy, oz, d;
   for (;;) {
@@ -6095,38 +6049,35 @@ function moveInput() {
   if (W.joy) { f += -W.joy.y; s += W.joy.x; }
   return [clamp(f, -1, 1), clamp(s, -1, 1)];
 }
-function standStill(dt) { const P = WALK.P, A = WALK.av; P.ph += dt * 0.5; if (!A) return; if (A.mixer) chPlay(A, 'Idle_Loop'); else poseAvatar(A, 'walk', 0, 0, 0); }
+function standStill(dt) { const P = WALK.P, A = WALK.av; P.ph += dt * 0.5; if (!A) return; if (A.mixer) chPlay(A, 'Idle', 0.25); else poseAvatar(A, 'walk', 0, 0, 0); }
 function stepFoot(dt, spec) {
   const W = WALK, P = W.P, A = W.av, sk = !!(A && A.mixer);
-  if (W.panel) { if (sk) chPlay(A, 'Idle_Loop'); else poseAvatar(A, 'walk', 0, 0, 0); return; }
-  // GTA controls: W runs, Shift sprints, Caps Lock toggles walking; a light push on the touch stick walks
+  if (W.panel) { if (sk) chPlay(A, 'Idle', 0.25); else poseAvatar(A, 'walk', 0, 0, 0); return; }
+  // W runs, Shift sprints, Caps Lock walks; a light push on the touch stick walks
   const [f, s] = moveInput(), sprint = keys.has('shift') || W.runT;
   const fx = -Math.sin(W.yaw), fz = -Math.cos(W.yaw), rx = -fz, rz = fx;   // camera forward / right on the ground
   let mx = fx * f + rx * s, mz = fz * f + rz * s; const ml = Math.hypot(mx, mz);
-  const gait = sprint ? 6.2 : W.walkT || (W.joy && ml < 0.6) ? 1.5 : 3.4;
-  const target = ml > 0.05 ? gait : 0;
-  P.v += clamp(target - P.v, -10 * dt, (P.v < 3.4 ? 7 : 4) * dt);
-  if (ml > 0.05) { mx /= ml; mz /= ml; P.th = lerpAng(P.th, Math.atan2(mz, mx), Math.min(1, dt * (P.v > 4 ? 6 : 10))); }
+  const target = ml > 0.05 ? (sprint ? 5.4 : W.walkT || (W.joy && ml < 0.6) ? 1.55 : 4.0) : 0;
+  P.v += clamp(target - P.v, -11 * dt, 8 * dt);
+  if (ml > 0.05) { mx /= ml; mz /= ml; P.th = lerpAng(P.th, Math.atan2(mz, mx), Math.min(1, dt * 10)); }
   const hx = Math.cos(P.th), hz = Math.sin(P.th);
   moveSolid(P, hx * P.v * dt, hz * P.v * dt, spec.r);
-  let jumped = false;
-  const gy = groundAt(P.x, P.z, P.y);
-  if (P.vy <= 0 && P.y > gy && P.y - gy < 0.35) P.y = gy;                    // down a ramp: stay on it
-  if (P.y < gy) P.y = gy;                                                   // up a ramp
-  if ((keys.has(' ') || W.jumpQ) && P.y <= gy + 0.001 && !(W.landT > 0.1)) { P.vy = 4.6; jumped = true; }
+  // the ground: a flyover deck you are on, or the street; eased, so ramps and kerbs never jolt
+  const gy = groundAt(P.x, P.z, P.y), onGround = P.vy <= 0 && P.y - gy < 0.35;
+  let jumped = false, landed = false;
+  if (onGround) P.y += (gy - P.y) * Math.min(1, dt * 14);
+  if ((keys.has(' ') || W.jumpQ) && onGround) { P.vy = 4.6; jumped = true; }
   W.jumpQ = false;
-  if (P.y > gy || P.vy > 0) { P.vy -= 12 * dt; P.y = Math.max(gy, P.y + P.vy * dt); if (P.y === gy) { P.vy = 0; W.landT = 0.3; } }
+  if (!onGround || P.vy > 0) { P.vy -= 12 * dt; P.y = Math.max(gy, P.y + P.vy * dt); if (P.y === gy && P.vy < 0) { P.vy = 0; landed = true; } }
   if (sk) {
-    if (jumped) { const a = chPlay(A, 'Jump_Start', 0.08, 1.5); if (a) a.time = 0.45; }
-    else if (P.y > gy + 0.02) { if (A.cur !== 'Jump_Start' || P.vy < 0.6) chPlay(A, 'Jump_Loop', 0.2, 1); }
-    else if (W.landT > 0) { W.landT -= dt; if (P.v > 2.5) { W.landT = 0; chMove(A, P.v, 0.15); } else { const a = chPlay(A, 'Jump_Land', 0.06, 1.8); if (a && A.cur === 'Jump_Land' && a.time < 0.25 && W.landT > 0.28) a.time = 0.25; } }
-    else chMove(A, P.v, 0.22);
+    if (jumped) { chPlay(A, P.v > 3 ? 'RunningJump' : 'Jump', 0.08, 1.3); W.inJump = true; }
+    else if (W.inJump) { if (landed) { W.inJump = false; chMove(A, P.v, dt, 0.15); } }
+    else chMove(A, P.v, dt);
     return;
   }
-  if (W.landT > 0) W.landT -= dt;
   P.ph += dt * (P.v < 2.5 ? P.v * 3.9 : P.v * 2.35);
   const amp = P.v < 0.05 ? 0 : P.v < 2.5 ? 0.42 * Math.min(1, P.v / 1.2) : 0.85;
-  poseAvatar(A, P.y > gy + 0.05 ? 'air' : 'walk', P.ph, amp * (A.fem && ACC.pf.outfit === 'saree' ? 0.6 : 1), P.v > 2.5 ? 0.22 : 0.03);
+  poseAvatar(A, P.y > gy + 0.05 ? 'air' : 'walk', P.ph, amp, P.v > 2.5 ? 0.22 : 0.03);
 }
 function stepVehicle(dt, spec) {
   const W = WALK, P = W.P, [f, s] = moveInput();
@@ -6139,7 +6090,7 @@ function stepVehicle(dt, spec) {
   moveSolid(P, hx * P.v * dt, hz * P.v * dt, spec.r);
   const moved = Math.hypot(P.x - x0, P.z - z0); if (moved < Math.abs(P.v * dt) * 0.4) P.v *= 0.6;   // ran into something
   const gy = groundAt(P.x, P.z, P.y); P.y = gy > P.y ? gy : Math.max(gy, P.y - 9 * dt);                // up a ramp, or off an edge
-  if (W.av.mixer) chPlay(W.av, 'Driving_Loop'); else poseAvatar(W.av, 'seat', 0, 0, 0);
+  if (W.av.mixer) chPlay(W.av, 'Sitting'); else poseAvatar(W.av, 'seat', 0, 0, 0);
   if (W.rideMesh && W.mode === 'scooter') W.holder.rotation.x = 0;
   if (W.mode === 'scooter' && W.av) W.av.root.rotation.x = -s * clamp(P.v / 10, 0, 1) * 0.25;
 }
@@ -6172,7 +6123,7 @@ function carPush(P, r) {   // traffic is solid too, and so is anything you left 
 }
 
 // ---- the people around you: in walk mode the nearest pedestrians become animated people (the rest stay figures)
-const PEDPOOL = { list: [], men: 14, women: 10 };
+const PEDPOOL = { list: [], men: 14, women: 10 };   // up to 24 people at a time; idle ones are reused
 function pedPoolRelease() { for (const C of PEDPOOL.list) { if (C.ped) C.ped.skin = null; C.ped = null; C.root.visible = false; } }
 function stepPedPool(dt) {
   if (!PEDS || !PEDS.shown || CHAR.state !== 2) { pedPoolRelease(); return; }
@@ -6184,20 +6135,19 @@ function stepPedPool(dt) {
   for (const C of PEDPOOL.list) if (C.ped && !want.has(C.ped)) { C.ped.skin = null; C.ped = null; C.root.visible = false; }
   for (const p of want) {
     if (p.skin) continue;
-    const kind = p.pants ? 'man' : 'woman';
-    let C = PEDPOOL.list.find((c) => !c.ped && c.kind === kind);
-    if (!C) { C = makeChar({ outfit: kind === 'man' ? 'shirt' : 'saree' }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
     if (p.hh == null) p.hh = Math.random();
-    const h = p.hh, outfit = kind === 'man' ? (h < 0.5 ? 'shirt' : h < 0.8 ? 'tshirt' : 'kurta') : (h < 0.6 ? 'saree' : 'salwar');
-    chLook(C, { outfit, topC: p.shirt, botC: kind === 'man' ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length],
-      skin: (h * 97 | 0) % 4, hair: kind === 'man' ? ((h * 13) % 1 < 0.15 ? 'cap' : (h * 29) % 1 < 0.08 ? 'none' : 'short') : ((h * 7) % 1 < 0.5 ? 'bun' : 'long') });
-    C.formal = (h * 31) % 1 < 0.35; C.ped = p; p.skin = C; C.root.visible = true;
+    const h = p.hh, outfit = p.pants ? (h < 0.32 ? 'shirt' : h < 0.6 ? 'tshirt' : h < 0.78 ? 'kurta' : h < 0.92 ? 'office' : 'suit') : (h < 0.55 ? 'saree' : h < 0.85 ? 'salwar' : 'western');
+    const model = CH_OUTFIT[outfit].m;
+    let C = PEDPOOL.list.find((c) => !c.ped && c.model === model);
+    if (!C) { if (PEDPOOL.list.length >= 40) continue; C = makeChar({ outfit }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
+    chLook(C, { outfit, topC: p.shirt, botC: p.pants ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length], skin: (h * 97 | 0) % 4, hairc: (h * 13) % 1 < 0.12 ? 3 : (h * 7) % 1 < 0.2 ? 1 : 0 });
+    C.ped = p; p.skin = C; C.root.visible = true; C.idleT = 0;
   }
   for (const C of PEDPOOL.list) {
     if (!C.ped) continue;
     const p = C.ped, f = p.fa, sc = p.sc * (f >= 1 ? 1 : 0.2 + 0.8 * f * f * (3 - 2 * f));
-    C.root.position.set(p.x, p.y, p.z); C.root.rotation.y = -Math.atan2(p.rz, p.rx); C.root.scale.setScalar(sc * 0.96);
-    chMove(C, p.mode === 2 ? 0 : p.cv, 0.3, C.formal); C.mixer.update(dt);
+    C.root.position.set(p.x, p.y, p.z); C.root.rotation.y = -Math.atan2(p.rz, p.rx); C.root.scale.setScalar(0.94 + (sc - 1) * 0.5);
+    chMove(C, p.mode === 2 ? 0 : p.cv, dt, 0.25); C.mixer.update(dt);
   }
 }
 // ---- GTA-style pop-ups: the area you walk into, the vehicle you get on
@@ -6217,7 +6167,7 @@ function renderAvatarPanel() {
     <div class="row"><span>Top</span><div>${sw('top', AV_TOP)}</div></div>
     <div class="row"><span>${pf.outfit === 'kurta' ? 'Pyjama' : pf.outfit === 'saree' ? 'Blouse' : 'Bottom'}</span><div>${sw('bot', AV_BOT)}</div></div>
     <div class="row"><span>Skin</span><div>${sw('skin', AV_SKIN)}</div></div>
-    <div class="row"><span>Hair</span><div>${opts('hair', AV_HAIR)}</div></div>
+    <div class="row"><span>Hair</span><div>${sw('hairc', CH_HAIR)}</div></div>
     <div class="row"><span>Scooter</span><div>${sw('scoot', ['#c0392b', '#2980b9', '#f4f1ea', '#151515', '#f1c40f'])}</div></div>
     <button class="go" id="avGo">Start exploring</button>
     <div class="acct">${ACC.clerk ? (ACC.user ? `Signed in as <b>${ACC.user.firstName || ACC.user.username || 'you'}</b> · saved to your account` : `<a href="#" id="avSign">Sign in</a> to keep your avatar on every device`) : 'Playing as a guest · saved on this device'}</div>`;

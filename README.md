@@ -153,18 +153,22 @@ dusty haze.
 
 ### Explore on foot
 Press F (or the button at the top) to drop into the street with a third-person camera that swings in behind you, GTA
-style. People are Quaternius's CC0 Universal Base Characters driven by clips from his Universal Animation Library
-(`public/models`, about 2 MB, loaded only when you go on foot): idle, walk, jog, sprint, jump, driving, sitting.
-Clothes are painted in one shared shader from the bind-pose position (shirt, t-shirt, kurta, saree, salwar kameez,
-trousers, shoes, any colours and skin tone); hair, caps and the saree / kurta skirt ride on the head and pelvis bones.
-The nearest pedestrians (up to 24) swap their little figures for animated people dressed from their own colours.
+style. People are Quaternius's CC0 Animated Men and Animated Women packs (`public/models/people`, six bodies, ~0.9 MB,
+loaded only on foot): their clothes are real geometry with their own materials, so everyone is recoloured (shirt,
+t-shirt, kurta, shirt & tie, suit, saree, salwar kameez, jacket & jeans; skin and hair colour), and saree / kurta /
+kameez add a skirt on the hip bone. Each body carries its own clips: idle, walk, run, jump, running jump, sitting.
+Smoothness: walk and run speeds were measured from the planted foot (4.383 and 9.706 model units a second) and every
+clip plays at ground speed / clip speed, so feet do not slide; walk and run switch with hysteresis (run above 2.8 m/s,
+back to walk below 2.3) keeping the stride's phase; 0.18 s crossfades, a short pause before idling, a running jump
+when moving; height eases onto ramps and kerbs; the camera target is eased. The nearest 24 pedestrians become these
+people, dressed from their own colours.
 Controls: WASD run, Shift sprint, Caps Lock walk, Space jump, mouse or drag to look, wheel to zoom. F gets you on the
 auto rickshaw or scooter beside you (out of traffic, or one you left parked) and off again, where it stays parked;
 C gives you your own scooter or auto; E boards a metro train or a Janmarg bus at a station (Q skips the wait). Flyover
 ramps are solid from the side and can be driven up; decks keep you on with their parapets; piers and metro columns
 block; you can pass under high decks. Walking into an area shows its name, getting on a vehicle shows its name, and the
-radar turns round. The avatar picker sets name, outfit, colours, skin and hair; sign-in uses Clerk when a publishable
-key is set in `<meta name="clerk-key">`, otherwise the profile is kept in localStorage.
+radar turns round. Sign-in uses Clerk when a publishable key is set in `<meta name="clerk-key">`, otherwise the
+profile is kept in localStorage.
 
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
