@@ -24,6 +24,7 @@ const CFG = {
   weather: false,            // weather presets and the R key; the sky stays clear
   times: ['morning', 'noon'],// time-of-day buttons offered (of morning, noon, golden, night)
   walk: false,               // explore-on-foot mode (work in progress)
+  vehicles: ['auto'],        // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
 };
 const TIPS = [
   CFG.buildings && 'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
@@ -4199,6 +4200,9 @@ const TYPE_MIX = {   // by road class group: hatch sedan suv auto scooter bike t
 };
 const CAR_COLS = [[0.34, '#f2f2ee'], [0.18, '#b9bdc2'], [0.1, '#6d7278'], [0.1, '#b3261e'], [0.08, '#1f4e9c'], [0.08, '#202226'], [0.05, '#7a2632'], [0.04, '#c99a3c'], [0.03, '#2e6b4a']];
 const TWO_COLS = [[0.25, '#e9e9e6'], [0.2, '#1c1c1f'], [0.15, '#a8221c'], [0.12, '#2b4f9e'], [0.1, '#9aa0a6'], [0.08, '#c08a2a'], [0.1, '#5c6066']];
+// switched-off vehicle types never spawn; the density target shrinks by their share so the kept ones look as usual
+const VALLOW = ['hatch', 'sedan', 'suv', 'auto', 'scooter', 'bike', 'tempo', 'truck'].map((n) => CFG.vehicles.includes(n));
+const VSHARE = TYPE_MIX.mid.reduce((a, w, t) => a + (VALLOW[t] ? w : 0), 0);
 const pickCol = (tab) => { let r = Math.random(); for (const [w, c] of tab) { r -= w; if (r <= 0) return new THREE.Color(c); } return new THREE.Color(tab[0][1]); };
 const IDM = { car: { a: 1.5, b: 3.0, T: 1.2, s0: 1.8 }, two: { a: 2.2, b: 3.5, T: 0.8, s0: 1.2 }, heavy: { a: 0.9, b: 2.5, T: 1.6, s0: 2.5 } };
 const TR_CELL = 12, CAR_CAP = 160, SPAWN_W = [0.03, 0.12, 0.15, 0.45, 0.4, 0.9, 1, 0, 1, 1];
@@ -4239,6 +4243,7 @@ function spawnCar(B, V, inside) {
     const dir = RD.flag[i] & 1 ? 1 : Math.random() < 0.5 ? 1 : -1, nl = laneCount(i, dir); if (!nl) continue;
     const mix = c >= 5 ? TYPE_MIX.big : c >= 3 ? TYPE_MIX.mid : TYPE_MIX.small;
     let rr = Math.random(), t = 0; for (; t < mix.length - 1; t++) { rr -= mix[t]; if (rr <= 0) break; }
+    if (!VALLOW[t]) return;
     if (TT.slots[t].length >= CAR_CAP) continue;
     const T = VTYPES[t], vmax = [5, 7, 8, 10, 9, 12, 14, 9, 16, 19][c] * T.f * (0.85 + Math.random() * 0.25);
     const s = m0 + Math.random() * (len - m0 - m1), wk = WORKBY.get(i), jit = T.two ? (Math.random() - 0.5) * 1.1 : 0;
@@ -4359,7 +4364,7 @@ function stepTraffic(dt) {
   if (!TT.shown) { for (const m of TT.meshes) m.visible = true; TT.shown = true; TT.fill = true; }
   if (TT.pause) return true;
   const V = VBOX, M = 70, B = { x0: V.x0 - M, x1: V.x1 + M, z0: V.z0 - M, z1: V.z1 + M };
-  const want = Math.round(clamp(Math.round((B.x1 - B.x0) * (B.z1 - B.z0) / 1e6 * 150), 110, 260) * (TT.boost || 1));
+  const want = Math.round(clamp(Math.round((B.x1 - B.x0) * (B.z1 - B.z0) / 1e6 * 150), 110, 260) * (TT.boost || 1) * VSHARE);
   // retire cars that are out of sight beyond the margin, or have faded out
   let w = 0;
   for (const c of TT.cars) {
