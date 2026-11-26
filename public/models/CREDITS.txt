@@ -1,4 +1,5 @@
-Walk-mode characters and animations by Quaternius (https://quaternius.com), CC0 1.0 Universal (public domain).
-- man.glb / woman.glb: Universal Base Characters [Standard], base-colour textures only, resized to JPEG.
-- anims.glb: Universal Animation Library [Standard], the 14 clips walk mode uses, mesh removed.
-Clothes, hair and colours are added in the app (public/app.js).
+Walk-mode people by Quaternius (https://quaternius.com), CC0 1.0 Universal (public domain).
+- people/man, suit, longsleeve, casual: Animated Men Pack.
+- people/woman, woman2: Animated Women Pack.
+Combat clips removed, keyframes resampled, meshes quantized and meshopt-compressed (tools/build_people.mjs).
+Colours, the saree / kurta skirt and the clip speeds are set in the app (public/app.js).
