@@ -3472,7 +3472,7 @@ function stepTrains(dt) {
         const va = trackOff(sg, sa), vb = trackOff(sg, sb);
         const ax = a.x + a.nx * va, az = a.z + a.nz * va, bx = b.x + b.nx * vb, bz = b.z + b.nz * vb;
         let hx = ax - bx, hz = az - bz; const hl = Math.hypot(hx, hz) || 1; hx /= hl; hz /= hl;
-        putYaw(arr, c, (ax + bx) / 2, (a.y + b.y) / 2, (az + bz) / 2, hx, hz, 1);
+        putYawP(arr, c, (ax + bx) / 2, (a.y + b.y) / 2, (az + bz) / 2, hx, hz, 1, (a.y - b.y) / hl);
         if (TT.colOf[c] !== r.line) { TT.im.setColorAt(c, r.col); TT.colOf[c] = r.line; cd = true; }
         c++;
       }
@@ -3794,7 +3794,7 @@ function stepBuses(dt) {
     const [fx, fy, fz] = busPos(tr, kl, sv + 3.6), [bx, by, bz] = busPos(tr, kl, sv - 3.6), L = Lk, rev = tr.lg[kl] < 0;
     let hx = fx - bx, hz = fz - bz; const hl = Math.hypot(hx, hz);
     if (hl < 0.5) { const q = legAt(L, rev, clamp(sv, 0, L.L)); hx = q[3]; hz = q[4]; } else { hx /= hl; hz /= hl; }   // heading from the two axles: no snapping at vertices
-    putYaw(BS.im.instanceMatrix.array, c++, (fx + bx) / 2, (fy + by) / 2, (fz + bz) / 2, hx, hz, 1);
+    putYawP(BS.im.instanceMatrix.array, c++, (fx + bx) / 2, (fy + by) / 2, (fz + bz) / 2, hx, hz, 1, hl >= 0.5 ? (fy - by) / hl : 0);
     act.push(tr, (fx + bx) / 2, (fz + bz) / 2, hx, hz);
   }
   BS.im.count = c; flushInst(BS.im.instanceMatrix, c);
@@ -4162,6 +4162,16 @@ function putYaw(arr, k, x, y, z, hx, hz, sc) {
   arr[o + 8] = -hz * sc; arr[o + 9] = 0; arr[o + 10] = hx * sc; arr[o + 11] = 0;
   arr[o + 12] = x; arr[o + 13] = y; arr[o + 14] = z; arr[o + 15] = 1;
 }
+// as putYaw, pitched to a slope py (rise per horizontal metre): long vehicles lie along ramps and grades
+function putYawP(arr, k, x, y, z, hx, hz, sc, py) {
+  if (!py) { putYaw(arr, k, x, y, z, hx, hz, sc); return; }
+  const o = k * 16, c = 1 / Math.sqrt(1 + py * py), sn = py * c;
+  arr[o] = hx * c * sc; arr[o + 1] = sn * sc; arr[o + 2] = hz * c * sc; arr[o + 3] = 0;
+  arr[o + 4] = -hx * sn * sc; arr[o + 5] = c * sc; arr[o + 6] = -hz * sn * sc; arr[o + 7] = 0;
+  arr[o + 8] = -hz * sc; arr[o + 9] = 0; arr[o + 10] = hx * sc; arr[o + 11] = 0;
+  arr[o + 12] = x; arr[o + 13] = y; arr[o + 14] = z; arr[o + 15] = 1;
+}
+const _pyA = {}, _pyB = {};
 function flushInst(attr, n) {
   attr.needsUpdate = true;
   if (attr.clearUpdateRanges) { attr.clearUpdateRanges(); attr.addUpdateRange(0, Math.max(1, n) * attr.itemSize); }
@@ -4483,8 +4493,10 @@ function stepTraffic(dt) {
         c.i = pl.j; c.dir = pl.d2; c.lane = pl.lane2; c.off = pl.offB; c.s = clamp(pl.sB + over * pl.d2, 0, RD.L[pl.j]); c.mode = 0; c.plan = null;
       }
     }
-    if (c.mode === 0) roadAt(c.i, c.s, c.dir, c.off, c);
-    else { bezAt(pl.P, pl.tbl, c.cs, _bz); c.x = _bz.x; c.z = _bz.z; c.hx = _bz.hx; c.hz = _bz.hz; c.y = pl.y0 + (pl.y1 - pl.y0) * clamp(c.cs / Math.max(0.1, pl.L), 0, 1); }
+    if (c.mode === 0) {
+      roadAt(c.i, c.s, c.dir, c.off, c);
+      if (RD.br[c.i]) { roadAt(c.i, c.s + 1.5, 1, 0, _pyA); roadAt(c.i, c.s - 1.5, 1, 0, _pyB); c.py = (_pyA.y - _pyB.y) / (Math.hypot(_pyA.x - _pyB.x, _pyA.z - _pyB.z) || 1) * c.dir; } else c.py = 0;
+    } else { bezAt(pl.P, pl.tbl, c.cs, _bz); c.x = _bz.x; c.z = _bz.z; c.hx = _bz.hx; c.hz = _bz.hz; c.y = pl.y0 + (pl.y1 - pl.y0) * clamp(c.cs / Math.max(0.1, pl.L), 0, 1); c.py = (pl.y1 - pl.y0) / Math.max(0.1, pl.L); }
     {   // drawn heading turns at a bounded rate (no snapping on tight curves)
       const cr = c.rx * c.hz - c.rz * c.hx, dp = c.rx * c.hx + c.rz * c.hz, ang = Math.atan2(cr, dp), mx = 3.2 * dt;
       const t = clamp(ang, -mx, mx), ct = Math.cos(t), st = Math.sin(t), nx = c.rx * ct - c.rz * st, nz = c.rx * st + c.rz * ct;
@@ -4495,7 +4507,7 @@ function stepTraffic(dt) {
   // draw: every car owns a fixed instance slot, so colours are uploaded only when cars come and go
   for (let t = 0; t < VTYPES.length; t++) {
     const im = TT.meshes[t], sl = TT.slots[t], arr = im.instanceMatrix.array;
-    for (let q = 0; q < sl.length; q++) { const c = sl[q], f = c.fa, sc = (f >= 1 ? 1 : 0.2 + 0.8 * f * f * (3 - 2 * f)) * zf; putYaw(arr, q, c.x, c.y, c.z, c.rx, c.rz, sc); }
+    for (let q = 0; q < sl.length; q++) { const c = sl[q], f = c.fa, sc = (f >= 1 ? 1 : 0.2 + 0.8 * f * f * (3 - 2 * f)) * zf; putYawP(arr, q, c.x, c.y, c.z, c.rx, c.rz, sc, c.py || 0); }
     im.count = sl.length; flushInst(im.instanceMatrix, sl.length);
     if (TT.cdirty[t]) { im.instanceColor.needsUpdate = true; TT.cdirty[t] = false; }
   }
