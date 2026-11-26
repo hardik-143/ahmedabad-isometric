@@ -213,6 +213,11 @@ The timetable is turned into a schedule in arrival order. A bus takes the front 
 if only the front is taken (and leaves after the bus ahead), or queues behind. A bus pulling out blocks the stop for
 14 s. Runs average at most ~9 m/s with gentle acceleration, and a bus is never faster than the one ahead on the same
 leg. On top of that, a bus closing on the one ahead in its lane eases off and runs late rather than through it.
+The bus is modelled in Blender (`tools/bus_blender.py`, run headless with the `bpy` module, then `tools/bus_pack.mjs`
+for meshopt): a 12 m Janmarg AC bus, white over a blue skirt with an orange waist stripe, bevelled corners, a raked
+windscreen under an amber LED destination board, a window band, two sliding doors on the station side, open wheel arches
+with rims, an AC pod, mirrors and lamps; ~2,250 triangles, 35 KB. Its parts are merged into the instanced bus mesh and
+the lamps and windows keep their night glow by material name.
 Buses are steered like buses: each path is moved into its lane and then driven by pure pursuit (a point 7 m ahead)
 with a 9.5 m minimum turning radius, so corners are swept and reversals become wide loops; the ends are pulled back
 onto the path so a bus still stops at its bay. Where the busway network has a gap, the build re-routes the leg over the
