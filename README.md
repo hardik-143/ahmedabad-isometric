@@ -2,6 +2,12 @@
 
 A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / WebGL), built from open data.
 
+> **Current main is the base map.** Buildings (and the rooftop details, pol gates, darwajas, construction sites and
+> factories that go with them), weather and golden hour / night are switched off, and only auto rickshaws drive;
+> roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees, the Patang Hotel and walk mode stay. Every layer is still in the
+> code: flip the switches in the `CFG` object at the top of `public/app.js`. The branch `full-city` has everything on,
+> 
+
 - ~150k real building footprints with surveyed heights, 73k road segments, the Sabarmati and lakes, parks, rail
 - Flyovers and river bridges lifted onto decks where roads actually cross roads, rail or water
 - Narendra Modi & Sardar Patel stadium bowls, Atal Bridge with its kite canopy
@@ -145,14 +151,20 @@ cloud deck with moving shadows.
 Fog: a ground fog about 35 m deep, so towers rise out of it. Heatwave: a strong, warm sun, washed-out colours and a
 dusty haze.
 
-### Explore on foot (work in progress)
-Press F (or the button at the top) to drop into the street at the map centre with a third-person camera. WASD to move,
-Shift to run, Space to jump, mouse drag or click-to-lock to look, wheel to zoom. C cycles on foot / scooter / auto
-rickshaw; E boards a metro train or BRTS bus at a station (Q skips the wait) and gets off at the next stop. Buildings,
-river walls and water block you; traffic brakes for you. The avatar picker sets name, outfit (shirt, t-shirt, kurta,
-saree, salwar), colours, skin and hair. Sign-in uses Clerk when a publishable key is set in
-`<meta name="clerk-key">`; without one the profile is kept in localStorage. Esc returns to the map.
-Known issues: collision can over-block near the riverfront; boarding and riding are not fully tested yet.
+### Explore on foot
+Press F (or the button at the top) to drop into the street with a third-person camera that swings in behind you, GTA
+style. People are Quaternius's CC0 Universal Base Characters driven by clips from his Universal Animation Library
+(`public/models`, about 2 MB, loaded only when you go on foot): idle, walk, jog, sprint, jump, driving, sitting.
+Clothes are painted in one shared shader from the bind-pose position (shirt, t-shirt, kurta, saree, salwar kameez,
+trousers, shoes, any colours and skin tone); hair, caps and the saree / kurta skirt ride on the head and pelvis bones.
+The nearest pedestrians (up to 24) swap their little figures for animated people dressed from their own colours.
+Controls: WASD run, Shift sprint, Caps Lock walk, Space jump, mouse or drag to look, wheel to zoom. F gets you on the
+auto rickshaw or scooter beside you (out of traffic, or one you left parked) and off again, where it stays parked;
+C gives you your own scooter or auto; E boards a metro train or a Janmarg bus at a station (Q skips the wait). Flyover
+ramps are solid from the side and can be driven up; decks keep you on with their parapets; piers and metro columns
+block; you can pass under high decks. Walking into an area shows its name, getting on a vehicle shows its name, and the
+radar turns round. The avatar picker sets name, outfit, colours, skin and hair; sign-in uses Clerk when a publishable
+key is set in `<meta name="clerk-key">`, otherwise the profile is kept in localStorage.
 
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
