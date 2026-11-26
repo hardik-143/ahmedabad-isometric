@@ -201,6 +201,10 @@ bin beside every third lamp, a makai lari (corn cart with a coal brazier and a s
 "I ❤ AMDAVAD" sign on the promenade nearest the Patang Hotel (three.js TextGeometry, letters in kite colours). All of
 it is solid.
 
+The riverfront road has its own lights, different from the promenade's globes: 9 m tapered galvanised poles on the
+river-side kerb every ~32 m, a curved arm over the carriageway with an LED head that glows at night (placed along any
+major road that runs within 70 m of the channel wall, parallel to it).
+
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
 str3939/Janmarg-BRTS-Guide). The GTFS has no shapes, so each route is routed station-to-station over the major road
@@ -216,11 +220,15 @@ The timetable is turned into a schedule in arrival order. A bus takes the front 
 if only the front is taken (and leaves after the bus ahead), or queues behind. A bus pulling out blocks the stop for
 14 s. Runs average at most ~9 m/s with gentle acceleration, and a bus is never faster than the one ahead on the same
 leg. On top of that, a bus closing on the one ahead in its lane eases off and runs late rather than through it.
-The bus is modelled in Blender (`tools/bus_blender.py`, run headless with the `bpy` module, then `tools/bus_pack.mjs`
-for meshopt): a 12 m Janmarg AC bus, white over a blue skirt with an orange waist stripe, bevelled corners, a raked
-windscreen under an amber LED destination board, a window band, two sliding doors on the station side, open wheel arches
-with rims, an AC pod, mirrors and lamps; ~2,250 triangles, 35 KB. Its parts are merged into the instanced bus mesh and
-the lamps and windows keep their night glow by material name.
+The bus is modelled in Blender (`tools/vehicles_blender.py`, run headless with the `bpy` module, then
+`tools/bus_pack.mjs` for meshopt, into `public/models/vehicles.glb`): a 12 m Janmarg AC bus, white over a blue skirt
+with an orange waist stripe, bevelled corners, a raked windscreen under an amber LED destination board, a window band,
+two sliding doors on the station side, open wheel arches, an AC pod, mirrors and lamps. Its wheels are separate
+instances that roll with the distance driven, and the front pair steers along the path (the angle between the bus and
+the path at its front axle). Only buses within ~900 m are drawn (all of them still drive, queue and block), wheels
+within ~260 m. The same file has the scooter (step-through, its panels in your colour) and the CNG auto rickshaw
+(green body, yellow canvas roof, open footwell), each with wheels that spin and a front wheel that turns with the
+steering, less at speed; you sit on them with your feet on the floorboard and your hands on the bars (two-bone IK).
 Buses are steered like buses: each path is moved into its lane and then driven by pure pursuit (a point 7 m ahead)
 with a 9.5 m minimum turning radius, so corners are swept and reversals become wide loops; the ends are pulled back
 onto the path so a bus still stops at its bay. Where the busway network has a gap, the build re-routes the leg over the
