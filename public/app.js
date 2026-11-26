@@ -5742,14 +5742,23 @@ function loadChars() {
       import('three/addons/utils/SkeletonUtils.js'), import('three/addons/libs/meshopt_decoder.module.js')]);
     CHAR.SK = SK;
     const L = new GLTFLoader(); L.setMeshoptDecoder(MeshoptDecoder);
-    const gs = await Promise.all(CH_MODELS.map((m) => L.loadAsync(`models/people/${m}.glb`)));
+    // walk, run and idle are motion capture (the three.js Soldier's Mixamo clips), retargeted offline onto each body
+    // (tools/retarget: rest poses aligned bone by bone, the hips' drift removed, the feet put back at the ankles)
+    const [gs, MOCAP] = await Promise.all([Promise.all(CH_MODELS.map((m) => L.loadAsync(`models/people/${m}.glb`))),
+      fetch('models/people/mocap.json').then((r) => (r.ok ? r.json() : null)).catch(() => null)]);
     gs.forEach((g, k) => {
       const m = CH_MODELS[k], sc = g.scene; sc.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(sc), H = box.max.y - box.min.y, S = (CH_FEM[m] ? 1.62 : 1.72) / H;
       const P = (n) => { const b = sc.getObjectByName(n); return b ? b.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(); };
       const clips = {}; for (const c of g.animations) clips[c.name] = c;
+      let wU = CH_WALK_U, rU = CH_RUN_U;
+      if (MOCAP && MOCAP[m]) for (const nm of ['Walk', 'Run', 'Idle']) {
+        const d = MOCAP[m][nm]; if (!d) continue;
+        clips[nm] = THREE.AnimationClip.parse(d.clip);
+        if (nm === 'Walk' && d.speed) wU = d.speed; if (nm === 'Run' && d.speed) rU = d.speed;
+      }
       CHAR.tpl[m] = sc;
-      CHAR.info[m] = { S, H, clips, walk: CH_WALK_U * S, run: CH_RUN_U * S, hipsRest: sc.getObjectByName('Hips').matrixWorld.clone(),
+      CHAR.info[m] = { S, H, clips, walk: wU * S, run: rU * S, hipsRest: sc.getObjectByName('Hips').matrixWorld.clone(),
         hipY: P('Hips').y, kneeY: P('LowerLegL').y, footY: P('FootL').y, legX: Math.abs(P('UpperLegL').x - P('Hips').x), cx: P('Hips').x, cz: P('Hips').z };
     });
     CHAR.state = 2;
