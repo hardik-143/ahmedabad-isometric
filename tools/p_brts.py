@@ -494,40 +494,133 @@ def build_brts(R2, log=print):
     pairs = sorted({(a[0], b[0]) for tr in trips for a, b in zip(tr[:-1], tr[1:]) if a[0] != b[0]})
     legs2, leg_idx = [], {}
     stp = np.array([[st['x'], st['y']] for st in stations]) if stations else np.zeros((0, 2))
+
+    def road_path(a, b):   # the road route between two stations' stops (kerb lane), for gaps in the busway network
+        best = None
+        for ia in stations[a]['ids']:
+            for ib in stations[b]['ids']:
+                if ia not in SNAP or ib not in SNAP:
+                    continue
+                try:
+                    pth = nx.shortest_path(NG, ('s', ia), ('s', ib), weight='w')
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    continue
+                w = nx.path_weight(NG, pth, 'w')
+                if best is None or w < best[0]:
+                    best = (w, pth, ia)
+        if not best:
+            return None
+        _, pth, ia = best
+        pts, offb = [[stp[a][0], stp[a][1], 0.0]], [None]
+        for u, v in zip(pth[:-1], pth[1:]):
+            d = NG[u][v]; i = d['i']; r = R2[i]
+            if 'part' in d:
+                t, e = d['part']; t0, t1 = (t, e) if u == ('s', ia) else (e, t)
+            else:
+                t0, t1 = (0.0, lines[i].length) if pos[i][0] == u else (lines[i].length, 0.0)
+            if abs(t1 - t0) < 0.05:
+                continue
+            g = shapely.ops.substring(lines[i], min(t0, t1), max(t0, t1))
+            if g.geom_type != 'LineString':
+                continue
+            c = np.asarray(g.coords)
+            if t1 < t0:
+                c = c[::-1]
+            if r['bridge']:
+                xy = np.asarray(r['xy']); svv = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
+                h = np.interp([lines[i].project(shapely.Point(*q)) for q in c], svv, np.asarray(r['z'], float))
+            else:
+                h = np.zeros(len(c))
+            hw_ = r['hw']; ob = 0.0 if hw_ < 5 else min(hw_ - 1.9, hw_ * 0.5)
+            pts.extend(np.column_stack([c, h]).tolist()); offb.extend([ob] * len(c))
+        pts.append([stp[b][0], stp[b][1], 0.0]); offb.append(None)
+        return pts, offb
+
+    def tidy(P3, ob):   # P3 (n,3), ob (n,) with -1 = busway lane: no out-and-back spurs, rounded corners, 8 m samples
+        seg = np.hypot(*np.diff(P3[:, :2], axis=0).T); sv = np.concatenate([[0], np.cumsum(seg)]); Lt = sv[-1]
+        st4 = np.linspace(0, Lt, max(2, int(Lt / 4) + 1))
+        D = np.column_stack([np.interp(st4, sv, P3[:, k]) for k in range(3)] + [np.interp(st4, sv, ob)])
+        keep, i, n = [0], 0, len(D)
+        while i < n - 1:   # a path that runs out and comes straight back: cut the excursion
+            jj = None
+            for j in range(min(n - 1, i + 45), i + 3, -1):
+                if np.hypot(D[j, 0] - D[i, 0], D[j, 1] - D[i, 1]) < 3.0 and np.max(np.hypot(D[i:j, 0] - D[i, 0], D[i:j, 1] - D[i, 1])) < 90:
+                    jj = j; break
+            i = jj if jj else i + 1
+            keep.append(i)
+        D = D[keep]
+        base = shapely.LineString(D[:, :2])
+        if base.length < 1:
+            return None
+        sb = np.array([base.project(shapely.Point(*q)) for q in D[:, :2]])
+        c = np.asarray(base.simplify(0.6).coords)
+        for it in range(3):   # bounded corner cutting: turns become arcs of up to ~10 m radius, straights stay put
+            if len(c) < 3:
+                break
+            d = np.diff(c, axis=0); L = np.hypot(*d.T) + 1e-9; u = d / L[:, None]
+            turn = np.abs(np.arctan2(u[:-1, 0] * u[1:, 1] - u[:-1, 1] * u[1:, 0], (u[:-1] * u[1:]).sum(1)))
+            mc = 10.0 / (2 ** it); out = [c[0]]
+            for k in range(1, len(c) - 1):
+                if turn[k - 1] < math.radians(3):
+                    out.append(c[k]); continue
+                out.append(c[k] - u[k - 1] * min(0.3 * L[k - 1], mc)); out.append(c[k] + u[k] * min(0.3 * L[k], mc))
+            out.append(c[-1]); c = np.array(out)
+        sm = shapely.LineString(c); Lt = sm.length
+        n = max(2, int(Lt / 8) + 1); st_ = np.linspace(0, Lt, n)
+        xy = np.array([sm.interpolate(t).coords[0] for t in st_])
+        sp = np.array([base.project(shapely.Point(*q)) for q in xy])
+        z = np.interp(sp, sb, D[:, 2]); o = np.interp(sp, sb, D[:, 3])
+        return np.column_stack([xy, z]), o, Lt
+
+    n_fb = n_sp = 0
     for a, b in pairs:
+        pts, offb = [], []
         try:
             path = nx.shortest_path(CG, ('st', a), ('st', b), weight='w')
+            for u, v in zip(path[:-1], path[1:]):
+                d = CG[u][v]
+                if 'geom' in d:
+                    c = d['geom'].copy(); ob = d.get('off', None)
+                else:
+                    sub = shapely.ops.substring(cl[d['j']], d['sa'], d['sb'])
+                    c = np.column_stack([np.asarray(sub.coords), np.zeros(len(sub.coords))]) if sub.geom_type == 'LineString' else np.zeros((0, 3))
+                    ob = None
+                if d['na'] != u:
+                    c = c[::-1]
+                if len(pts) and len(c):
+                    c = c[1:]
+                pts.extend(c.tolist()); offb.extend([ob] * len(c))
         except (nx.NetworkXNoPath, nx.NodeNotFound):
-            continue
-        pts, offb = [], []
-        for u, v in zip(path[:-1], path[1:]):
-            d = CG[u][v]
-            if 'geom' in d:
-                c = d['geom'].copy(); ob = d.get('off', None)
-            else:
-                sub = shapely.ops.substring(cl[d['j']], d['sa'], d['sb'])
-                c = np.column_stack([np.asarray(sub.coords), np.zeros(len(sub.coords))]) if sub.geom_type == 'LineString' else np.zeros((0, 3))
-                ob = None
-            if d['na'] != u:
-                c = c[::-1]
-            if len(pts) and len(c):
-                c = c[1:]
-            pts.extend(c.tolist()); offb.extend([ob] * len(c))
+            pts = []
+        direct = float(np.hypot(*(stp[a] - stp[b])))
+        if len(pts) >= 2:
+            P3 = np.asarray(pts, float); Lc = float(np.sum(np.hypot(*np.diff(P3[:, :2], axis=0).T)))
+        else:
+            Lc = 1e12
+        if Lc > 2.2 * direct + 300:   # the busway network has a gap here: drive the roads instead
+            rp = road_path(a, b)
+            if rp and len(rp[0]) >= 2:
+                P3r = np.asarray(rp[0], float); Lr = float(np.sum(np.hypot(*np.diff(P3r[:, :2], axis=0).T)))
+                if Lr < Lc:
+                    pts, offb, n_fb = rp[0], rp[1], n_fb + 1
         if len(pts) < 2:
             continue
         P3 = np.asarray(pts, float)
-        seg_l = np.hypot(*np.diff(P3[:, :2], axis=0).T); sv = np.concatenate([[0], np.cumsum(seg_l)]); Lt = sv[-1]
+        ob = np.array([-1.0 if o is None else o for o in offb])
+        T = tidy(P3, ob)
+        if T is None:
+            continue
+        rs, obi, Lt = T
         if Lt < 1:
             continue
-        n = max(2, int(Lt / 8) + 1); st_ = np.linspace(0, Lt, n)
-        rs = np.column_stack([np.interp(st_, sv, P3[:, 0]), np.interp(st_, sv, P3[:, 1]), np.interp(st_, sv, P3[:, 2])])
-        ob = np.array([np.nan if o is None else o for o in offb]); obi = np.interp(st_, sv, np.nan_to_num(ob, nan=-1.0))
+        n = len(rs)
         dd = np.min(np.hypot(rs[:, None, 0] - stp[None, :, 0], rs[:, None, 1] - stp[None, :, 1]), axis=1) if len(stp) else np.full(n, 1e9)
         fl = np.clip(1 - (dd - (ST_LEN / 2 + 2)) / 18.0, 0, 1)
         off = 1.85 + (ST_W / 2) * (fl * fl * (3 - 2 * fl))
         off = np.where(obi >= 0, obi, off)
         leg_idx[(a, b)] = len(legs2)
         legs2.append(dict(ab=(a, b), pts=np.round(rs, 1), off=np.round(off, 2), L=Lt))
+    log(f'brts: {n_fb} bus paths re-routed over the roads where the busway network has a gap; all paths spur-free with rounded corners')
     trips2 = []
     for tr in trips:   # a trip with an unroutable hop runs as separate pieces
         ls = []
