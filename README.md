@@ -5,7 +5,7 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 > **Current main is the base map.** Buildings (and the rooftop details, pol gates, darwajas, construction sites and
 > factories that go with them), weather and golden hour / night are switched off, and there is no road traffic (only
 > Janmarg buses and the metro run). It opens straight on foot at the foot of the Patang Hotel, with no map view
-> (`CFG.start`). Roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees and the Patang Hotel stay. Every layer is still in the
+> (`CFG.start`); C still gives you a cycle, scooter or rickshaw. Roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees and the Patang Hotel stay. Every layer is still in the
 > code: flip the switches in the `CFG` object at the top of `public/app.js`. The branch `full-city` has everything on,
 > 
 
@@ -165,7 +165,7 @@ when moving; height eases onto ramps and kerbs; the camera target is eased. The 
 people, dressed from their own colours.
 Controls: WASD run, Shift sprint, Caps Lock walk, Space jump, mouse or drag to look, wheel to zoom. F gets you on the
 auto rickshaw or scooter beside you (out of traffic, or one you left parked) and off again, where it stays parked;
-C gives you your own scooter or auto; E boards a metro train or a Janmarg bus at a station (Q skips the wait). Flyover
+C cycles through your own cycle, scooter and auto rickshaw and back on foot (on the cycle the sitting clip is leaned forward and two-bone IK puts the feet on the turning pedals and the hands on the bars; two-wheelers lean into turns); E boards a metro train or a Janmarg bus at a station (Q skips the wait). Flyover
 ramps are solid from the side and can be driven up; decks keep you on with their parapets; piers and metro columns
 block; you can pass under high decks. Walking into an area shows its name, getting on a vehicle shows its name, and the
 radar turns round.
