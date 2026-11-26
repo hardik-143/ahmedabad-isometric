@@ -3905,6 +3905,7 @@ function buildBRTS() {
   const bg = BG.mesh(VEHMAT).geometry;
   const im = new THREE.InstancedMesh(bg, VEHMAT, 700); im.count = 0; im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; im.frustumCulled = false;
   group.ground.add(im);
+  loadBusModel(im);   // the Blender-modelled bus replaces these boxes once it has loaded
   const legs = B.legs.map((lg) => {
     const p = lg.p, n = p.length / 3, s = new Float32Array(n);
     for (let j = 1; j < n; j++) s[j] = s[j - 1] + Math.hypot(p[j * 3] - p[j * 3 - 3], p[j * 3 + 1] - p[j * 3 - 2]);
@@ -3919,6 +3920,32 @@ function buildBRTS() {
   }
   BUSES = { im, legs, trips, clock: TOD_CLOCK[todName] || 12.5 * 3600, last: todName };
   busSchedule(B);
+}
+// The Janmarg bus modelled in Blender (tools/bus_blender.py -> models/bus.glb, ~1,900 triangles): its parts are merged
+// into one geometry for the instanced buses, painted per material, and the lamps keep their night glow by name
+async function loadBusModel(im) {
+  try {
+    const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([import('three/addons/loaders/GLTFLoader.js'), import('three/addons/libs/meshopt_decoder.module.js')]);
+    const L = new GLTFLoader(); L.setMeshoptDecoder(MeshoptDecoder);
+    const g = await L.loadAsync('models/bus.glb');   // meshopt-compressed and quantized (tools/bus_pack.mjs)
+    const KIND = { HeadLamp: 1, TailLamp: 2, LED: 3, Indicator: 3, Glass: 4 }, parts = [];
+    const flt = (a) => { const f = new Float32Array(a.count * 3); for (let i = 0; i < a.count; i++) { f[i * 3] = a.getX(i); f[i * 3 + 1] = a.getY(i); f[i * 3 + 2] = a.getZ(i); } return new THREE.BufferAttribute(f, 3); };
+    g.scene.updateMatrixWorld(true);
+    g.scene.traverse((o) => {
+      if (!o.isMesh) return;
+      let geo = new THREE.BufferGeometry(); geo.setAttribute('position', flt(o.geometry.attributes.position)); geo.setAttribute('normal', flt(o.geometry.attributes.normal));
+      if (o.geometry.index) geo.setIndex(Array.from(o.geometry.index.array));
+      geo.applyMatrix4(o.matrixWorld); if (geo.index) geo = geo.toNonIndexed();
+      const n = geo.attributes.position.count, c = o.material.color, k = KIND[o.material.name] || 0;
+      const col = new Float32Array(n * 3), ar = new Float32Array(n * 4);
+      for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; ar[i * 4] = k; }
+      for (const a of Object.keys(geo.attributes)) if (a !== 'position' && a !== 'normal') geo.deleteAttribute(a);
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3)); geo.setAttribute('aR', new THREE.BufferAttribute(ar, 4));
+      parts.push(geo);
+    });
+    const merged = mergeGeometries(parts); if (!merged) return;
+    const old = im.geometry; im.geometry = merged; old.dispose();
+  } catch (e) { console.warn('bus model', e); }
 }
 const _bp = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bs = new THREE.Vector3(1, 1, 1), _by = new THREE.Vector3(0, 1, 0), _bm = new THREE.Matrix4();
 // The line a bus drives: the path in its lane (left of travel), then steered like a real bus, which cannot turn tighter
@@ -7148,7 +7175,7 @@ function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn
   } });
   return out;
 }
-window.AMD = { DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
