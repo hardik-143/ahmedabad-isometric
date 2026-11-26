@@ -2,7 +2,7 @@
 
 A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / WebGL), built from open data.
 
-> **Current main is the base map.** Buildings (and the rooftop details, pol gates, darwajas, construction sites and
+> **This is the full-city branch: every layer is on.** On main: Buildings (and the rooftop details, pol gates, darwajas, construction sites and
 > factories that go with them), weather and golden hour / night are switched off, and only auto rickshaws drive;
 > roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees, the Patang Hotel and walk mode stay. Every layer is still in the
 > code: flip the switches in the `CFG` object at the top of `public/app.js`. The branch `full-city` has everything on,

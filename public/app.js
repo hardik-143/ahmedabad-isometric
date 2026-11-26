@@ -14,17 +14,17 @@ window.addEventListener('error', (e) => showErr('Error: ' + (e.message || e)));
 window.addEventListener('unhandledrejection', (e) => showErr('Error: ' + (e.reason && e.reason.message || e.reason)));
 
 // ---------------------------------------------------------------- feature switches
-// main ships the base map (roads, river and bridges, metro, BRTS, Patang); branch full-city has every layer on.
+// branch full-city: every layer on (main ships the base map with most of them off).
 // Flip a switch to bring a layer back.
 const CFG = {
-  buildings: false,          // footprints, rooftop tanks and stair-rooms, pol gates, darwajas, construction sites
-  landmarks: ['patang'],     // bespoke 3D landmarks kept: any of 'patang', 'iskcon', 'taj' (Ellis and Atal bridges always stay)
+  buildings: true,           // footprints, rooftop tanks and stair-rooms, pol gates, darwajas, construction sites
+  landmarks: ['patang', 'iskcon', 'taj'],     // bespoke 3D landmarks kept: any of 'patang', 'iskcon', 'taj' (Ellis and Atal bridges always stay)
   trees: true,
-  industry: false,           // GIDC factories' stacks, tanks, ponds, smoke and smog
-  weather: false,            // weather presets and the R key; the sky stays clear
-  times: ['morning', 'noon'],// time-of-day buttons offered (of morning, noon, golden, night)
+  industry: true,            // GIDC factories' stacks, tanks, ponds, smoke and smog
+  weather: true,             // weather presets and the R key; the sky stays clear
+  times: ['morning', 'noon', 'golden', 'night'],// time-of-day buttons offered (of morning, noon, golden, night)
   walk: true,                // explore on foot (third person, animated people, enter autos with F)
-  vehicles: ['auto'],        // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
+  vehicles: ['hatch', 'sedan', 'suv', 'auto', 'scooter', 'bike', 'tempo', 'truck'],        // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
 };
 const TIPS = [
   CFG.buildings && 'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
