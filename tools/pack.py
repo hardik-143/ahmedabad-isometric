@@ -615,3 +615,8 @@ meta['build'] = _h.hexdigest()[:12]   # bins are fetched as ?v=<build> so a cach
 json.dump(meta, open(f'{SITE}/data/meta.json', 'w'), separators=(',', ':'))
 print('meta KB', os.path.getsize(f'{SITE}/data/meta.json') // 1024, 'stations', [s['name'] for s in stations])
 print('done', round(time.time() - t0, 1))
+
+# per-chunk files for on-foot streaming (data/s/<cx>_<cy>.bin)
+if FMT == 'bin':
+    import os as _os, sys as _sys; _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    import stream_pack; stream_pack.write_stream(f'{SITE}/data')

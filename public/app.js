@@ -608,6 +608,15 @@ function decodeBld(buf, off) {
   return { n, nR, nP, floors, style, kind, rc, rl, abs, polT, face, face2, rA, rB, rise };
 }
 
+// Ahmedabad paint: most ordinary blocks are painted, not left in the survey's pale tints - raspberry, coral, peach, cream,
+// mustard, teal, sky, lilac, pink, mint, brick; picked per building so the street dress can match its parapets
+const PAINTS = ['#c8434f', '#e2735f', '#f0a868', '#f2dcaa', '#e3b54e', '#5fa3a0', '#3f8a86', '#86b5dc', '#a993cf', '#ef9fb2', '#9fd0b2', '#e9e2d2', '#b65c3c', '#d9666b', '#f5c78e']
+  .map(hexLin8);
+function bldPaint(b, ox, oz, pal) {
+  if (pal.ws !== 1 && pal.ws !== 3) return null;
+  const h = hash1(b * 7919 + ox * 3 + oz * 7 + 11); if (h > 0.72) return null;
+  return PAINTS[Math.floor(hash1(b * 104729 + ox + oz * 5) * PAINTS.length)];
+}
 const flat = new Float64Array(2 * 70000);
 const yScratch = new Float64Array(4096), dScratch = new Float64Array(4096);
 const STATS = { v: 0, t: 0 };
@@ -619,7 +628,7 @@ function setFarLod(on) {
 // colours for the wooden / stone parts of pol houses (sRGB 0-255)
 const TEAK = [96, 62, 36], TEAK_D = [64, 40, 24], OTLA = [[206, 196, 178], [168, 84, 60], [190, 186, 176], [214, 205, 186]];
 
-function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx) {
+function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx, b0 = 0, b1 = -1) {
   const { n, floors, style, kind, rc, rl, abs, polT, face, face2, rA, rB, rise } = S;
   const ringStart = new Uint32Array(n + 1), ptStart = new Uint32Array(n + 1);
   let rr = 0, pp = 0;
@@ -629,10 +638,11 @@ function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx) {
     const np = ptStart[j + 1] - ptStart[j];
     return polT[j] ? [6 * np + 420, 12 * np + 760] : [5 * np, 6 * np + 3 * (np + 2 * (rc[j] - 1))];
   };
-  let i = 0;
-  while (i < n) {
+  if (b1 < 0) b1 = n;
+  let i = b0;
+  while (i < b1) {
     let vc = 0, ic = 0, j = i;
-    for (; j < n; j++) {
+    for (; j < b1; j++) {
       if (!filter(kind[j])) continue;
       const [nv, ni] = est(j);
       if (vc + nv > 65000 && vc > 0) break;
@@ -677,7 +687,8 @@ function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx) {
       const H = fl * 31 + 5;
       const pal = PAL[style[b]];
       const jit = 0.93 + 0.12 * hash1(b * 7919 + ox);
-      const wc = [pal.w[0] * jit, pal.w[1] * jit, pal.w[2] * jit];
+      const paint = polT[b] ? null : bldPaint(b, ox, oz, pal), w0 = paint || pal.w;
+      const wc = [w0[0] * jit, w0[1] * jit, w0[2] * jit];
       const r0 = ringStart[b], r1 = ringStart[b + 1];
       const p0 = ptStart[b], np = ptStart[b + 1] - p0;
       if (polT[b]) {
@@ -1987,20 +1998,73 @@ function nearestRoad(x, z) {
 // ---------------------------------------------------------------- chunks
 function chunkOrigin(cx, cy) { return [(cx + 0.5) * META.chunk, -(cy + 0.5) * META.chunk]; }
 
+// ---------------------------------------------------------------- streaming (on foot): only the chunks round you
+// GTA-style: on foot nothing city-wide is downloaded for buildings, cell houses, rooftop props or trees. Each 1 km chunk
+// within ~1.6 km of you is fetched from its own small file (data/s/<cx>_<cy>.bin, ~15 KB on average), meshed one
+// chunk a frame, and dropped again once you are ~2.6 km away; fog closes the view before the edge.
+const STREAM = !!(CFG.walk && CFG.start);
+const LAYER_AT = { bld: ['bo', 'bl'], cells: ['co', 'cl'], props: ['po', 'pl'], trees: ['to', 'tl'] };
+function chBuf(ch, k) {   // [buffer, offset] of a chunk's slice of a layer, or null
+  const [o, l] = LAYER_AT[k]; if (!ch[l]) return null;
+  if (STREAM) return ch.sd && ch.sd[k] ? [ch.sd[k], 0] : null;
+  return BUF[k] ? [BUF[k], ch[o]] : null;
+}
+const STR = { busy: 0, want: 1600, drop: 2600, pend: [] };
+const PERF = { blocks: 0, dress: 0, col: 0, cells: 0 };   // slowest of each (ms), for tuning
+async function loadChunk(ch) {
+  ch.sdLoading = true; STR.busy++;
+  try {
+    const v = META.build ? `?v=${META.build}` : '';
+    const res = await fetch(`data/s/${ch.cx}_${ch.cy}.bin${v}`); if (!res.ok) throw new Error(res.status);
+    let ab = await res.arrayBuffer(); const u8 = new Uint8Array(ab);
+    if (u8[0] === 0x1f && u8[1] === 0x8b) ab = await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+    const dv = new DataView(ab), sd = {}; let o = 16;
+    ['bld', 'cells', 'props', 'trees'].forEach((k, i) => { const L = dv.getUint32(i * 4, true); sd[k] = L ? ab.slice(o, o + L) : null; o += L; });
+    ch.sd = sd; ch.wS = null; STR.pend.push(ch); WCOL.stale = true; dirty = true;
+  } catch (e) { ch.sdFail = (ch.sdFail || 0) + 1; }
+  finally { ch.sdLoading = false; STR.busy--; }
+}
+function unloadChunk(ch) {
+  for (const m of ch.reg.concat(ch.blk)) { group.bld.remove(m); m.geometry.dispose(); }
+  ch.reg = []; ch.blk = []; ch.blocks = false; disposeNear(ch);
+  ch.sd = null; ch.wS = null; ch.tcol = null; WCOL.stale = true;
+}
+function chunkBlocks(ch) {   // the chunk's buildings (blocks of cell houses are drawn until the cells replace them)
+  ch.blocks = true;
+  const cb = chBuf(ch, 'bld'); if (!cb) return;
+  const S = decodeBld(cb[0], cb[1]);
+  buildingMeshes(S, ch.ox, ch.oz, (kd) => kd === 0, false, ch.reg, STREAM ? null : mapCtx);
+  buildingMeshes(S, ch.ox, ch.oz, (kd) => kd === 1, true, ch.blk, STREAM ? null : mapCtx);
+  for (const m of ch.reg) group.bld.add(m);
+  for (const m of ch.blk) { group.bld.add(m); m.visible = !(ch.cells && ch.cells.length); }
+}
+function stepStream() {
+  if (!STREAM || !chunks.length) return false;
+  const F = WALK.on ? walkFocus() : { x: view.tx, z: view.tz };
+  const want = [];
+  for (const ch of chunks) {
+    if (!(ch.bl || ch.cl || ch.pl || ch.tl)) continue;
+    const d = Math.hypot(ch.ox - F.x, ch.oz - F.z);
+    if (d < STR.want && !ch.sd && !ch.sdLoading && (ch.sdFail || 0) < 3) want.push([d, ch]);
+    else if (d > STR.drop && (ch.sd || ch.blocks)) unloadChunk(ch);
+  }
+  want.sort((a, b) => a[0] - b[0]);
+  for (const [, ch] of want) { if (STR.busy >= 4) break; loadChunk(ch); }
+  // mesh one arrived chunk a frame, nearest first
+  if (STR.pend.length) {
+    STR.pend.sort((a, b) => Math.hypot(a.ox - F.x, a.oz - F.z) - Math.hypot(b.ox - F.x, b.oz - F.z));
+    const ch = STR.pend.shift(); if (ch.sd && !ch.blocks) { const t0 = performance.now(); chunkBlocks(ch); PERF.blocks = Math.max(PERF.blocks, performance.now() - t0); return true; }
+  }
+  return false;
+}
 async function buildFarBuildings(progressBase, progressSpan) {
   const total = META.chunks.length; let t0 = performance.now();
   mapCtx.fillStyle = '#4a505a';
   for (let k = 0; k < total; k++) {
     const [cx, cy, bo, bl, co, cl, po, pl, to, tl] = META.chunks[k];
     const [ox, oz] = chunkOrigin(cx, cy);
-    const ch = { cx, cy, ox, oz, bo, bl, co, cl, po, pl, to, tl, reg: [], blk: [], cells: null, trees: null, props: null, near: false, lastUsed: 0 };
-    if (bl && BUF.bld) {
-      const S = decodeBld(BUF.bld, bo);
-      buildingMeshes(S, ox, oz, (kd) => kd === 0, false, ch.reg, mapCtx);
-      buildingMeshes(S, ox, oz, (kd) => kd === 1, true, ch.blk, mapCtx);
-      for (const m of ch.reg) group.bld.add(m);
-      for (const m of ch.blk) group.bld.add(m);
-    }
+    const ch = { cx, cy, ox, oz, bo, bl, co, cl, po, pl, to, tl, reg: [], blk: [], cells: null, trees: null, props: null, near: false, lastUsed: 0, blocks: false };
+    if (!STREAM) chunkBlocks(ch);   // on foot, chunks are fetched and built as you approach them
     chunks.push(ch);
     if (performance.now() - t0 > 40) { setProgress(progressBase + progressSpan * (k / total), BUF.bld ? `Raising ${META.counts.buildings.toLocaleString()} buildings… ${Math.round(k / total * 100)}%` : 'Preparing the map…'); await tick(); t0 = performance.now(); }
   }
@@ -2053,17 +2117,22 @@ function initDetailGeos() {
 const TREE_COLS = ['#557f2f', '#6f9a36', '#86924a', '#b9653a', '#47732d'].map((h) => new THREE.Color(h));
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
 
-function buildCells(ch) {
-  ch.cells = [];
-  if (!ch.cl || !BUF.cells) return;
-  const S = decodeBld(BUF.cells, ch.co);
-  buildingMeshes(S, ch.ox, ch.oz, () => true, false, ch.cells, null);
-  for (const m of ch.cells) group.near.add(m);
+function buildCells(ch) {   // a slice of ~400 cell houses a call, so a dense chunk never stalls a frame; true when done
+  if (!ch.cellsJob) {
+    ch.cells = []; const cb = chBuf(ch, 'cells');
+    if (!cb) { ch.cellsDone = true; return true; }
+    ch.cellsJob = { S: decodeBld(cb[0], cb[1]), i: 0 };
+  }
+  const J = ch.cellsJob, n = J.S.n, k0 = ch.cells.length, i1 = Math.min(n, J.i + 400);
+  buildingMeshes(J.S, ch.ox, ch.oz, () => true, false, ch.cells, null, J.i, i1);
+  for (let k = k0; k < ch.cells.length; k++) { ch.cells[k].visible = false; group.near.add(ch.cells[k]); }   // shown once complete
+  J.i = i1; if (J.i < n) return false;
+  ch.cellsJob = null; ch.cellsDone = true; return true;
 }
 function buildTrees(ch) {
   ch.trees = []; ch.tcol = null;
-  if (!ch.tl || !BUF.trees) return;
-  const r = new Reader(BUF.trees, ch.to); const n = r.u32();
+  const tb = chBuf(ch, 'trees'); if (!tb) return;
+  const r = new Reader(tb[0], tb[1]); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), SC = r.arr(Uint8Array, n), VR = r.arr(Uint8Array, n);
   const im = new THREE.InstancedMesh(treeGeo, treeMat, n), tc = (ch.tcol = new Float32Array(n * 4));   // trunks: x, z, radius, height
   for (let i = 0; i < n; i++) {
@@ -2197,13 +2266,13 @@ function parapetMesh(S, ox, oz) {
 }
 function buildProps(ch) {
   ch.props = [];
-  for (const [buf, off, len] of [[BUF.bld, ch.bo, ch.bl], [BUF.cells, ch.co, ch.cl]]) {   // parapets on buildings and cell houses
-    if (!buf || !len) continue;
-    const pm = parapetMesh(decodeBld(buf, off), ch.ox, ch.oz);
+  for (const k of ['bld', 'cells']) {   // parapets on buildings and cell houses
+    const cb = chBuf(ch, k); if (!cb) continue;
+    const pm = parapetMesh(decodeBld(cb[0], cb[1]), ch.ox, ch.oz);
     if (pm) { group.near.add(pm); ch.props.push(pm); }
   }
-  if (!ch.pl || !BUF.props) return;
-  const r = new Reader(BUF.props, ch.po); const n = r.u32();
+  const pb = chBuf(ch, 'props'); if (!pb) return;
+  const r = new Reader(pb[0], pb[1]); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), Y = r.arr(Uint16Array, n), T = r.arr(Uint8Array, n), RO = r.arr(Uint8Array, n), SC = r.arr(Uint8Array, n);
   let nt = 0, nm = 0, ns = 0; for (let i = 0; i < n; i++) T[i] === 0 ? nt++ : T[i] === 2 ? ns++ : nm++;   // 1 and 3: stair rooms
   const tanks = new THREE.InstancedMesh(tankGeo, tankMat, Math.max(nt, 1)); tanks.count = nt;
@@ -2227,6 +2296,7 @@ function disposeNear(ch) {
     for (const m of ch[k]) { group.near.remove(m); if (k === 'cells') m.geometry.dispose(); else if (m.dispose) m.dispose(); }
     ch[k] = null;
   }
+  ch.cellsDone = false; ch.cellsJob = null;
 }
 
 // ---------------------------------------------------------------- camera / view math
@@ -2359,9 +2429,9 @@ function updateLOD(Q) {
     const inView = quadContains(Q, ch.ox, ch.oz, 900);
     const wantNear = near && inView;
     ch.near = wantNear;
-    const showCells = wantNear && ch.cells && ch.cells.length;
+    const showCells = wantNear && ch.cellsDone && ch.cells && ch.cells.length;
     for (const m of ch.blk) m.visible = !showCells;
-    if (ch.cells) for (const m of ch.cells) m.visible = wantNear;
+    if (ch.cells) for (const m of ch.cells) m.visible = wantNear && !!ch.cellsDone;
     const showTrees = wantNear && settings.trees && view.mpp < TREE_MPP;
     const showProps = wantNear && settings.trees && view.mpp < PROP_MPP;
     if (ch.trees) for (const m of ch.trees) m.visible = showTrees;
@@ -2369,9 +2439,9 @@ function updateLOD(Q) {
     if (wantNear) {
       visibleNear++; ch.lastUsed = performance.now();
       const d = Math.hypot(ch.ox - cx, ch.oz - cz);
-      if (!ch.cells && BUF.cells) queue.push([d, ch, 'cells']);
-      if (showTrees && !ch.trees && BUF.trees) queue.push([d + 200, ch, 'trees']);
-      if (showProps && !ch.props && BUF.props) queue.push([d + 400, ch, 'props']);
+      if (!ch.cellsDone && chBuf(ch, 'cells')) queue.push([d, ch, 'cells']);
+      if (showTrees && !ch.trees && chBuf(ch, 'trees')) queue.push([d + 200, ch, 'trees']);
+      if (showProps && !ch.props && (chBuf(ch, 'props') || chBuf(ch, 'bld'))) queue.push([d + 400, ch, 'props']);
     }
   }
   queue.sort((a, b) => a[0] - b[0]);
@@ -2384,9 +2454,9 @@ function runQueue(budget) {
   while (queue.length && performance.now() - t0 < budget) {
     const [, ch, kind] = queue.shift();
     if (!ch.near) continue;
-    if (kind === 'cells' && !ch.cells) { buildCells(ch); for (const m of ch.blk) m.visible = !(ch.cells.length); }
-    if (kind === 'trees' && !ch.trees) buildTrees(ch);
-    if (kind === 'props' && !ch.props) buildProps(ch);
+    if (kind === 'cells' && !ch.cellsDone) { const t0 = performance.now(); buildCells(ch); PERF.cells = Math.max(PERF.cells, performance.now() - t0); if (!ch.cellsDone) { did = true; continue; } for (const m of ch.blk) m.visible = !(ch.cells.length); }
+    if (kind === 'trees' && !ch.trees) { const t0 = performance.now(); buildTrees(ch); PERF.trees = Math.max(PERF.trees || 0, performance.now() - t0); }
+    if (kind === 'props' && !ch.props) { const t0 = performance.now(); buildProps(ch); PERF.props = Math.max(PERF.props || 0, performance.now() - t0); }
     did = true;
   }
   return did;
@@ -5498,7 +5568,8 @@ function frame(now) {
     updateSunDir(); updateLOD(Q); fitShadow(WALK.on ? walkQuad(110) : Q); if (!WALK.on) updateLabels(); drawRadar(Q);
     whereDirty = true;
   }
-  const built = runQueue(dirty ? 6 : 12);
+  const streamed = stepStream();
+  const built = runQueue(dirty ? 6 : 12) || streamed;
   if (whereDirty) {
     const [x, z] = WALK.on ? [WALK.P.x, WALK.P.z] : mouse.in && !drag ? screenToGround(mouse.x, mouse.y) : [view.tx, view.tz];
     updateWhere(x, z); whereDirty = false;
@@ -5842,10 +5913,10 @@ function colBuild(x, z) {
       for (let b = Math.floor((Math.min(az, bz) - pad) / C); b <= Math.floor((Math.max(az, bz) + pad) / C); b++) { const k = colKey(a, b); let L = M.get(k); if (!L) M.set(k, (L = [])); L.push(id); }
   };
   const add = (ax, az, bx, bz, y0, y1, kind) => { if (!near(ax, az, bx, bz)) return; const id = E.length / CS; E.push(ax, az, bx, bz, y0, y1, kind); grid(map, id, ax, az, bx, bz, 0); };
-  const hasCells = !!BUF.cells;
-  if (BUF.bld) for (const ch of chunks) {
+  for (const ch of chunks) {
+    const bb = chBuf(ch, 'bld'), cc = chBuf(ch, 'cells'), hasCells = !!cc; if (!bb && !cc) continue;
     if (Math.abs(ch.ox - x) > 500 + R || Math.abs(ch.oz - z) > 500 + R) continue;
-    if (!ch.wS || ch.wS.hc !== hasCells) ch.wS = { hc: hasCells, b: ch.bl ? decodeBld(BUF.bld, ch.bo) : null, c: hasCells && ch.cl ? decodeBld(BUF.cells, ch.co) : null };
+    if (!ch.wS || ch.wS.hc !== hasCells) ch.wS = { hc: hasCells, b: bb ? decodeBld(bb[0], bb[1]) : null, c: cc ? decodeBld(cc[0], cc[1]) : null };
     for (const [S, skipBlk] of [[ch.wS.b, !!ch.wS.c], [ch.wS.c, false]]) {
       if (!S) continue;
       const { n, floors, kind, rc, rl, abs } = S; let rr = 0, pp = 0;
@@ -6200,7 +6271,7 @@ function exitWalk() {
   const W = WALK; if (!W.on || CFG.start) return;   // on foot only: there is no map to go back to
   if (document.pointerLockElement) document.exitPointerLock();
   ACC.pf.last = [Math.round(W.P.x), Math.round(W.P.z)]; saveProfile(true);
-  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); $('wkPop').classList.remove('show');
+  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); $('wkPop').classList.remove('show'); stepDress();
   scene.fog.near = 1e7; scene.fog.far = 2e7;
   view.tx = W.P.x; view.tz = W.P.z; view.az = W.prevAz; view.mpp = 0.3;
   document.body.classList.remove('walking'); dirty = true; updateSunDir();
@@ -6283,6 +6354,180 @@ let toastT = 0;
 function toast(t) { const e = $('wkToast'); if (!e) return; e.textContent = t; e.classList.add('show'); toastT = 3.2; }
 const fmtWait = (w) => { w = Math.max(0, Math.round(w)); return w >= 60 ? `${Math.floor(w / 60)}:${String(w % 60).padStart(2, '0')}` : `${w}s`; };
 
+// ---------------------------------------------------------------- street dress (on foot, near you only)
+// Buildings within ~250 m get what you see from the pavement: shops on the ground floor of every side that faces a
+// road (a lit shop or a rolling shutter, a Gujarati signboard, often a striped awning) and balconies with a solid
+// parapet and a steel rail on the upper floors, lined up with the windows the facade shader draws. Built per 120 m
+// cell as you walk, dropped behind you; nothing is downloaded for it.
+const DRESS = { C: 60, R: 250, cells: new Map(), tex: null, signMat: null, shopMat: null, ready: false, idx: new WeakMap() };
+const SHOPS = [
+  ['કરિયાણા સ્ટોર', 'KIRANA STORE'], ['જય અંબે ટી સ્ટોલ', 'JAY AMBE TEA STALL'], ['શ્રીજી ફરસાણ', 'SHREEJI FARSAN'], ['મોબાઇલ પોઇન્ટ', 'MOBILE POINT'],
+  ['ગણેશ હાર્ડવેર', 'GANESH HARDWARE'], ['પટેલ ડેરી', 'PATEL DAIRY'], ['રાધે ટેલર્સ', 'RADHE TAILORS'], ['સાઈ મેડિકલ સ્ટોર', 'SAI MEDICAL STORE'],
+  ['ચામુંડા પાન પાર્લર', 'CHAMUNDA PAN PARLOUR'], ['મહાદેવ સ્વીટ્સ', 'MAHADEV SWEETS'], ['ભાવના સાડી સેન્ટર', 'BHAVNA SAREE CENTRE'], ['જલારામ ખમણ હાઉસ', 'JALARAM KHAMAN HOUSE'],
+  ['કૃષ્ણા ઝેરોક્ષ', 'KRISHNA XEROX'], ['સરદાર ઇલેક્ટ્રિક', 'SARDAR ELECTRIC'],
+];
+const SIGN_BG = [['#d62f2f', '#fff'], ['#f6c22b', '#1d1d1d'], ['#1f5fa8', '#fff'], ['#1f8a4c', '#fff'], ['#f08a24', '#fff'], ['#f4f1e8', '#b3261e'], ['#6b2fa0', '#ffe14d']];
+function dressAtlas() {   // 1024 x 1024: 14 signboards (512 x 112), then a lit shop interior and a rolling shutter (512 x 240)
+  const cv = document.createElement('canvas'); cv.width = cv.height = 1024; const c = cv.getContext('2d');
+  SHOPS.forEach(([gu, en], i) => {
+    const x = (i % 2) * 512, y = Math.floor(i / 2) * 112, [bg, fg] = SIGN_BG[i % SIGN_BG.length];
+    c.fillStyle = bg; c.fillRect(x, y, 512, 112);
+    c.strokeStyle = 'rgba(0,0,0,.35)'; c.lineWidth = 6; c.strokeRect(x + 3, y + 3, 506, 106);
+    c.fillStyle = fg; c.textAlign = 'center'; c.textBaseline = 'middle';
+    let fs = 56; do { c.font = `700 ${fs}px "Noto Sans Gujarati", "Gujarati Sangam MN", Shruti, sans-serif`; fs -= 2; } while (c.measureText(gu).width > 470 && fs > 30);
+    c.fillText(gu, x + 256, y + 46);
+    c.font = '700 19px "Barlow Condensed", Arial, sans-serif'; c.fillText(en.split('').join(String.fromCharCode(8202)), x + 256, y + 92);
+  });
+  // a lit shop: shelves of colourful stock round a counter
+  { const x = 0, y = 784; const g = c.createLinearGradient(0, y, 0, y + 240); g.addColorStop(0, '#fff1c9'); g.addColorStop(1, '#e8b86a'); c.fillStyle = g; c.fillRect(x, y, 512, 240);
+    const cols = ['#d62f2f', '#1f5fa8', '#f6c22b', '#1f8a4c', '#f08a24', '#ffffff', '#6b2fa0'];
+    for (let r = 0; r < 4; r++) { c.fillStyle = '#8a5a2b'; c.fillRect(x, y + 28 + r * 44, 512, 6);
+      for (let k = 0; k < 40; k++) { c.fillStyle = cols[(k * 7 + r * 3) % cols.length]; const w = 8 + ((k * 13 + r) % 9); c.fillRect(x + 4 + k * 12.6, y + 34 + r * 44 - 30 + ((k + r) % 3) * 3, w * 0.8, 26 - ((k + r) % 3) * 3); } }
+    c.fillStyle = '#6b4423'; c.fillRect(x + 60, y + 190, 392, 50); c.fillStyle = '#9b6a3a'; c.fillRect(x + 60, y + 190, 392, 8); }
+  // a rolling shutter, half grey, ribbed
+  { const x = 512, y = 784; c.fillStyle = '#8d9196'; c.fillRect(x, y, 512, 240);
+    for (let k = 0; k < 40; k++) { c.fillStyle = k % 2 ? '#7a7e83' : '#a3a7ab'; c.fillRect(x, y + k * 6, 512, 3); }
+    c.fillStyle = '#4b4e52'; c.fillRect(x + 236, y + 214, 40, 10); }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.needsUpdate = true;
+  return t;
+}
+function dressInit() {
+  if (DRESS.ready) return true;
+  if (DRESS.loading) return false;
+  DRESS.loading = true;
+  const go = () => {
+    DRESS.tex = dressAtlas();
+    DRESS.signMat = new THREE.MeshLambertMaterial({ map: DRESS.tex, emissive: 0xffffff, emissiveMap: DRESS.tex, emissiveIntensity: 0.22 });
+    DRESS.ready = true;
+  };
+  (document.fonts && document.fonts.load ? Promise.race([document.fonts.load('700 40px "Noto Sans Gujarati"', 'કર'), new Promise((r) => setTimeout(r, 2500))]) : Promise.resolve()).then(go, go);
+  return false;
+}
+function dressSets(ch) {   // the buildings drawn for this chunk right now (cell houses replace their blocks when loaded)
+  if (!ch.wS) return [];
+  const out = []; if (ch.wS.b) out.push([ch.wS.b, !!ch.wS.c]); if (ch.wS.c) out.push([ch.wS.c, false]);
+  return out;
+}
+function dressIndex(S, ox, oz) {   // buildings by 120 m cell (their first corner), and where each ring starts
+  let I = DRESS.idx.get(S); if (I) return I;
+  const { n, rc, rl, abs } = S, map = new Map(), pt = new Uint32Array(n + 1); let rr = 0, pp = 0;
+  for (let b = 0; b < n; b++) {
+    pt[b] = pp; const k = colKey(Math.floor((ox + abs[pp * 2] * 0.1) / DRESS.C), Math.floor((oz + abs[pp * 2 + 1] * 0.1) / DRESS.C));
+    let L = map.get(k); if (!L) map.set(k, (L = [])); L.push(b);
+    for (let r = 0; r < rc[b]; r++) pp += rl[rr++];
+  }
+  pt[n] = pp; I = { map, pt }; DRESS.idx.set(S, I); return I;
+}
+function roadFacing(x, z, nx, nz) {   // does this wall look onto a road within ~10 m?
+  const i = nearestRoad(x + nx * 6, z + nz * 6); if (i < 0) return false;
+  const R = ROADS, p0 = R.start[i], c = R.lens[i]; let bd = 1e9;
+  for (let j = 0; j < c - 1; j++) {
+    const ax = R.xy[(p0 + j) * 2] * 0.5, az = R.xy[(p0 + j) * 2 + 1] * 0.5, dx = R.xy[(p0 + j + 1) * 2] * 0.5 - ax, dz = R.xy[(p0 + j + 1) * 2 + 1] * 0.5 - az, l2 = dx * dx + dz * dz || 1;
+    const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1); bd = Math.min(bd, Math.hypot(x - ax - dx * t, z - az - dz * t));
+  }
+  return bd - R.hw[i] / 10 < 11 && !R.br[i];
+}
+function buildDressCell(cx, cz) {
+  const G = new Geo(true), T = { p: [], n: [], uv: [], i: [] };
+  const e0 = [0, 0, 0, 0], slabC = C255(232, 228, 218), railC = C255(48, 50, 54), frameC = C255(40, 34, 30);
+  const tq = (p0, p1, p2, p3, n, u0, v0, u1, v1) => {   // textured quad (p0 bottom-left .. p3 top-left, seen from n)
+    const b = T.p.length / 3; T.p.push(...p0, ...p1, ...p2, ...p3); for (let k = 0; k < 4; k++) T.n.push(...n);
+    T.uv.push(u0, v0, u1, v0, u1, v1, u0, v1); T.i.push(b, b + 1, b + 2, b, b + 2, b + 3);
+  };
+  for (const ch of chunks) {
+    if (Math.abs(ch.ox - cx * DRESS.C) > 700 || Math.abs(ch.oz - cz * DRESS.C) > 700) continue;
+    for (const [S, skipBlk] of dressSets(ch)) {
+      const I = dressIndex(S, ch.ox, ch.oz), L = I.map.get(colKey(cx, cz)); if (!L) continue;
+      const { floors, style, kind, rl, abs, polT, rc } = S;
+      for (const b of L) {
+        if (polT[b] || (skipBlk && kind[b] === 1)) continue;
+        const pal = PAL[style[b]]; if (pal.ws !== 1 && pal.ws !== 3) continue;
+        const fl = floors[b], cw = pal.ws === 3 ? 2.6 : 3.1, H = fl * 3.1 + 0.5;
+        const paint = bldPaint(b, ch.ox, ch.oz, pal), parC = paint ? paint.map((q) => srgbToLin(q) * 0 + q / 255 * 0.92) : slabC;
+        const balc = fl >= 2 && hash1(b * 613 + ch.ox) < 0.62, every = hash1(b * 911 + ch.oz) < 0.5 ? 1 : 2;
+        const shopsOK = fl <= 14 && hash1(b * 331 + ch.ox * 7) < 0.9;
+        // the outer ring: walls in order; the facade shader's u runs along t = (-n.z, n.x)
+        let rr = 0; for (let q = 0; q < b; q++) rr += rc[q];
+        const p0 = I.pt[b], m = rl[rr];
+        for (let e = 0; e < m; e++) {
+          const a = (p0 + e) * 2, c = (p0 + (e + 1) % m) * 2;
+          const ax = ch.ox + abs[a] * 0.1, az = ch.oz + abs[a + 1] * 0.1, bx = ch.ox + abs[c] * 0.1, bz = ch.oz + abs[c + 1] * 0.1;
+          const dx = bx - ax, dz = bz - az, Lw = Math.hypot(dx, dz); if (Lw < 4.5) continue;
+          const ux = dx / Lw, uz = dz / Lw, nx = -uz, nz = ux;                          // along the wall, and out of it
+          const P = (s, o, y) => [ax + ux * s + nx * o, y, az + uz * s + nz * o];
+          const street = shopsOK && roadFacing(ax + dx / 2, az + dz / 2, nx, nz);
+          if (street) {   // shops along the ground floor
+            const nb = Math.max(1, Math.floor((Lw - 0.6) / 4.4)), wb = (Lw - 0.6) / nb;
+            for (let k = 0; k < nb; k++) {
+              const s0 = 0.3 + k * wb + 0.22, s1 = 0.3 + (k + 1) * wb - 0.22, hk = hash1(b * 97 + e * 13 + k * 7 + ch.ox);
+              const open = hk < 0.72;
+              tq(P(s0, 0.04, 0.02), P(s1, 0.04, 0.02), P(s1, 0.04, 2.7), P(s0, 0.04, 2.7), [nx, 0, nz], open ? 0 : 0.5, 1 - 1024 / 1024, open ? 0.5 : 1, 1 - 784 / 1024);
+              // frame round the opening
+              for (const [sa, sb] of [[s0 - 0.08, s0], [s1, s1 + 0.08]]) fbox(G, lmFrame({ x: ax, z: az, ux, uz }), sa, sb, -0.1, 0, 0, 2.78, frameC, 0);
+              // signboard: a shallow box, its face from the atlas
+              const si = Math.floor(hash1(b * 53 + e * 7 + k * 3 + ch.oz) * SHOPS.length), su = (si % 2) * 0.5, sv = Math.floor(si / 2) * 112 / 1024;
+              const y0 = 2.86, y1 = 3.62, d = 0.2;
+              fbox(G, lmFrame({ x: ax, z: az, ux, uz }), s0 - 0.05, s1 + 0.05, -d, 0, y0 - 0.04, y1 + 0.04, frameC, 0);
+              tq(P(s0, d + 0.005, y0), P(s1, d + 0.005, y0), P(s1, d + 0.005, y1), P(s0, d + 0.005, y1), [nx, 0, nz], su, 1 - sv - 112 / 1024, su + 0.5, 1 - sv);
+              // striped awning below the board, sloping out over the pavement
+              if (hk > 0.3) {
+                const cA = [C255(214, 47, 47), C255(31, 95, 168), C255(31, 138, 76), C255(240, 138, 36), C255(107, 47, 160)][Math.floor(hk * 97) % 5], cB = C255(244, 240, 230);
+                const ns = Math.max(3, Math.round((s1 - s0) / 0.45));
+                for (let q2 = 0; q2 < ns; q2++) {
+                  const ta = s0 + (s1 - s0) * q2 / ns, tb = s0 + (s1 - s0) * (q2 + 1) / ns, col = q2 % 2 ? cB : cA;
+                  lq(G, P(ta, 0.02, 2.8), P(tb, 0.02, 2.8), P(tb, 1.15, 2.38), P(ta, 1.15, 2.38), [nx * 0.35, 0.94, nz * 0.35], e0, col);
+                  lq(G, P(ta, 1.15, 2.38), P(tb, 1.15, 2.38), P(tb, 1.15, 2.18), P(ta, 1.15, 2.18), [nx, 0, nz], e0, col);   // valance
+                }
+              }
+            }
+          }
+          // balconies on the upper floors, centred on the window columns of this wall
+          if (balc && Lw >= 5) {
+            const tx = -nz, tz = nx, ua = ax * tx + az * tz, ub = bx * tx + bz * tz;   // the shader's u at both ends
+            const lo = Math.min(ua, ub) + 1.4, hi = Math.max(ua, ub) - 1.4, sgn = ub > ua ? 1 : -1;
+            for (let col = Math.ceil(lo / cw - 0.5); (col + 0.5) * cw <= hi; col++) {
+              if (every === 2 && ((col % 2) + 2) % 2) continue;
+              const uc = (col + 0.5) * cw, sc = (uc - ua) * sgn, hw = cw * 0.46, F = lmFrame({ x: ax, z: az, ux, uz }), D = 1.0;
+              for (let f = 1; f < fl && f * 3.1 < H - 1.5; f++) {
+                const y = f * 3.1;
+                fbox(G, F, sc - hw, sc + hw, -D, 0, y - 0.14, y + 0.02, slabC, 0);                       // slab
+                fbox(G, F, sc - hw, sc + hw, -D, -D + 0.1, y + 0.02, y + 0.8, parC, 0);                  // parapet, front
+                fbox(G, F, sc - hw, sc - hw + 0.1, -D, 0, y + 0.02, y + 0.8, parC, 0);                   // and sides
+                fbox(G, F, sc + hw - 0.1, sc + hw, -D, 0, y + 0.02, y + 0.8, parC, 0);
+                fbox(G, F, sc - hw, sc + hw, -D + 0.02, -D + 0.08, y + 1.0, y + 1.04, railC, 0);         // steel rail on posts
+                for (const sp of [sc - hw + 0.05, sc, sc + hw - 0.05]) fbox(G, F, sp - 0.02, sp + 0.02, -D + 0.03, -D + 0.07, y + 0.8, y + 1.0, railC, 0, 0, false);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  const out = [];
+  if (G.p.length) { const mm = G.mesh(LMK); mm.castShadow = true; mm.receiveShadow = true; mm.renderOrder = 10; out.push(mm); }
+  if (T.p.length) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(T.p, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(T.n, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(T.uv, 2)); g.setIndex(T.i);
+    const mm = new THREE.Mesh(g, DRESS.signMat); mm.renderOrder = 10; mm.receiveShadow = true; out.push(mm);
+  }
+  for (const m of out) group.near.add(m);
+  return out;
+}
+function stepDress() {
+  if (!CFG.buildings || !(BUF.bld || STREAM) || !ROADS) return;
+  if (!dressInit()) return;
+  const F = walkFocus(), C = DRESS.C, R = DRESS.R, gx = Math.floor(F.x / C), gz = Math.floor(F.z / C), n = Math.ceil(R / C);
+  for (const [k, c] of DRESS.cells) if (!WALK.on || Math.abs(c.cx - gx) > n + 1 || Math.abs(c.cz - gz) > n + 1) { for (const m of c.m) { group.near.remove(m); m.geometry.dispose(); } DRESS.cells.delete(k); }
+  if (!WALK.on) return;
+  let best = null, bd = 1e9;   // build the nearest missing cell (one a frame)
+  for (let a = gx - n; a <= gx + n; a++) for (let b = gz - n; b <= gz + n; b++) {
+    const k = colKey(a, b); if (DRESS.cells.has(k)) continue;
+    const d = Math.hypot((a + 0.5) * C - F.x, (b + 0.5) * C - F.z); if (d > R + C * 0.7) continue;
+    if (d < bd) { bd = d; best = [a, b, k]; }
+  }
+  if (best) { const t0 = performance.now(); DRESS.cells.set(best[2], { cx: best[0], cz: best[1], m: buildDressCell(best[0], best[1]) }); PERF.dress = Math.max(PERF.dress, performance.now() - t0); }
+}
 function stepWalk(dt) {
   const W = WALK, P = W.P, spec = RIDE_SPEC[W.mode];
   if (toastT > 0) { toastT -= dt; if (toastT <= 0) $('wkToast').classList.remove('show'); }
@@ -6324,7 +6569,8 @@ function stepWalk(dt) {
   $('wkPrompt').style.display = $('wkPrompt').innerHTML ? '' : 'none';
   // --- keep the collision set around the player
   const F = walkFocus();
-  if (!W.ride && (WCOL.stale || Math.hypot(F.x - WCOL.cx, F.z - WCOL.cz) > 70)) colBuild(F.x, F.z);
+  if (!W.ride && (WCOL.stale || Math.hypot(F.x - WCOL.cx, F.z - WCOL.cz) > 70)) { const t0 = performance.now(); colBuild(F.x, F.z); PERF.col = Math.max(PERF.col, performance.now() - t0); }
+  stepDress();
   // --- avatar / vehicle transform, animation, the people around you
   if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; if (W.mode === 'walk') { W.holder.rotation.x = 0; W.lean = 0; } }
   if (W.av && W.av.mixer) W.av.mixer.update(dt);
@@ -6710,7 +6956,7 @@ async function boot() {
   for (const [nm, lat, lon] of [['Bopal', 23.0335, 72.4645], ['Shela', 23.0065, 72.4545], ['Ghuma', 23.0425, 72.4445], ['Sola', 23.0790, 72.5180], ['Narol', 22.9725, 72.5940], ['Aslali', 22.9195, 72.5985]])
     EXTRA_AREAS.push({ name: nm, x: (lon - o.lon) * o.kx, z: -(lat - o.lat) * o.ky });
   initMapCanvas(); initDetailGeos();
-  const s = { ...META.sizes }; if (!CFG.buildings) s.bld = 0; const tot = s.bld + s.roads + s.ground + (s.transit || 0);
+  const s = { ...META.sizes }; if (!CFG.buildings || STREAM) s.bld = 0; const tot = s.bld + s.roads + s.ground + (s.transit || 0);   // on foot, buildings stream in by chunk
   let got = { bld: 0, roads: 0, ground: 0, transit: 0 };
   const prog = (k) => (p) => { got[k] = p * s[k]; const g = got.bld + got.roads + got.ground + got.transit; setProgress(0.04 + 0.5 * g / tot, `Downloading city data… ${(g / 1048576).toFixed(1)} / ${(tot / 1048576).toFixed(1)} MB`); };
   [BUF.bld, BUF.roads, BUF.ground, BUF.transit] = await Promise.all([(s.bld ? fetchBin('bld', s.bld, prog('bld')) : Promise.resolve(null)), fetchBin('roads', s.roads, prog('roads')), fetchBin('ground', s.ground, prog('ground')),
@@ -6753,7 +6999,7 @@ async function boot() {
   }
   // stream detail layers in the background
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
-  const layers = [CFG.buildings && 'cells', CFG.trees && 'trees', CFG.buildings && 'props'].filter(Boolean);
+  const layers = STREAM ? [] : [CFG.buildings && 'cells', CFG.trees && 'trees', CFG.buildings && 'props'].filter(Boolean);
   layers.reduce((p, k) => p.then(() => later(k)), Promise.resolve()).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
 function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn (radius over 6 m arcs), worst jump at the ends
@@ -6770,7 +7016,7 @@ function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn
   } });
   return out;
 }
-window.AMD = { enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
