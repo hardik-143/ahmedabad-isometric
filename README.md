@@ -5,7 +5,8 @@ A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / W
 > **Current main is the base map.** Buildings (and the rooftop details, pol gates, darwajas, construction sites and
 > factories that go with them), weather and golden hour / night are switched off, and there is no road traffic (only
 > Janmarg buses and the metro run). It opens straight on foot at the foot of the Patang Hotel, with no map view
-> (`CFG.start`); C still gives you a cycle, scooter or rickshaw. Roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees and the Patang Hotel stay. Every layer is still in the
+> (`CFG.start`); C still gives you a cycle, scooter or rickshaw. Buildings are on and stream in by 1 km chunk around you
+> (see Streaming). Roads, the Sabarmati and its bridges, the metro, Janmarg BRTS, trees and the Patang Hotel stay. Every layer is still in the
 > code: flip the switches in the `CFG` object at the top of `public/app.js`. The branch `full-city` has everything on,
 > 
 
@@ -175,6 +176,21 @@ wall-top railing stops you except at the stair landings, the stairs take you dow
 People nearby turn their heads to watch you pass; bump into one and they stop, face you and tell you off in a speech
 bubble ("Hey, watch out!", "Arre, dhyaan thi!"), and they step round you on the footpath. Sign-in uses Clerk when a publishable key is set in `<meta name="clerk-key">`, otherwise the
 profile is kept in localStorage.
+
+### Streaming (on foot)
+On foot nothing city-wide is downloaded for buildings, cell houses, rooftop props or trees: `tools/stream_pack.py`
+(run at the end of `pack.py`) writes each 1 km chunk's slices of those layers to its own small file,
+`public/data/s/<cx>_<cy>.bin` (1,330 files, ~15 KB each on average). The app fetches the chunks within ~1.6 km of you
+(four at a time, nearest first), meshes one a frame, builds cell houses in slices of 400, and drops chunks once you
+are ~2.6 km away; fog closes the view before the edge. A start at the Patang Hotel downloads ~3.4 MB in all (roads,
+transit, meta and nine chunks) instead of ~24 MB. The map view still loads the whole-city files.
+
+### Street dress
+Ordinary blocks are painted in Ahmedabad colours (raspberry, coral, peach, cream, mustard, teal, sky, lilac, pink,
+mint, brick) instead of the survey's pale tints. Within ~250 m of you, built per 60 m cell as you walk: every wall that
+faces a road gets shops along its ground floor (a lit shop or a rolling shutter, a Gujarati signboard from a canvas
+atlas, often a striped awning), and about 60% of residential blocks get balconies (slab, solid parapet in the
+building's paint, steel rail) on the upper floors, lined up with the windows the facade shader draws.
 
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
