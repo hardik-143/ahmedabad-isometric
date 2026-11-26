@@ -13,13 +13,27 @@ function showErr(m) { errBox.style.display = 'block'; errBox.textContent = m; }
 window.addEventListener('error', (e) => showErr('Error: ' + (e.message || e)));
 window.addEventListener('unhandledrejection', (e) => showErr('Error: ' + (e.reason && e.reason.message || e.reason)));
 
+// ---------------------------------------------------------------- feature switches
+// main ships the base map (roads, river and bridges, metro, BRTS, Patang); branch full-city has every layer on.
+// Flip a switch to bring a layer back.
+const CFG = {
+  buildings: false,          // footprints, rooftop tanks and stair-rooms, pol gates, darwajas, construction sites
+  landmarks: ['patang'],     // bespoke 3D landmarks kept: any of 'patang', 'iskcon', 'taj' (Ellis and Atal bridges always stay)
+  trees: true,
+  industry: false,           // GIDC factories' stacks, tanks, ponds, smoke and smog
+  weather: false,            // weather presets and the R key; the sky stays clear
+  times: ['morning', 'noon'],// time-of-day buttons offered (of morning, noon, golden, night)
+  walk: false,               // explore-on-foot mode (work in progress)
+};
 const TIPS = [
-  'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
+  CFG.buildings && 'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
   'Press <b>Q</b> / <b>E</b> to swing the city round 90°, or <b>right-drag</b> to rotate freely.',
-  'Try <b>Night</b> — 1.3 million lit windows and sodium street-lamps along every major road.',
+  CFG.times.includes('night') && 'Try <b>Night</b> — 1.3 million lit windows and sodium street-lamps along every major road.',
   'Search <b>Ashram Road</b>, <b>Kankaria</b> or <b>SG Highway</b> to fly straight there.',
-  'Zoom in on the walled city: water tanks on the rooftops, trees in the courtyards.',
-];
+  CFG.buildings && 'Zoom in on the walled city: water tanks on the rooftops, trees in the courtyards.',
+  !CFG.buildings && 'Follow the red <b>Janmarg BRTS</b> lanes or the <b>metro</b> viaduct across the Sabarmati.',
+  !CFG.buildings && 'Zoom in on the riverfront: Ellis Bridge, Atal Bridge and the Patang Hotel by Ashram Road.',
+].filter(Boolean);
 $('ltip').innerHTML = 'TIP: ' + TIPS[Math.floor(Math.random() * TIPS.length)];
 
 // ---------------------------------------------------------------- helpers
@@ -1535,6 +1549,7 @@ function buildTaj(o) {
 }
 function buildLandmarks3D() {
   for (const o of META.lm3d || []) {
+    if (!CFG.landmarks.includes(o.kind)) continue;
     if (o.kind === 'patang') buildPatang(o);
     else if (o.kind === 'iskcon') buildIskcon(o);
     else if (o.kind === 'taj') buildTaj(o);
@@ -1975,7 +1990,7 @@ async function buildFarBuildings(progressBase, progressSpan) {
     const [cx, cy, bo, bl, co, cl, po, pl, to, tl] = META.chunks[k];
     const [ox, oz] = chunkOrigin(cx, cy);
     const ch = { cx, cy, ox, oz, bo, bl, co, cl, po, pl, to, tl, reg: [], blk: [], cells: null, trees: null, props: null, near: false, lastUsed: 0 };
-    if (bl) {
+    if (bl && BUF.bld) {
       const S = decodeBld(BUF.bld, bo);
       buildingMeshes(S, ox, oz, (kd) => kd === 0, false, ch.reg, mapCtx);
       buildingMeshes(S, ox, oz, (kd) => kd === 1, true, ch.blk, mapCtx);
@@ -1983,7 +1998,7 @@ async function buildFarBuildings(progressBase, progressSpan) {
       for (const m of ch.blk) group.bld.add(m);
     }
     chunks.push(ch);
-    if (performance.now() - t0 > 40) { setProgress(progressBase + progressSpan * (k / total), `Raising ${META.counts.buildings.toLocaleString()} buildings… ${Math.round(k / total * 100)}%`); await tick(); t0 = performance.now(); }
+    if (performance.now() - t0 > 40) { setProgress(progressBase + progressSpan * (k / total), BUF.bld ? `Raising ${META.counts.buildings.toLocaleString()} buildings… ${Math.round(k / total * 100)}%` : 'Preparing the map…'); await tick(); t0 = performance.now(); }
   }
 }
 
@@ -2379,7 +2394,8 @@ function initLabels() {
   for (const w of META.wards) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: w.area, name: w.name });
   for (const w of EXTRA_AREAS) LBL.dist.push({ el: mk('district', w.name), x: w.x, z: w.z, area: 9e6, name: w.name });
   const icon = { lake: '~', river: '~', monument: '★', stadium: '◎', airport: '✈', campus: '◆', park: '♣', gate: '∩', tower: '▲', industry: '⚙︎' };
-  for (const l of META.landmarks) LBL.poi.push({ el: mk('poi ' + l.kind, `<span class="pin">${icon[l.kind] || '★'}</span>${l.name}`), x: l.x, z: l.z, min: l.kind === 'gate' ? 5 : 14 });
+  const keepPoi = (l) => CFG.buildings || ['lake', 'river', 'airport', 'park'].includes(l.kind) || (CFG.landmarks.includes('patang') && /patang/i.test(l.name)) || (CFG.industry && l.kind === 'industry');
+  for (const l of META.landmarks.filter(keepPoi)) LBL.poi.push({ el: mk('poi ' + l.kind, `<span class="pin">${icon[l.kind] || '★'}</span>${l.name}`), x: l.x, z: l.z, min: l.kind === 'gate' ? 5 : 14 });
   for (const s of META.stations) LBL.poi.push({ el: mk('poi station', `<span class="pin">🚆︎</span>${s.name}`), x: s.x, z: s.z, min: 6 });
   if (TR) for (const s of TR.metro.stations) {
     if (s.corr === 'red' && s.id === 'GMRCL_OLD_HIGH_COURT') continue;
@@ -2645,12 +2661,12 @@ window.addEventListener('keydown', (e) => {
   if (e.target === qEl) return;
   const k = e.key.toLowerCase();
   if (WALK.on && walkKey(e, k)) return;
-  if (k === 'f' && !WALK.on && e.target.tagName !== 'INPUT') { enterWalk(); return; }
+  if (k === 'f' && CFG.walk && !WALK.on && e.target.tagName !== 'INPUT') { enterWalk(); return; }
   if (k === 'q') rotateBy(Math.PI / 2);
   else if (k === 'e') rotateBy(-Math.PI / 2);
-  else if (k === 'n') setTime(todName === 'night' ? 'noon' : 'night');
-  else if (k === 't') { const o = ['morning', 'noon', 'golden', 'night']; setTime(o[(o.indexOf(todName) + 1) % 4]); }
-  else if (k === 'r') { const o = Object.keys(WXK); setWeather(o[(o.indexOf(wxName) + 1) % o.length]); }
+  else if (k === 'n' && CFG.times.includes('night')) setTime(todName === 'night' ? 'noon' : 'night');
+  else if (k === 't') { const o = CFG.times; setTime(o[(o.indexOf(todName) + 1) % o.length]); }
+  else if (k === 'r' && CFG.weather) { const o = Object.keys(WXK); setWeather(o[(o.indexOf(wxName) + 1) % o.length]); }
   else if (k === 'm') bigmap.classList.contains('show') ? bigmap.classList.remove('show') : openBigMap();
   else if (k === 'escape') bigmap.classList.remove('show');
   else if (k === '/') { e.preventDefault(); qEl.focus(); }
@@ -5939,8 +5955,25 @@ function walkKey(e, k) {
   keys.add(k); return true;
 }
 
+// ---------------------------------------------------------------- hide controls for switched-off layers
+function initSwitchUI() {
+  const gone = (el) => el && el.remove();
+  document.querySelectorAll('#timebar button').forEach((b) => { if (!CFG.times.includes(b.dataset.t)) gone(b); });
+  if (!CFG.weather) { gone($('wxbar')); document.body.classList.add('nowx'); }
+  if (!CFG.walk) for (const id of ['walkBtn', 'walkHud', 'wkToast', 'avPanel', 'wkTouch']) gone($(id));
+  if (!CFG.buildings && !CFG.trees) gone($('bTrees'));
+  else if (!CFG.buildings) { const t = document.querySelector('#bTrees .tip'); if (t) t.textContent = 'Trees'; }
+  const help = $('help');
+  if (help) {
+    const keys = ['<kbd>Drag</kbd> pan', '<kbd>Scroll</kbd> zoom', '<kbd>Q</kbd><kbd>E</kbd> rotate', '<kbd>Right-drag</kbd> free rotate',
+      CFG.times.includes('night') ? '<kbd>N</kbd> night' : CFG.times.length > 1 && '<kbd>T</kbd> time of day', CFG.weather && '<kbd>R</kbd> weather', CFG.walk && '<kbd>F</kbd> explore on foot', '<kbd>M</kbd> map'];
+    help.innerHTML = keys.filter(Boolean).join(' · ');
+  }
+}
+
 // ---------------------------------------------------------------- boot
 async function boot() {
+  initSwitchUI();
   setProgress(0.02, 'Loading city plan…');
   META = await (await fetch('data/meta.json', { cache: 'no-store' })).json();
   PAL = META.palette.map(([w, r, ws]) => ({ w: hexLin8(w), r: hexLin8(r), ws }));
@@ -5949,27 +5982,28 @@ async function boot() {
   for (const [nm, lat, lon] of [['Bopal', 23.0335, 72.4645], ['Shela', 23.0065, 72.4545], ['Ghuma', 23.0425, 72.4445], ['Sola', 23.0790, 72.5180], ['Narol', 22.9725, 72.5940], ['Aslali', 22.9195, 72.5985]])
     EXTRA_AREAS.push({ name: nm, x: (lon - o.lon) * o.kx, z: -(lat - o.lat) * o.ky });
   initMapCanvas(); initDetailGeos();
-  const s = META.sizes; const tot = s.bld + s.roads + s.ground + (s.transit || 0);
+  const s = { ...META.sizes }; if (!CFG.buildings) s.bld = 0; const tot = s.bld + s.roads + s.ground + (s.transit || 0);
   let got = { bld: 0, roads: 0, ground: 0, transit: 0 };
   const prog = (k) => (p) => { got[k] = p * s[k]; const g = got.bld + got.roads + got.ground + got.transit; setProgress(0.04 + 0.5 * g / tot, `Downloading city data… ${(g / 1048576).toFixed(1)} / ${(tot / 1048576).toFixed(1)} MB`); };
-  [BUF.bld, BUF.roads, BUF.ground, BUF.transit] = await Promise.all([fetchBin('bld', s.bld, prog('bld')), fetchBin('roads', s.roads, prog('roads')), fetchBin('ground', s.ground, prog('ground')),
+  [BUF.bld, BUF.roads, BUF.ground, BUF.transit] = await Promise.all([(s.bld ? fetchBin('bld', s.bld, prog('bld')) : Promise.resolve(null)), fetchBin('roads', s.roads, prog('roads')), fetchBin('ground', s.ground, prog('ground')),
     s.transit ? fetchBin('transit', s.transit, prog('transit')) : Promise.resolve(null)]);
   if (BUF.transit) TR = JSON.parse(new TextDecoder().decode(BUF.transit));
   setProgress(0.56, 'Laying water, parks and rail…'); await tick();
   buildGround();
   setProgress(0.6, `Paving ${META.counts.roads.toLocaleString()} road segments…`); await tick();
   buildRoads();
-  buildAirport(); buildPolExtras(); buildDarwajas(); buildLandmarks3D();
+  buildAirport(); if (CFG.buildings) { buildPolExtras(); buildDarwajas(); } buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
-  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); buildSites(); initPlay(); buildIndustry(); buildWeather();
+  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); if (CFG.buildings) buildSites(); initPlay(); if (CFG.industry) buildIndustry(); buildWeather();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
-  $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
+  if (!CFG.buildings) $('stats').innerHTML = `${META.counts.roads.toLocaleString()} road segments · ${TR && TR.brts ? TR.brts.stations.length : 0} BRTS stops<br>${META.stations ? META.stations.length : 0} rail stations` + (CFG.trees ? ` · ${(META.counts.trees / 1000).toFixed(0)}k trees` : '');
+  else $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
   // start: city overview, then swoop to the riverfront
   view.tx = 0; view.tz = 0; view.mpp = 26; view.az = Math.PI / 4;
   applyTod(tod);
   ready = true; dirty = true;
-  initWalkUI(); initAccount();
+  if (CFG.walk) { initWalkUI(); initAccount(); }
   try { sessionStorage.removeItem('amd-retry'); } catch (_) {}
   setProgress(1, 'Ready');
   $('loader').classList.add('hide');
@@ -5978,7 +6012,8 @@ async function boot() {
   setTimeout(() => ($('help').style.opacity = 0), 14000);
   // stream detail layers in the background
   const later = async (k) => { BUF[k] = await fetchBin(k, s[k]); dirty = true; };
-  later('cells').then(() => later('trees')).then(() => later('props')).catch((e) => showErr('Detail layer failed: ' + e.message));
+  const layers = [CFG.buildings && 'cells', CFG.trees && 'trees', CFG.buildings && 'props'].filter(Boolean);
+  layers.reduce((p, k) => p.then(() => later(k)), Promise.resolve()).catch((e) => showErr('Detail layer failed: ' + e.message));
 }
 window.AMD = { enterWalk, exitWalk, WALK, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);

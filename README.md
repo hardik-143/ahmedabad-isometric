@@ -2,6 +2,12 @@
 
 A GTA-style isometric 3D map of Ahmedabad that runs in the browser (Three.js / WebGL), built from open data.
 
+> **Current main is the base map.** Buildings (and the rooftop details, pol gates, darwajas, construction sites and
+> factories that go with them), weather, golden hour / night and walk mode are switched off; roads, the Sabarmati
+> and its bridges, the metro, Janmarg BRTS, trees, traffic and the Patang Hotel stay. Every layer is still in the
+> code: flip the switches in the `CFG` object at the top of `public/app.js`. The branch `full-city` has everything on,
+> including the work-in-progress walk mode.
+
 - ~150k real building footprints with surveyed heights, 73k road segments, the Sabarmati and lakes, parks, rail
 - Flyovers and river bridges lifted onto decks where roads actually cross roads, rail or water
 - Narendra Modi & Sardar Patel stadium bowls, Atal Bridge with its kite canopy
