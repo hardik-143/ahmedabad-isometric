@@ -115,6 +115,12 @@ body.walking #wkToast{display:block} #wkToast.show{opacity:1}
 #wxbar button.on{background:#7fc4ff;color:#0b1520;opacity:1}
 #where{right:22px;bottom:132px;text-align:right;pointer-events:none}
 body.nowx #where{bottom:78px}
+#wkPop{position:fixed;right:34px;bottom:96px;z-index:30;pointer-events:none;opacity:0;transform:translateY(10px);transition:opacity .4s,transform .4s;
+  font:800 italic 50px/1 'Barlow Condensed',sans-serif;letter-spacing:.02em;text-align:right;-webkit-text-stroke:2px #12050c;paint-order:stroke fill;text-shadow:3px 3px 0 rgba(0,0,0,.5)}
+#wkPop.show{opacity:1;transform:none} #wkPop.area{color:#ff6fb7} #wkPop.veh{color:#5fe1ff}
+body.walking #where{display:none}
+body.walking #radarWrap{border-radius:50%;overflow:hidden;box-shadow:0 0 0 4px rgba(10,10,14,.7),0 0 0 7px rgba(255,255,255,.28)}
+body.walking #radarWrap canvas{border-radius:50%}
 #where .d{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-style:italic;font-size:30px;letter-spacing:.02em;line-height:1;
   text-shadow:0 2px 0 #000,0 0 14px rgba(0,0,0,.5)}
 #where .r{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:17px;letter-spacing:.05em;color:#ffd9a8;margin-top:4px;
@@ -159,7 +165,7 @@ body.nowx #where{bottom:78px}
 @media (max-width:1180px){ #help{display:none} }
 @media (max-width:760px){
   #brand .t{font-size:32px} #search{width:calc(100% - 150px)} #radarWrap{width:150px;height:150px;bottom:62px}
-  #credits{display:none} #help{display:none} #where .d{font-size:22px} #timebar{right:12px;bottom:12px} #wxbar{right:12px;bottom:62px} #where{bottom:112px;right:12px} body.nowx #where{bottom:62px}
+  #credits{display:none} #help{display:none} #where .d{font-size:22px} #timebar{right:12px;bottom:12px} #wxbar{right:12px;bottom:62px} #where{bottom:112px;right:12px} #wkPop{right:14px;bottom:70px;font-size:34px} body.nowx #where{bottom:62px}
   #tools{right:10px} .btn{width:40px;height:40px} #stats{display:none} #radarHint{display:none}
 }
 </style>
@@ -214,6 +220,7 @@ body.nowx #where{bottom:78px}
     <div id="wkHint"></div>
   </div>
   <div id="wkToast"></div>
+  <div id="wkPop"></div>
   <div id="avPanel"></div>
   <div id="wkTouch"><div id="wkJoy"><div id="wkKnob"></div></div>
     <div id="wkBtns"><button id="wkAct">E</button><button id="wkRide">RIDE</button><button id="wkJump">JUMP</button></div></div>
@@ -226,7 +233,7 @@ body.nowx #where{bottom:78px}
   <div id="radarWrap" class="hud"><canvas id="radar" width="440" height="440"></canvas></div>
   <div id="radarHint" class="hud">Click radar for city map</div>
   <div id="help" class="hud"><kbd>Drag</kbd> pan · <kbd>Scroll</kbd> zoom · <kbd>Q</kbd><kbd>E</kbd> rotate · <kbd>Right-drag</kbd> free rotate · <kbd>N</kbd> night · <kbd>R</kbd> weather · <kbd>F</kbd> explore on foot · <kbd>M</kbd> map</div>
-  <div id="credits" class="hud">Buildings: VEDAS / ISRO-SAC and Google Open Buildings v3 + 2.5D Temporal 2023 (CC BY 4.0, via ramSeraph/indian_buildings) · Roads, parks, central water: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> (ODbL) · Rivers &amp; lakes: India-WRIS, Swachh Bharat Mission · Rail: Indian Railways (via ramSeraph/indian_transport) · Metro alignments &amp; stations: <a href="https://github.com/croyla/amd-gtfs">amd-gtfs</a> (ODbL; train service is synthetic) · BRTS stops, routes &amp; timetable: Janmarg GTFS (via <a href="https://github.com/str3939/Janmarg-BRTS-Guide">Janmarg-BRTS-Guide</a>); corridors routed on the road graph · Wards: DataMeet · Riverfront channel built from the river outline + SRFDCL design widths · Trees, rooftop tanks, pol façades, taxiway layout &amp; parked aircraft are procedural.</div>
+  <div id="credits" class="hud">Characters &amp; animations: Quaternius (CC0) · Buildings: VEDAS / ISRO-SAC and Google Open Buildings v3 + 2.5D Temporal 2023 (CC BY 4.0, via ramSeraph/indian_buildings) · Roads, parks, central water: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> (ODbL) · Rivers &amp; lakes: India-WRIS, Swachh Bharat Mission · Rail: Indian Railways (via ramSeraph/indian_transport) · Metro alignments &amp; stations: <a href="https://github.com/croyla/amd-gtfs">amd-gtfs</a> (ODbL; train service is synthetic) · BRTS stops, routes &amp; timetable: Janmarg GTFS (via <a href="https://github.com/str3939/Janmarg-BRTS-Guide">Janmarg-BRTS-Guide</a>); corridors routed on the road graph · Wards: DataMeet · Riverfront channel built from the river outline + SRFDCL design widths · Trees, rooftop tanks, pol façades, taxiway layout &amp; parked aircraft are procedural.</div>
 
   <div id="bigmap"><div id="bigmapTitle">AHMEDABAD<small>Click anywhere to fly there · Esc to close</small></div><div id="bigmapInner"><canvas id="bigmapCanvas"></canvas><div id="bigmapLabels"></div></div></div>
 
