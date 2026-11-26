@@ -26,7 +26,7 @@ const CFG = {
   walk: true,                // explore on foot (third person, animated people, enter autos with F)
   vehicles: ['hatch', 'sedan', 'suv', 'auto', 'scooter', 'bike', 'tempo', 'truck'],        // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
   start: null,               // open straight on foot at the foot of this landmark, with no map view to go back to (null: the map)
-  ride: true,                // F (get on an auto or scooter) and C (your own scooter)
+  ride: true,                // C: your own cycle / scooter / rickshaw (F also gets on traffic autos and scooters, when there is traffic)
 };
 const TIPS = [
   CFG.buildings && 'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
@@ -4796,7 +4796,7 @@ function stepPeds(dt) {
   P.H.clear();
   for (let k = 0; k < L.length; k++) { const p = L[k], key = hk(Math.floor(p.x / PED_CELL), Math.floor(p.z / PED_CELL)); P.nxt[k] = P.H.get(key) ?? -1; P.H.set(key, k); }
   const arr = P.im.instanceMatrix.array;
-  const YOU = WALK.on && !WALK.ride && WALK.mode === 'walk' ? WALK.P : null;
+  const YOU = WALK.on && !WALK.ride ? WALK.P : null;
   for (let k = 0; k < L.length; k++) {
     const p = L[k];
     if (p.fade) p.fa = Math.max(0, p.fa - dt * 1.5); else if (p.fa < 1) p.fa = Math.min(1, p.fa + dt * 1.5);
@@ -5724,7 +5724,49 @@ function poseAvatar(A, mode, ph, amp, lean) {
   la.el.rotation.z = 0.12 + amp * 0.7; ra.el.rotation.z = 0.12 + amp * 0.7;
   A.up.rotation.z = -lean; A.body.position.y = Math.abs(s) * 0.07 * amp;
 }
+// an Indian roadster bicycle (Hero / Atlas style): black frame, swept-back bars, rod brakes, carrier; wheels and cranks
+// are their own meshes so they turn. +x forward, y up, z to the right; BB at (-0.02, 0.30), wheels r 0.33
+const CYC = { R: 0.33, rear: -0.45, front: 0.62, bb: [-0.02, 0.30], crank: 0.15, seat: [-0.2, 0.8], grip: [0.3, 1.03, 0.27] };
+function buildCycle(col) {
+  const G = new Geo(true), C = VCOL, F = col ? [col.r, col.g, col.b] : lin('#16181b'), chrome = lin('#b9bcc0'), saddle = lin('#2a1d16');
+  const t = 0.045, B = (a, b, w = t, c = F) => beam(G, a, b, w, w, c, 0);
+  const bb = [CYC.bb[0], CYC.bb[1], 0], seatC = [-0.17, 0.74, 0], headT = [0.47, 0.9, 0], headB = [0.52, 0.7, 0];
+  B(bb, seatC); B(seatC, headT); B(bb, headB); B(headB, headT, 0.055);
+  for (const z of [-0.06, 0.06]) { B([CYC.rear, CYC.R, z], [bb[0], bb[1], z * 0.5], 0.03); B([CYC.rear, CYC.R, z], [seatC[0], seatC[1], z * 0.4], 0.03); B([CYC.front, CYC.R, z], [headB[0], headB[1], z * 0.6], 0.035); }
+  B(seatC, [CYC.seat[0], CYC.seat[1] - 0.04, 0], 0.03, chrome);                                            // seat post
+  vbox(G, CYC.seat[0] - 0.13, CYC.seat[0] + 0.1, CYC.seat[1] - 0.05, CYC.seat[1], -0.09, 0.09, saddle);   // saddle
+  B(headT, [0.44, 1.05, 0], 0.035, chrome);                                                                // stem
+  for (const z of [-1, 1]) B([0.44, 1.05, 0], [CYC.grip[0], CYC.grip[1], z * CYC.grip[2]], 0.025, chrome); // swept-back bars
+  for (const z of [-0.09, 0.09]) { B([CYC.rear - 0.22, 0.84, z], [CYC.rear + 0.2, 0.84, z], 0.016, chrome); B([CYC.rear - 0.02, 0.84, z], [CYC.rear, CYC.R, z], 0.014, chrome); }   // carrier
+  for (const x of [-0.2, 0, 0.18]) B([CYC.rear + x, 0.84, -0.09], [CYC.rear + x, 0.84, 0.09], 0.014, chrome);
+  B([CYC.rear + 0.2, 0.84, 0], [seatC[0], seatC[1] - 0.02, 0], 0.016, chrome);
+  vbox(G, -0.02, 0.4, 0.29, 0.33, 0.06, 0.08, lin('#202226'));                                            // chain guard
+  const m = G.mesh(VEHMAT); m.castShadow = true; m.renderOrder = 11;
+  const wheel = () => {   // tyre ring, rim, spokes, round the hub; spins about z
+    const W = new Geo(true), n = 20, R = CYC.R;
+    for (let k = 0; k < n; k++) {
+      const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2;
+      beam(W, [Math.cos(a0) * R, Math.sin(a0) * R, 0], [Math.cos(a1) * R, Math.sin(a1) * R, 0], 0.035, 0.035, C.tyre, 0);
+      beam(W, [Math.cos(a0) * (R - 0.03), Math.sin(a0) * (R - 0.03), 0], [Math.cos(a1) * (R - 0.03), Math.sin(a1) * (R - 0.03), 0], 0.02, 0.015, chrome, 0);
+    }
+    for (let k = 0; k < 12; k++) { const a = (k / 12) * Math.PI * 2; beam(W, [0, 0, 0], [Math.cos(a) * (R - 0.03), Math.sin(a) * (R - 0.03), 0], 0.006, 0.006, chrome, 0); }
+    vbox(W, -0.03, 0.03, -0.03, 0.03, -0.05, 0.05, chrome);
+    const w = W.mesh(VEHMAT); w.renderOrder = 11; w.castShadow = true; return w;
+  };
+  const crank = () => {
+    const K = new Geo(true);
+    vbox(K, -0.07, 0.07, -0.07, 0.07, 0.085, 0.1, chrome);                                              // chainring
+    beam(K, [0, 0, 0.1], [0, -CYC.crank, 0.1], 0.025, 0.02, chrome, 0); beam(K, [0, 0, -0.1], [0, CYC.crank, -0.1], 0.025, 0.02, chrome, 0);
+    vbox(K, -0.05, 0.05, -CYC.crank - 0.012, -CYC.crank + 0.012, 0.1, 0.2, lin('#2b2b2b')); vbox(K, -0.05, 0.05, CYC.crank - 0.012, CYC.crank + 0.012, -0.2, -0.1, lin('#2b2b2b'));
+    const k = K.mesh(VEHMAT); k.renderOrder = 11; return k;
+  };
+  const wr = wheel(), wf = wheel(), ck = crank();
+  wr.position.set(CYC.rear, CYC.R, 0); wf.position.set(CYC.front, CYC.R, 0); ck.position.set(bb[0], bb[1], 0);
+  m.add(wr, wf, ck); m.userData.spin = { wheels: [wr, wf], crank: ck };
+  return m;
+}
 function buildRide(kind, pf, col) {
+  if (kind === 'cycle') return buildCycle(col);
   const G = new Geo(true), C = VCOL;
   if (kind === 'auto') VTYPES[3].build(G);
   else {   // scooter, no rider (you are the rider)
@@ -5737,6 +5779,7 @@ function buildRide(kind, pf, col) {
 }
 const RIDE_SPEC = {
   walk: { r: 0.3, seat: null },
+  cycle: { r: 0.45, vmax: 7, acc: 2.6, brk: 6.5, rev: 1.2, steer: 2.6, seat: [-0.22, 0.12, 0], seat3: [0.04, 0.39, 0], cam: 5, len: 1.8, w: 0.6 },
   scooter: { r: 0.55, vmax: 13, acc: 3.4, brk: 7.5, rev: 2.5, steer: 2.1, seat: [-0.24, -0.16, 0], seat3: [-0.3, 0.2, 0], cam: 5.5, len: 1.8, w: 0.7 },
   auto: { r: 0.9, vmax: 10.5, acc: 2.2, brk: 5.5, rev: 2.5, steer: 1.55, seat: [0.42, -0.3, 0], seat3: [0.18, 0.2, 0], cam: 7, len: 2.7, w: 1.4 },
 };
@@ -6167,7 +6210,7 @@ function walkBox(r) { const f = walkFocus(); return { x0: f.x - r, x1: f.x + r, 
 function walkQuad(r) { const f = walkFocus(); return [[f.x - r, f.z - r], [f.x + r, f.z - r], [f.x + r, f.z + r], [f.x - r, f.z + r]]; }
 function cycleRide() {
   const W = WALK; if (W.ride) return;
-  const order = ['walk', 'scooter', 'auto'], next = order[(order.indexOf(W.mode) + 1) % 3], P = W.P;
+  const order = ['walk', 'cycle', 'scooter', 'auto'], next = order[(order.indexOf(W.mode) + 1) % order.length], P = W.P;
   if (next === 'walk') {   // step off beside the vehicle
     const vx = -Math.sin(P.th), vz = Math.cos(P.th); P.x += vx * 1.3; P.z += vz * 1.3;
   }
@@ -6175,7 +6218,7 @@ function cycleRide() {
   if (next !== 'walk') hudPop(VEH_NAME[next], 'veh');
 }
 // ---- GTA-style: F gets into the auto or scooter next to you (out of traffic, or one you left parked), F gets out
-const VEH_NAME = { auto: 'Auto Rickshaw', scooter: 'Scooter' };
+const VEH_NAME = { auto: 'Auto Rickshaw', scooter: 'Scooter', cycle: 'Cycle' };
 function nearVehicle() {
   if (CFG.ride === false) return null;
   const W = WALK, P = W.P; let best = null, bd = 2.6;
@@ -6283,8 +6326,9 @@ function stepWalk(dt) {
   const F = walkFocus();
   if (!W.ride && (WCOL.stale || Math.hypot(F.x - WCOL.cx, F.z - WCOL.cz) > 70)) colBuild(F.x, F.z);
   // --- avatar / vehicle transform, animation, the people around you
-  if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; }
+  if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; if (W.mode === 'walk') { W.holder.rotation.x = 0; W.lean = 0; } }
   if (W.av && W.av.mixer) W.av.mixer.update(dt);
+  if (W.av && W.av.mixer && W.mode === 'cycle' && !W.ride) pedalPose(W.av, W.crank || 0);
   stepPedPool(dt);
   // --- camera
   if (W.panel) { W.yaw = lerpAng(W.yaw, Math.atan2(Math.cos(P.th), Math.sin(P.th)), Math.min(1, dt * 4)); W.pitch = lerp(W.pitch, 0.1, Math.min(1, dt * 4)); }
@@ -6364,8 +6408,17 @@ function stepVehicle(dt, spec) {
   const moved = Math.hypot(P.x - x0, P.z - z0); if (moved < Math.abs(P.v * dt) * 0.4) P.v *= 0.6;   // ran into something
   const gy = groundAt(P.x, P.z, P.y); P.y = gy > P.y ? gy : Math.max(gy, P.y - 9 * dt);                // up a ramp, or off an edge
   if (W.av.mixer) chPlay(W.av, 'Sitting'); else poseAvatar(W.av, 'seat', 0, 0, 0);
-  if (W.rideMesh && W.mode === 'scooter') W.holder.rotation.x = 0;
-  if (W.mode === 'scooter' && W.av) W.av.root.rotation.x = -s * clamp(P.v / 10, 0, 1) * 0.25;
+  // two wheels lean into the turn (the whole bike with its rider), an auto does not
+  const lean = W.mode === 'auto' ? 0 : s * clamp(Math.abs(P.v) / (W.mode === 'cycle' ? 5 : 9), 0, 1) * (W.mode === 'cycle' ? 0.2 : 0.24);
+  W.lean = lerp(W.lean || 0, lean, Math.min(1, dt * 5));
+  W.holder.rotation.order = 'YXZ'; W.holder.rotation.x = W.lean;
+  if (W.av) W.av.root.rotation.x = 0;
+  const sp = W.rideMesh && W.rideMesh.userData.spin;
+  if (sp) {
+    for (const w of sp.wheels) w.rotation.z -= P.v * dt / CYC.R;
+    W.crank = (W.crank || 0) - P.v * dt / (CYC.R * 2.4) * (P.v > 0 || f > 0 ? 1 : 0);   // freewheel: no pedalling backwards
+    sp.crank.rotation.z = W.crank;
+  }
 }
 function moveSolid(P, dx, dz, r) {
   const n = Math.max(1, Math.ceil(Math.hypot(dx, dz) / (r * 0.6)));
@@ -6401,6 +6454,61 @@ function carPush(P, r) {   // traffic is solid too, and so is anything you left 
     if (d >= r) continue;
     let na, nb; if (d < 1e-4) { if (c.len / 2 - Math.abs(a) < c.w / 2 - Math.abs(b)) { na = Math.sign(a) || 1; nb = 0; } else { na = 0; nb = Math.sign(b) || 1; } } else { na = da / d; nb = db / d; }
     const push = r - d + 0.01, wx = na * c.hx - nb * c.hz, wz = na * c.hz + nb * c.hx; P.x += wx * push; P.z += wz * push;
+  }
+}
+
+// ---- on the cycle: the sitting clip, leaned forward, with two-bone IK putting the feet on the pedals and the hands
+// on the grips. A bone is turned in world space so its child joint lands where wanted.
+const _ia = new THREE.Vector3(), _ib = new THREE.Vector3(), _ic = new THREE.Vector3(), _it = new THREE.Vector3(), _ik = new THREE.Vector3(),
+  _iq = new THREE.Quaternion(), _ip = new THREE.Quaternion(), _iu = new THREE.Vector3(), _iv = new THREE.Vector3(), _ir = new THREE.Quaternion();
+function boneWorldTurn(b, q) {   // apply world-space rotation q to bone b
+  b.parent.getWorldQuaternion(_ip);
+  _ir.copy(_ip).invert().multiply(q).multiply(_ip);
+  b.quaternion.premultiply(_ir); b.updateMatrixWorld(true);
+}
+function boneAim(b, from, cur, want) {   // turn b about its joint `from` so the point `cur` moves towards `want`
+  _iu.subVectors(cur, from).normalize(); _iv.subVectors(want, from).normalize();
+  _iq.setFromUnitVectors(_iu, _iv); boneWorldTurn(b, _iq);
+}
+function ik2(a, b, c, target, pole) {   // a: upper bone, b: lower bone, c: the end (wrist / ankle), all Object3Ds
+  a.getWorldPosition(_ia); b.getWorldPosition(_ib); c.getWorldPosition(_ic);
+  const la = _ia.distanceTo(_ib), lb = _ib.distanceTo(_ic);
+  _it.subVectors(target, _ia); const d = clamp(_it.length(), Math.abs(la - lb) + 1e-3, (la + lb) * 0.999); _it.normalize();
+  const ca = clamp((la * la + d * d - lb * lb) / (2 * la * d), -1, 1), sa = Math.sqrt(1 - ca * ca);
+  _iu.copy(pole).addScaledVector(_it, -pole.dot(_it)).normalize();                 // bend direction, square to the reach
+  _ik.copy(_ia).addScaledVector(_it, la * ca).addScaledVector(_iu, la * sa);       // where the knee / elbow goes
+  boneAim(a, _ia, _ib, _ik);
+  b.getWorldPosition(_ib); c.getWorldPosition(_ic);
+  _iv.copy(_ia).addScaledVector(_it, d);
+  boneAim(b, _ib, _ic, _iv);
+}
+const _pw = new THREE.Vector3(), _pp = new THREE.Vector3(), _pl = new THREE.Vector3(), _pm = new THREE.Matrix4();
+function pedalPose(C, crank) {
+  const g = (n) => C.rig[n] || (C.rig[n] = C.obj.getObjectByName(n));
+  if (!C.rig) C.rig = {};
+  const H = WALK.holder; H.updateMatrixWorld(true);
+  const toW = (x, y, z, out) => out.set(x, y, z).applyMatrix4(H.matrixWorld);
+  // lean the upper body forward ~15 degrees (about the bike's lateral axis)
+  _pl.set(0, 0, 1).transformDirection(H.matrixWorld);
+  const ab = g('Abdomen'); if (ab) { _iq.setFromAxisAngle(_pl, -0.27); boneWorldTurn(ab, _iq); }
+  // feet on the pedals: the left crank is opposite the right one
+  _pw.set(1, 0, 0).transformDirection(H.matrixWorld);   // forward: knees point this way
+  for (const [sd, ph] of [['L', crank + Math.PI], ['R', crank]]) {
+    const up = g('UpperLeg' + sd), lo = g('LowerLeg' + sd), end = g('LowerLeg' + sd + '_end'), foot = g('Foot' + sd); if (!up || !lo || !end) continue;
+    const zs = sd === 'L' ? -0.15 : 0.15;   // which side the model's left / right leg is on
+    const px = CYC.bb[0] + Math.sin(ph) * CYC.crank, py = CYC.bb[1] - Math.cos(ph) * CYC.crank;
+    toW(px - 0.03, py + 0.07, zs, _pp);
+    _iu.copy(_pw).addScaledVector(_pl, zs * 0.4);
+    ik2(up, lo, end, _pp, _iu.clone().normalize());
+    if (foot) { end.getWorldPosition(_ic); foot.parent.updateMatrixWorld(true); _pm.copy(foot.parent.matrixWorld).invert(); foot.position.copy(_ic.applyMatrix4(_pm)); foot.updateMatrixWorld(true); }
+  }
+  // hands on the grips, elbows out and back
+  for (const sd of ['L', 'R']) {
+    const up = g('UpperArm' + sd), lo = g('LowerArm' + sd), end = g('Palm' + sd); if (!up || !lo || !end) continue;
+    const zs = sd === 'L' ? -1 : 1;
+    toW(CYC.grip[0] - 0.03, CYC.grip[1] + 0.02, zs * CYC.grip[2], _pp);
+    _iu.copy(_pl).multiplyScalar(zs).addScaledVector(_pw, -0.6).addScaledVector(_by, -0.3).normalize();
+    ik2(up, lo, end, _pp, _iu);
   }
 }
 
@@ -6480,7 +6588,7 @@ function pedPush(P, r) {
     if (d >= rr) continue;
     if (d < 1e-4) { nx = Math.cos(P.th); nz = Math.sin(P.th); } else { nx /= d; nz /= d; }
     P.x += nx * (rr - d + 1e-3); P.z += nz * (rr - d + 1e-3);
-    if (WALK.mode === 'walk' && P.v > 0.9 && (Math.cos(P.th) * -nx + Math.sin(P.th) * -nz) > 0.3) pedBump(p);
+    if (Math.abs(P.v) > 0.9 && (Math.cos(P.th) * -nx + Math.sin(P.th) * -nz) * Math.sign(P.v) > 0.3) pedBump(p);
   }
 }
 // ---- GTA-style pop-ups: the area you walk into, the vehicle you get on
@@ -6512,13 +6620,13 @@ function renderAvatarPanel() {
 function walkUI() {
   if (!$('walkHud')) return;
   const W = WALK, R = W.ride;
-  $('wkMode').textContent = R ? (R.phase === 'wait' ? `Waiting at ${R.st.n}` : R.kind === 'metro' ? 'On the Metro' : 'On a Janmarg bus') : { walk: 'On foot', scooter: 'Scooter', auto: 'Auto rickshaw' }[W.mode];
+  $('wkMode').textContent = R ? (R.phase === 'wait' ? `Waiting at ${R.st.n}` : R.kind === 'metro' ? 'On the Metro' : 'On a Janmarg bus') : { walk: 'On foot', cycle: 'Cycle', scooter: 'Scooter', auto: 'Auto rickshaw' }[W.mode];
   $('wkName').textContent = (ACC.pf && ACC.pf.name) || 'Guest';
   $('wkSign').textContent = ACC.user ? 'Account' : 'Sign in';
   $('wkHint').innerHTML = R ? 'Drag / mouse to look around · Scroll zoom · E ' + (R.phase === 'wait' ? 'cancel' : 'get off at a stop')
-    : W.mode === 'walk' ? '<b>WASD</b> run · <b>Shift</b> sprint · <b>Caps</b> walk · <b>Space</b> jump · ' + (CFG.ride !== false ? '<b>F</b> get on an auto · ' : '') + '<b>E</b> metro & BRTS · '
-        + (CFG.ride !== false ? '<b>C</b> own scooter · ' : '') + 'click to look' + (CFG.start ? '' : ' · <b>Esc</b> map')
-      : '<b>W/S</b> throttle / brake · <b>A/D</b> steer · <b>F</b> get off · click to look' + (CFG.start ? '' : ' · <b>Esc</b> map');
+    : W.mode === 'walk' ? '<b>WASD</b> run · <b>Shift</b> sprint · <b>Caps</b> walk · <b>Space</b> jump · ' + (CFG.ride !== false && CFG.vehicles.some((v) => v === 'auto' || v === 'scooter') ? '<b>F</b> get on an auto · ' : '') + '<b>E</b> metro & BRTS · '
+        + (CFG.ride !== false ? '<b>C</b> cycle · scooter · rickshaw · ' : '') + 'click to look' + (CFG.start ? '' : ' · <b>Esc</b> map')
+      : '<b>W/S</b> ' + (W.mode === 'cycle' ? 'pedal' : 'throttle') + ' / brake · <b>A/D</b> steer · <b>C</b> ' + (W.mode === 'auto' ? 'back on foot' : 'next ride') + ' · <b>F</b> get off here · click to look' + (CFG.start ? '' : ' · <b>Esc</b> map');
 }
 function initWalkUI() {
   $('walkBtn').onclick = () => enterWalk();
@@ -6662,7 +6770,7 @@ function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn
   } });
   return out;
 }
-window.AMD = { enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
