@@ -190,6 +190,12 @@ faces a road gets shops along its ground floor (a lit shop or a rolling shutter,
 atlas, often a striped awning), and about 60% of residential blocks get balconies (slab, solid parapet in the
 building's paint, steel rail) on the upper floors, lined up with the windows the facade shader draws.
 
+### Riverfront furniture
+The upper promenade's lamps are black poles with glowing globes; between them stand benches facing the river, a green
+bin beside every third lamp, a makai lari (corn cart with a coal brazier and a striped umbrella) every ~14 lamps, and an
+"I ❤ AMDAVAD" sign on the promenade nearest the Patang Hotel (three.js TextGeometry, letters in kite colours). All of
+it is solid.
+
 ### Janmarg BRTS
 Stops, route stop sequences and the timetable come from the official Janmarg GTFS (packaged as SQLite in
 str3939/Janmarg-BRTS-Guide). The GTFS has no shapes, so each route is routed station-to-station over the major road

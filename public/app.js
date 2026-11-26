@@ -3111,7 +3111,7 @@ function buildRiverfront() {
   out.push(...rails); RIVER_FINE.push(...rails);
   // lamp posts on the upper promenade
   if (R.lamps.length) {
-    const g = lampGeo(), im = new THREE.InstancedMesh(g, LAMPMAT, R.lamps.length), m4 = new THREE.Matrix4();
+    const g = globeLampGeo(), im = new THREE.InstancedMesh(g, VEHMAT, R.lamps.length), m4 = new THREE.Matrix4();
     R.lamps.forEach(([x, z], i) => { m4.makeTranslation(x, 0, z); im.setMatrixAt(i, m4); });
     im.computeBoundingSphere(); im.castShadow = true; im.renderOrder = 10; out.push(im); RIVER_FINE.push(im);
   }
@@ -3122,6 +3122,122 @@ function buildRiverfront() {
   for (const P of R.walls) { mapCtx.beginPath(); for (let j = 0; j < P.length / 2; j++) { const [mx, mz] = mapXY(P[j * 2], P[j * 2 + 1]); j ? mapCtx.lineTo(mx, mz) : mapCtx.moveTo(mx, mz); } mapCtx.stroke(); }
 }
 const RIVER_FINE = [];
+// ---------------------------------------------------------------- riverfront street furniture
+// globe lamps, benches facing the river, green bins, corn carts (makai lari) and an "I love Amdavad" sign; all solid
+const PROP_COL = { box: [], circ: [] };   // box: [cx, cz, ux, uz, half-length, half-depth, height]; circ: [x, z, r, h]
+function ball(G, cx, cy, cz, r, col, lamp = 0, seg = 8) {
+  for (let a = 0; a < seg / 2; a++) for (let b = 0; b < seg; b++) {
+    const t0 = (a / (seg / 2)) * Math.PI, t1 = ((a + 1) / (seg / 2)) * Math.PI, p0 = (b / seg) * Math.PI * 2, p1 = ((b + 1) / seg) * Math.PI * 2;
+    const P = (t, p) => [cx + r * Math.sin(t) * Math.cos(p), cy + r * Math.cos(t), cz + r * Math.sin(t) * Math.sin(p)];
+    const tm = (t0 + t1) / 2, pm = (p0 + p1) / 2;
+    lq(G, P(t0, p0), P(t0, p1), P(t1, p1), P(t1, p0), [Math.sin(tm) * Math.cos(pm), Math.cos(tm), Math.sin(tm) * Math.sin(pm)], [lamp, 0, 0, 0], col);
+  }
+}
+function globeLampGeo() {
+  const G = new Geo(true), pole = C255(28, 30, 33);
+  vbox(G, -0.11, 0.11, 0, 0.5, -0.11, 0.11, pole);                     // cast base
+  vbox(G, -0.05, 0.05, 0.5, 4.3, -0.05, 0.05, pole);                   // pole
+  vbox(G, -0.09, 0.09, 4.3, 4.42, -0.09, 0.09, pole);                  // collar
+  ball(G, 0, 4.72, 0, 0.3, C255(255, 244, 214), 1, 10);                  // globe
+  return G.mesh(VEHMAT).geometry;
+}
+function benchGeo() {   // 1.8 m, facing +z
+  const G = new Geo(true), wood = C255(150, 98, 56), iron = C255(36, 38, 40);
+  for (const z of [-0.18, -0.06, 0.06, 0.18]) vbox(G, -0.9, 0.9, 0.42, 0.46, z - 0.05, z + 0.05, wood);
+  for (const y of [0.6, 0.74, 0.88]) vbox(G, -0.9, 0.9, y - 0.05, y + 0.05, -0.27, -0.23, wood);
+  for (const x of [-0.78, 0.78]) { vbox(G, x - 0.04, x + 0.04, 0, 0.42, -0.2, 0.2, iron); vbox(G, x - 0.04, x + 0.04, 0.42, 0.95, -0.28, -0.22, iron); vbox(G, x - 0.04, x + 0.04, 0.6, 0.66, -0.22, 0.2, iron); }
+  return G.mesh(VEHMAT).geometry;
+}
+function binGeo() {
+  const G = new Geo(true), green = C255(38, 120, 62), dark = C255(25, 70, 40);
+  const n = 10; for (let k = 0; k < n; k++) {
+    const a0 = (k / n) * Math.PI * 2, a1 = ((k + 1) / n) * Math.PI * 2, r = 0.26, P = (a, y, rr = r) => [Math.cos(a) * rr, y, Math.sin(a) * rr], am = (a0 + a1) / 2;
+    lq(G, P(a0, 0), P(a1, 0), P(a1, 0.85), P(a0, 0.85), [Math.cos(am), 0, Math.sin(am)], [0, 0, 0, 0], green);
+    lq(G, P(a0, 0.85), P(a1, 0.85), P(a1, 0.92, 0.29), P(a0, 0.92, 0.29), [Math.cos(am), 0.3, Math.sin(am)], [0, 0, 0, 0], dark);
+    lq(G, P(a0, 0.92, 0.29), P(a1, 0.92, 0.29), [0, 0.95, 0], [0, 0.95, 0], [0, 1, 0], [0, 0, 0, 0], dark);
+  }
+  return G.mesh(VEHMAT).geometry;
+}
+function cartGeo() {   // makai lari: a wooden hand cart with a coal brazier, corn heaped beside it and a big umbrella; along x
+  const G = new Geo(true), wood = C255(132, 82, 44), dark = C255(40, 34, 30), corn = C255(236, 196, 70), husk = C255(120, 160, 70), coal = C255(200, 70, 30);
+  vbox(G, -0.9, 0.9, 0.72, 0.8, -0.5, 0.5, wood);                                   // deck
+  for (const z of [-0.5, 0.5]) vbox(G, -0.9, 0.9, 0.8, 0.95, z - 0.03, z + 0.03, wood);   // sides
+  vbox(G, -1.6, -0.9, 0.74, 0.8, -0.04, 0.04, wood);                                // handle
+  for (const z of [-0.56, 0.56]) { for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2, b = (k + 1) / 8 * Math.PI * 2; beam(G, [Math.cos(a) * 0.38, 0.4 + Math.sin(a) * 0.38, z], [Math.cos(b) * 0.38, 0.4 + Math.sin(b) * 0.38, z], 0.06, 0.06, dark, 0); } }
+  vbox(G, -0.05, 0.05, 0.36, 0.44, -0.6, 0.6, dark);                                // axle
+  vbox(G, 0.2, 0.75, 0.8, 1.0, -0.3, 0.3, dark); vbox(G, 0.25, 0.7, 1.0, 1.04, -0.25, 0.25, coal, 2);   // brazier, glowing coals
+  for (let k = 0; k < 9; k++) { const x = -0.75 + (k % 3) * 0.22, z = -0.35 + Math.floor(k / 3) * 0.25; vbox(G, x - 0.09, x + 0.09, 0.8, 0.88, z - 0.04, z + 0.04, k % 2 ? corn : husk); }
+  vbox(G, -0.03, 0.03, 0.8, 2.3, -0.03, 0.03, dark);                                // umbrella pole
+  const cols = [C255(230, 60, 50), C255(250, 220, 60), C255(40, 120, 200), C255(250, 250, 245)];
+  for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2, b = (k + 1) / 8 * Math.PI * 2, R = 1.1;
+    lq(G, [0, 2.45, 0], [0, 2.45, 0], [Math.cos(b) * R, 2.1, Math.sin(b) * R], [Math.cos(a) * R, 2.1, Math.sin(a) * R], [Math.cos((a + b) / 2) * 0.3, 1, Math.sin((a + b) / 2) * 0.3], [0, 0, 0, 0], cols[k % 4]); }
+  return G.mesh(VEHMAT).geometry;
+}
+function buildRiverProps() {
+  const R = TR && TR.river; if (!R || !R.lamps.length) return;
+  const Wl = R.walls[0], segs = [];
+  for (let j = 0; j + 3 < Wl.length; j += 2) segs.push([Wl[j], Wl[j + 1], Wl[j + 2], Wl[j + 3]]);
+  const nearWall = (x, z) => {   // nearest point on the channel wall, and the way to the land side
+    let bd = 1e18, q = null;
+    for (const [ax, az, bx, bz] of segs) { const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1, t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1), qx = ax + dx * t, qz = az + dz * t, d = (qx - x) ** 2 + (qz - z) ** 2;
+      if (d < bd) { bd = d; const l = Math.sqrt(l2); q = { x: qx, z: qz, ux: dx / l, uz: dz / l, d: Math.sqrt(d) }; } }
+    let nx = -q.uz, nz = q.ux; if (promAt(q.x + nx * 3, q.z + nz * 3)) { nx = -nx; nz = -nz; }
+    q.nx = nx; q.nz = nz; return q;
+  };
+  const onRoad = (x, z) => { const i = nearestRoad(x, z); if (i < 0) return false; const P = { x: 0, z: 0 };
+    const Rd = ROADS, p0 = Rd.start[i], c = Rd.lens[i]; let bd = 1e9;
+    for (let j = 0; j < c - 1; j++) { const ax = Rd.xy[(p0 + j) * 2] * 0.5, az = Rd.xy[(p0 + j) * 2 + 1] * 0.5, dx = Rd.xy[(p0 + j + 1) * 2] * 0.5 - ax, dz = Rd.xy[(p0 + j + 1) * 2 + 1] * 0.5 - az, l2 = dx * dx + dz * dz || 1, t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1); bd = Math.min(bd, Math.hypot(x - ax - dx * t, z - az - dz * t)); }
+    return bd < Rd.hw[i] / 10 + 1.2; };
+  const benches = [], bins = [], carts = [];
+  R.lamps.forEach(([x, z], i) => {
+    PROP_COL.circ.push([x, z, 0.12, 5]);
+    const q = nearWall(x, z); if (q.d > 25) return;
+    const h = hash1(i * 7 + 3);
+    // a bench facing the river halfway to the next lamp, a bin beside every third lamp, now and then a corn cart
+    const along = 7 + 3 * h, bx = x + q.ux * along, bz = z + q.uz * along, bq = nearWall(bx, bz);
+    const px = bq.x + bq.nx * 2.2, pz = bq.z + bq.nz * 2.2;
+    if (h < 0.7 && !onRoad(px, pz) && !waterAt(px, pz)) { benches.push([px, pz, -bq.nx, -bq.nz]); PROP_COL.box.push([px, pz, bq.ux, bq.uz, 0.92, 0.3, 0.95]); }
+    if (i % 3 === 0) { const sx = x + q.ux * 0.9, sz = z + q.uz * 0.9; if (!onRoad(sx, sz)) { bins.push([sx, sz, 1, 0]); PROP_COL.circ.push([sx, sz, 0.3, 1]); } }
+    if (i % 14 === 7) { const cx = x - q.ux * 6 + q.nx * 4.5, cz = z - q.uz * 6 + q.nz * 4.5; if (!onRoad(cx, cz) && !waterAt(cx, cz) && !promAt(cx, cz)) { carts.push([cx, cz, q.ux, q.uz]); PROP_COL.box.push([cx, cz, q.ux, q.uz, 1.2, 0.65, 1.0]); } }
+  });
+  const inst = (geo, L) => {
+    const im = new THREE.InstancedMesh(geo, VEHMAT, L.length), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), one = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3();
+    L.forEach(([x, z, fx, fz], k) => { e.set(0, Math.atan2(fx, fz), 0); q.setFromEuler(e); m4.compose(p.set(x, 0, z), q, one); im.setMatrixAt(k, m4); });   // local +z turned to face (fx, fz)
+    im.computeBoundingSphere(); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im); return im;
+  };
+  inst(benchGeo(), benches); inst(binGeo(), bins);
+  inst(cartGeo(), carts.map(([x, z, ux, uz]) => [x, z, -uz, ux]));   // the cart's length (x) along the wall
+  // "I love Amdavad": on the upper promenade nearest the Patang Hotel, reading towards the city
+  const lm = (META.lm3d || []).find((o) => o.kind === 'patang') || { x: 0, z: 0 };
+  const q = nearWall(lm.x, lm.z), sx = q.x + q.nx * 7, sz = q.z + q.nz * 7;
+  loveSign(sx, sz, q.nx, q.nz, q.ux, q.uz);
+}
+async function loveSign(x, z, fx, fz, ux, uz) {
+  try {
+    const [{ FontLoader }, { TextGeometry }] = await Promise.all([import('three/addons/loaders/FontLoader.js'), import('three/addons/geometries/TextGeometry.js')]);
+    const font = await new FontLoader().loadAsync('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/fonts/helvetiker_bold.typeface.json');
+    const KC = ['#e63946', '#f4a261', '#2a9d8f', '#e9c46a', '#7b5ce0', '#f06292', '#3fb6e8'], H = 1.7, D = 0.55, parts = [];
+    const paint = (g, hex) => { const c = new THREE.Color(hex), n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
+    let cx = 0;
+    const put = (g, hex, w) => { g.computeBoundingBox(); const b = g.boundingBox; g.translate(cx - b.min.x, 0.45, 0); parts.push(paint(g.index ? g.toNonIndexed() : g, hex)); cx += w ?? (b.max.x - b.min.x); cx += 0.22; };
+    const txt = (t) => new TextGeometry(t, { font, size: H, height: D, depth: D, curveSegments: 3, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.03, bevelSegments: 1 });
+    put(txt('I'), '#ffffff');
+    const hs = new THREE.Shape(), k = H / 2;   // heart
+    hs.moveTo(k, 0); hs.bezierCurveTo(k * 0.2, k * 0.55, -k * 0.1, k * 1.25, k * 0.45, k * 1.75); hs.bezierCurveTo(k * 0.8, k * 2.05, k, k * 1.75, k, k * 1.5);
+    hs.bezierCurveTo(k, k * 1.75, k * 1.2, k * 2.05, k * 1.55, k * 1.75); hs.bezierCurveTo(k * 2.1, k * 1.25, k * 1.8, k * 0.55, k, 0);
+    put(new THREE.ExtrudeGeometry(hs, { depth: D, bevelEnabled: false, curveSegments: 8 }), '#e01e3c');
+    [...'AMDAVAD'].forEach((ch, i) => put(txt(ch), KC[i % KC.length]));
+    for (const g of parts) for (const key of Object.keys(g.attributes)) if (!['position', 'normal', 'color'].includes(key)) g.deleteAttribute(key);
+    const geo = mergeGeometries(parts); const W = cx - 0.22;
+    geo.translate(-W / 2, 0, -D / 2);
+    const base = new THREE.BoxGeometry(W + 1.2, 0.45, 1.3).toNonIndexed(); base.translate(0, 0.225, 0); base.deleteAttribute('uv'); paint(base, '#d8d2c6');
+    const all = mergeGeometries([geo, base]);
+    const m = new THREE.Mesh(all, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    m.position.set(x, 0, z); m.rotation.y = Math.atan2(fx, fz);   // letters read from the city side
+    m.castShadow = true; m.receiveShadow = true; m.renderOrder = 10; group.ground.add(m); RIVER_FINE.push(m);
+    PROP_COL.box.push([x, z, ux, uz, (W + 1.2) / 2, 0.65, 2.3]); WCOL.stale = true;
+  } catch (e) { console.warn('sign', e); }
+}
 function lampGeo() {
   const T = new TGeo(), c = [1, 1, 1], k = [0, 0, 0, 0];
   T.prism(0, 0, 1, 0, [[0.09, 0], [0.045, 0.078], [-0.045, 0.078], [-0.09, 0], [-0.045, -0.078], [0.045, -0.078]], 0, 5.2, c, k);
@@ -5903,7 +6019,7 @@ function promAt(x, z) {
   return false;
 }
 const baseY = (x, z) => (promAt(x, z) ? TR.river.py : 0);   // the ground with nothing built on it
-// walls are [ax, az, bx, bz, y0, y1, kind]: kind 0 building, 1 riverfront wall, 2 flyover side, 3 pier, 4 BRTS station, 5 busway railing
+// walls are [ax, az, bx, bz, y0, y1, kind]: kind 0 building, 1 riverfront wall, 2 flyover side, 3 pier, 4 BRTS station, 5 busway railing, 6 street furniture
 const CS = 7;
 function colBuild(x, z) {
   const R = WCOL.R, C = WCOL.cell, E = [], map = new Map(), D = [], dmap = new Map();
@@ -6010,9 +6126,16 @@ function colBuild(x, z) {
     deck(-L2, L2, 0.9, 0.9, W2 - 0.4);
     for (const se of [-1, 1]) deck(se * (L2 + 9.5), se * L2, 0.02, 0.9, 0.8);
   }
+  // street furniture: benches, carts, the sign
+  for (const [cx, cz, ux, uz, a, b, h] of PROP_COL.box) {
+    if (Math.abs(cx - x) > R || Math.abs(cz - z) > R) continue;
+    const vx = -uz, vz = ux, Pp = [[a, b], [a, -b], [-a, -b], [-a, b]].map(([p, q]) => [cx + ux * p + vx * q, cz + uz * p + vz * q]);
+    for (let k = 0; k < 4; k++) add(Pp[k][0], Pp[k][1], Pp[(k + 1) % 4][0], Pp[(k + 1) % 4][1], 0, h, 6);
+  }
   // round things: tree trunks and the Patang tower ([x, z, radius, height])
   const T = [], tmap = new Map();
   const circ = (cx, cz, r, h) => { if (Math.abs(cx - x) > R || Math.abs(cz - z) > R) return; const id = T.length / 4; T.push(cx, cz, r, h); grid(tmap, id, cx, cz, cx, cz, r); };
+  for (const [cx, cz, r, h] of PROP_COL.circ) circ(cx, cz, r, h);
   for (const ch of chunks) {
     const tc = ch.tcol; if (!tc || Math.abs(ch.ox - x) > 500 + R || Math.abs(ch.oz - z) > 500 + R) continue;
     for (let k = 0; k < tc.length; k += 4) circ(tc[k], tc[k + 1], tc[k + 2], tc[k + 3]);
@@ -6968,7 +7091,7 @@ async function boot() {
   buildRoads();
   buildAirport(); if (CFG.buildings) { buildPolExtras(); buildDarwajas(); } buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
-  buildRiverfront(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); if (CFG.buildings) buildSites(); initPlay(); if (CFG.industry) buildIndustry(); buildWeather();
+  buildRiverfront(); buildRiverProps(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); if (CFG.buildings) buildSites(); initPlay(); if (CFG.industry) buildIndustry(); buildWeather();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   if (!CFG.buildings) $('stats').innerHTML = `${META.counts.roads.toLocaleString()} road segments · ${TR && TR.brts ? TR.brts.stations.length : 0} BRTS stops<br>${META.stations ? META.stations.length : 0} rail stations` + (CFG.trees ? ` · ${(META.counts.trees / 1000).toFixed(0)}k trees` : '');
