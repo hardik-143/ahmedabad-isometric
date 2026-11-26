@@ -159,8 +159,9 @@ style. People are Quaternius's CC0 Animated Men and Animated Women packs (`publi
 loaded only on foot): their clothes are real geometry with their own materials, so everyone is recoloured (shirt,
 t-shirt, kurta, shirt & tie, suit, saree, salwar kameez, jacket & jeans; skin and hair colour), and saree / kurta /
 kameez add a skirt on the hip bone. Each body carries its own clips: idle, walk, run, jump, running jump, sitting.
-Walk, run and idle are motion capture: the three.js Soldier example's Mixamo clips, retargeted offline onto each body
-(`tools/retarget`, written to `public/models/people/mocap.json`, 71 KB gzipped).
+Walk and run are motion capture: the three.js Soldier example's Mixamo clips, retargeted offline onto each body
+(`tools/retarget`, written to `public/models/people/mocap.json`, 48 KB gzipped). The Soldier's idle is a combat stance
+(feet wide, knees bent, hunched), so people keep their own relaxed idle.
 Smoothness: walk and run speeds were measured from the planted foot (3.82 and 10.6 model units a second for the mocap) and every
 clip plays at ground speed / clip speed, so feet do not slide; walk and run switch with hysteresis (run above 2.8 m/s,
 back to walk below 2.3) keeping the stride's phase; 0.18 s crossfades, a short pause before idling, a running jump

@@ -1,6 +1,6 @@
 # Mocap retargeting (walk, run, idle)
 
-Moves the three.js Soldier's motion-captured Mixamo clips (Walk, Run, Idle; `examples/models/gltf/Soldier.glb` in the
+Moves the three.js Soldier's motion-captured Mixamo clips (Walk and Run; its Idle is a combat stance and is dropped; `examples/models/gltf/Soldier.glb` in the
 three.js repo) onto the six Quaternius bodies in `public/models/people`, and writes `public/models/people/mocap.json`.
 
 How: for every frame, each mapped bone's world rotation is the source bone's rotation change since its rest pose

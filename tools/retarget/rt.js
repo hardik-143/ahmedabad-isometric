@@ -26,7 +26,7 @@ const DIR = {   // bone -> the child that gives its direction (target / source);
   ShoulderR: ['UpperArmR', 'mixamorigRightArm'], UpperArmR: ['LowerArmR', 'mixamorigRightForeArm'], LowerArmR: ['PalmR', 'mixamorigRightHand'], PalmR: ['MiddleHandR', 'mixamorigRightHandMiddle1'],
   UpperLegL: ['LowerLegL', 'mixamorigLeftLeg'], LowerLegL: ['LowerLegL_end', 'mixamorigLeftFoot'], FootL: ['FootL_end', 'mixamorigLeftToeBase'],
   UpperLegR: ['LowerLegR', 'mixamorigRightLeg'], LowerLegR: ['LowerLegR_end', 'mixamorigRightFoot'], FootR: ['FootR_end', 'mixamorigRightToeBase'],
-  Body: ['Abdomen', 'mixamorigSpine'], Abdomen: ['Torso', 'mixamorigSpine2'], Torso: ['Neck', 'mixamorigNeck'], Neck: ['Head', 'mixamorigHead'], Head: ['Head_end', 'mixamorigHeadTop_End'],
+  Abdomen: ['Torso', 'mixamorigSpine2'], Torso: ['Neck', 'mixamorigNeck'], Neck: ['Head', 'mixamorigHead'], Head: ['Head_end', 'mixamorigHeadTop_End'],
 };
 const Q = () => new THREE.Quaternion(), V = () => new THREE.Vector3();
 const R180 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
