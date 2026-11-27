@@ -6038,7 +6038,17 @@ const AV_HAIRC = '#1b1410', AV_SHOE = '#3a2a1e';
 // measured from the planted foot (4.383 and 9.706 model units a second), and every clip plays at ground speed / clip
 // speed, so feet never slide. Saree and kurta / kameez add a skirt that rides on the hip bone.
 const CHAR = { state: 0, p: null, tpl: {}, info: {}, SK: null };
-const CH_MODELS = ['man', 'suit', 'longsleeve', 'casual', 'woman', 'woman2'];
+const CH_MODELS = ['man', 'suit', 'longsleeve', 'casual', 'woman', 'woman2', 'ch12'];
+// Mixamo characters (tools/mixamo_char.py: bones renamed to mixamorig:*, colour texture only), moved by the three.js
+// Soldier's Mixamo Walk / Run / Idle retargeted to each body (tools/retarget/mixamo.js -> models/people/mixamo_anims.json).
+// Their bones carry other names, so the bones the code reaches for are looked up here.
+const CH_MIXAMO = { ch12: { rotY: Math.PI / 2 } };
+const MIXAMO_WALK = 1.6956, MIXAMO_RUN = 4.2954, MIXAMO_HIP = 0.983;   // the Soldier's ground speeds (m/s) at its hip height (m)
+const MIXAMO_BONE = { Hips: 'mixamorigHips', Abdomen: 'mixamorigSpine', Neck: 'mixamorigNeck', Head: 'mixamorigHead' };
+for (const [sd, S] of [['L', 'Left'], ['R', 'Right']]) Object.assign(MIXAMO_BONE, { ['UpperLeg' + sd]: `mixamorig${S}UpLeg`, ['LowerLeg' + sd]: `mixamorig${S}Leg`,
+  ['LowerLeg' + sd + '_end']: `mixamorig${S}Foot`, ['Foot' + sd]: null, ['UpperArm' + sd]: `mixamorig${S}Arm`, ['LowerArm' + sd]: `mixamorig${S}ForeArm`, ['Palm' + sd]: `mixamorig${S}Hand` });
+const chBone = (m, n) => (CH_MIXAMO[m] ? MIXAMO_BONE[n] : n);
+const CH_PLAYER = 'ch12';
 const CH_FEM = { woman: 1, woman2: 1 };
 const CH_WALK_U = 4.383, CH_RUN_U = 9.706;
 const CH_OUTFIT = {
@@ -6056,22 +6066,27 @@ function loadChars() {
     const L = new GLTFLoader(); L.setMeshoptDecoder(MeshoptDecoder);
     // walk, run and idle are motion capture (the three.js Soldier's Mixamo clips), retargeted offline onto each body
     // (tools/retarget: rest poses aligned bone by bone, the hips' drift removed, the feet put back at the ankles)
-    const [gs, MOCAP] = await Promise.all([Promise.all(CH_MODELS.map((m) => L.loadAsync(`models/people/${m}.glb`))),
-      fetch('models/people/mocap.json').then((r) => (r.ok ? r.json() : null)).catch(() => null)]);
+    const [gs, MOCAP, MXA] = await Promise.all([Promise.all(CH_MODELS.map((m) => L.loadAsync(`models/people/${m}.glb`))),
+      fetch('models/people/mocap.json').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch('models/people/mixamo_anims.json').then((r) => (r.ok ? r.json() : null)).catch(() => null)]);
     gs.forEach((g, k) => {
       const m = CH_MODELS[k], sc = g.scene; sc.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(sc), H = box.max.y - box.min.y, S = (CH_FEM[m] ? 1.62 : 1.72) / H;
-      const P = (n) => { const b = sc.getObjectByName(n); return b ? b.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(); };
+      const P = (n) => { const b = sc.getObjectByName(chBone(m, n)); return b ? b.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(); };
       const clips = {}; for (const c of g.animations) clips[c.name] = c;
       let wU = CH_WALK_U, rU = CH_RUN_U;
-      if (MOCAP && MOCAP[m]) for (const nm of ['Walk', 'Run', 'Idle']) {
+      if (CH_MIXAMO[m] && MXA && MXA[m]) {   // Mixamo bodies: the Soldier's clips retargeted to each (tools/retarget/mixamo.js), strides scaled by hip height
+        for (const [nm, d] of Object.entries(MXA[m])) clips[nm] = THREE.AnimationClip.parse(d);
+        const k = P('Hips').y / MIXAMO_HIP; wU = MIXAMO_WALK * k; rU = MIXAMO_RUN * k;
+      }
+      if (MOCAP && MOCAP[m] && !CH_MIXAMO[m]) for (const nm of ['Walk', 'Run', 'Idle']) {
         const d = MOCAP[m][nm]; if (!d) continue;
         clips[nm] = THREE.AnimationClip.parse(d.clip);
         if (nm === 'Walk' && d.speed) wU = d.speed; if (nm === 'Run' && d.speed) rU = d.speed;
       }
       CHAR.tpl[m] = sc;
-      CHAR.info[m] = { S, H, clips, walk: wU * S, run: rU * S, hipsRest: sc.getObjectByName('Hips').matrixWorld.clone(),
-        hipY: P('Hips').y, kneeY: P('LowerLegL').y, footY: P('FootL').y, legX: Math.abs(P('UpperLegL').x - P('Hips').x), cx: P('Hips').x, cz: P('Hips').z };
+      CHAR.info[m] = { S, H, clips, walk: wU * S, run: rU * S, hipsRest: sc.getObjectByName(chBone(m, 'Hips')).matrixWorld.clone(),
+        hipY: P('Hips').y, kneeY: P('LowerLegL').y, footY: P(CH_MIXAMO[m] ? 'LowerLegL_end' : 'FootL').y, legX: Math.abs(P('UpperLegL').x - P('Hips').x), cx: P('Hips').x, cz: P('Hips').z };
     });
     CHAR.state = 2;
   })().catch((e) => { CHAR.state = -1; console.error('characters', e); });
@@ -6079,7 +6094,7 @@ function loadChars() {
 }
 const chCol = (v, list, dflt) => v instanceof THREE.Color ? v : new THREE.Color(list && list[v] != null ? list[v] : (typeof v === 'string' ? v : dflt));
 function makeChar(pf) {
-  const m = (CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt).m, I = CHAR.info[m];
+  const m = pf.model || (CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt).m, I = CHAR.info[m];
   const obj = CHAR.SK.clone(CHAR.tpl[m]);
   const C = { model: m, obj, root: new THREE.Group(), mixer: new THREE.AnimationMixer(obj), acts: {}, cur: null, extra: [], mats: {}, idleT: 0 };
   obj.traverse((n) => {
@@ -6087,12 +6102,15 @@ function makeChar(pf) {
     if (!n.isMesh) return;
     n.frustumCulled = false; n.castShadow = true; n.receiveShadow = true;
     const x = n.material; let L = C.mats[x.name];
-    if (!L) { L = C.mats[x.name] = new THREE.MeshLambertMaterial({ color: x.color.clone() }); L.name = x.name; }
+    if (!L) {   // textured models (Mixamo) keep their textures; the others are recoloured per person
+      L = C.mats[x.name] = new THREE.MeshLambertMaterial({ color: x.color.clone(), map: x.map || null, transparent: x.transparent, opacity: x.opacity, alphaTest: x.alphaTest });
+      L.name = x.name;
+    }
     n.material = L;
   });
-  obj.scale.setScalar(I.S); obj.rotation.y = Math.PI / 2;   // the models face +z; people in this city face +x
+  obj.scale.setScalar(I.S); obj.rotation.y = CH_MIXAMO[m] ? CH_MIXAMO[m].rotY : Math.PI / 2;   // the models face +z; people in this city face +x
   C.root.add(obj);
-  C.neck = obj.getObjectByName('Neck'); C.head = obj.getObjectByName('Head'); C.look = 0;
+  C.neck = obj.getObjectByName(chBone(m, 'Neck')); C.head = obj.getObjectByName(chBone(m, 'Head')); C.look = 0;
   chLook(C, pf);
   return C;
 }
@@ -6127,7 +6145,7 @@ function chLook(C, pf) {
     const mesh = new THREE.Mesh(new THREE.CylinderGeometry(I.legX * (o.skirt === 'ankle' ? 1.5 : 1.38), I.legX * (o.skirt === 'ankle' ? 2.1 : 1.7), h, 20, 1, true),
       new THREE.MeshLambertMaterial({ color: top.clone().multiplyScalar(0.97), side: THREE.DoubleSide }));
     mesh.position.set(I.cx, y0 + h / 2, I.cz); mesh.scale.z = 0.86; mesh.updateMatrix();
-    const hips = C.obj.getObjectByName('Hips');
+    const hips = C.obj.getObjectByName(chBone(C.model, 'Hips'));
     new THREE.Matrix4().copy(I.hipsRest).invert().multiply(mesh.matrix).decompose(mesh.position, mesh.quaternion, mesh.scale);
     mesh.castShadow = true; mesh.renderOrder = 12; hips.add(mesh); C.extra.push(mesh);
   }
@@ -6707,15 +6725,19 @@ async function initAccount() {
 function rebuildAvatar() {
   const W = WALK;
   if (W.av) { if (W.av.mixer) chDispose(W.av); else W.holder.remove(W.av.root); }
-  W.av = CHAR.state === 2 ? makeChar(ACC.pf) : buildAvatar(ACC.pf);   // the box person stands in while the models load
+  W.av = CHAR.state === 2 ? makeChar({ ...ACC.pf, model: CH_PLAYER }) : buildAvatar(ACC.pf);   // the box person stands in while the models load
   W.av.root.traverse((o) => { o.renderOrder = 12; });
   W.holder.add(W.av.root);
   if (W.rideMesh) { W.holder.remove(W.rideMesh); if (W.rideMesh.userData.own) W.rideMesh.geometry.dispose(); W.rideMesh = null; }
   if (W.mode !== 'walk') {
     W.rideMesh = buildRide(W.mode, ACC.pf, W.rideCol); W.holder.add(W.rideMesh);
     const sp3 = RIDE_SPEC[W.mode], own = W.rideMesh.userData.own || W.mode === 'cycle';
-    const s = W.av.mixer ? (own || !sp3.seat3old ? sp3.seat3 : sp3.seat3old) : sp3.seat; W.av.root.position.set(s[0], s[1], s[2]);
-    if (W.av.mixer) chPlay(W.av, 'Sitting', 0);
+    const s = W.av.mixer ? (own || !sp3.seat3old ? sp3.seat3 : sp3.seat3old) : sp3.seat;
+    // a body with no sitting clip stands on the ride: move it down and back so its hips sit where a seated person's do
+    // (hips 0.39 m up and 0.21 m behind the feet); arms and legs are then placed on the ride (ridePose)
+    const I = W.av.mixer && CHAR.info[W.av.model], noSit = I && !I.clips.Sitting, fix = noSit ? [-0.21, 0.394 - I.hipY * I.S, 0] : [0, 0, 0];
+    W.av.root.position.set(s[0] + fix[0], s[1] + fix[1], s[2] + fix[2]);
+    if (W.av.mixer) chPlay(W.av, noSit ? 'Idle' : 'Sitting', 0);
   }
 }
 function enterWalk(x, z) {
@@ -7226,7 +7248,7 @@ const RIDE_POSE = { cycle: { lean: 0.27, grip: [CYC.grip[0] - 0.03, CYC.grip[1] 
   auto: { lean: 0.06, grip: [0.67, 1.05, 0.27], feet: [0.8, 0.39, 0.13] } };
 function ridePose(C, mode, crank) {
   const RP = RIDE_POSE[mode]; if (!RP) return;
-  const g = (n) => C.rig[n] || (C.rig[n] = C.obj.getObjectByName(n));
+  const g = (n) => { if (!(n in C.rig)) { const b = chBone(C.model, n); C.rig[n] = b ? C.obj.getObjectByName(b) : null; } return C.rig[n]; };
   if (!C.rig) C.rig = {};
   const H = WALK.holder; H.updateMatrixWorld(true);
   const toW = (x, y, z, out) => out.set(x, y, z).applyMatrix4(H.matrixWorld);
