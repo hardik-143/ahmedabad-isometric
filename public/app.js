@@ -6735,7 +6735,7 @@ function rebuildAvatar() {
     const s = W.av.mixer ? (own || !sp3.seat3old ? sp3.seat3 : sp3.seat3old) : sp3.seat;
     // a body with no sitting clip stands on the ride: move it down and back so its hips sit where a seated person's do
     // (hips 0.39 m up and 0.21 m behind the feet); arms and legs are then placed on the ride (ridePose)
-    const I = W.av.mixer && CHAR.info[W.av.model], noSit = I && !I.clips.Sitting, fix = noSit ? [-0.21, 0.394 - I.hipY * I.S, 0] : [0, 0, 0];
+    const I = W.av.mixer && CHAR.info[W.av.model], noSit = I && !I.clips.Sitting, fix = noSit ? [-0.12, 0.394 - I.hipY * I.S, 0] : [0, 0, 0];
     W.av.root.position.set(s[0] + fix[0], s[1] + fix[1], s[2] + fix[2]);
     if (W.av.mixer) chPlay(W.av, noSit ? 'Idle' : 'Sitting', 0);
   }
@@ -7254,13 +7254,18 @@ function ridePose(C, mode, crank) {
   const toW = (x, y, z, out) => out.set(x, y, z).applyMatrix4(H.matrixWorld);
   // lean the upper body forward (about the bike's lateral axis)
   _pl.set(0, 0, 1).transformDirection(H.matrixWorld);
-  const ab = g('Abdomen'); if (ab) { _iq.setFromAxisAngle(_pl, -RP.lean); boneWorldTurn(ab, _iq); }
+  // a Mixamo body has no sitting clip and longer legs than the Quaternius people the ride poses were made for: it leans
+  // less (its standing idle is already braced), keeps its head level, and puts its feet further forward
+  const mx = !!CH_MIXAMO[C.model], I = CHAR.info[C.model], lean = RP.lean * (mx ? 0.3 : 1);
+  const ab = g('Abdomen'); if (ab) { _iq.setFromAxisAngle(_pl, -lean); boneWorldTurn(ab, _iq); }
+  if (mx) { const nk = g('Neck'); if (nk) { _iq.setFromAxisAngle(_pl, lean * 0.9 + 0.12); boneWorldTurn(nk, _iq); } }
+  const reach = mx ? Math.max(0, I.hipY * I.S - 0.684) : 0;   // how much longer the legs are than the poses assume
   // feet on the pedals: the left crank is opposite the right one
   _pw.set(1, 0, 0).transformDirection(H.matrixWorld);   // forward: knees point this way
   for (const [sd, ph] of [['L', crank + Math.PI], ['R', crank]]) {
     const up = g('UpperLeg' + sd), lo = g('LowerLeg' + sd), end = g('LowerLeg' + sd + '_end'), foot = g('Foot' + sd); if (!up || !lo || !end) continue;
     const zs = sd === 'L' ? -0.15 : 0.15;   // which side the model's left / right leg is on
-    if (RP.feet) toW(RP.feet[0], RP.feet[1], Math.sign(zs) * RP.feet[2], _pp);   // feet on the floorboard
+    if (RP.feet) toW(RP.feet[0] + reach * 0.9, RP.feet[1], Math.sign(zs) * RP.feet[2], _pp);   // feet on the floorboard
     else { const px = CYC.bb[0] + Math.sin(ph) * CYC.crank, py = CYC.bb[1] - Math.cos(ph) * CYC.crank; toW(px - 0.03, py + 0.07, zs, _pp); }
     _iu.copy(_pw).addScaledVector(_pl, zs * 0.4);
     ik2(up, lo, end, _pp, _iu.clone().normalize());
