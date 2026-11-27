@@ -51,3 +51,67 @@ export async function retargetMixamo(sourceUrl, targetUrl, { turn = Math.PI, cli
   }
   return out;
 }
+
+// Clips from a rig with other bone names and another rest pose (the Quaternius people stand with their arms down, not in
+// a T-pose) onto a Mixamo body. map: body bone -> source bone. Each mapped bone takes the source bone's world turn from
+// its rest after its own rest direction (towards its first mapped child) has been swung onto the source's:
+// Wt(t) = A Ws(t) Ws0^-1 A^-1 C Wt0, C the shortest turn from the body's rest direction to the source's. Bones with no
+// counterpart (Spine1, fingers, toes) keep their rest pose under their parent.
+//   retargetMapped('/models/people/man.glb', '/models/people/ch12.glb', { map: QUATERNIUS_TO_MIXAMO, clips: /^(Jump|RunningJump)$/ })
+export const QUATERNIUS_TO_MIXAMO = { mixamorigHips: 'Hips', mixamorigSpine: 'Abdomen', mixamorigSpine2: 'Torso', mixamorigNeck: 'Neck', mixamorigHead: 'Head' };
+for (const [s, S] of [['L', 'Left'], ['R', 'Right']]) Object.assign(QUATERNIUS_TO_MIXAMO, { [`mixamorig${S}Shoulder`]: 'Shoulder' + s, [`mixamorig${S}Arm`]: 'UpperArm' + s,
+  [`mixamorig${S}ForeArm`]: 'LowerArm' + s, [`mixamorig${S}Hand`]: 'Palm' + s, [`mixamorig${S}UpLeg`]: 'UpperLeg' + s, [`mixamorig${S}Leg`]: 'LowerLeg' + s, [`mixamorig${S}Foot`]: 'Foot' + s });
+export async function retargetMapped(sourceUrl, targetUrl, { map = QUATERNIUS_TO_MIXAMO, turn = 0, clips = /.*/, rename = {}, fps = 30 } = {}) {
+  const THREE = await import('three'); const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+  const { MeshoptDecoder } = await import('three/addons/libs/meshopt_decoder.module.js');
+  const L = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  const [S, T] = await Promise.all([L.loadAsync(sourceUrl), L.loadAsync(targetUrl)]);
+  const ss = S.scene, ts = T.scene; ss.updateMatrixWorld(true); ts.updateMatrixWorld(true);
+  const bonesOf = (sc) => { const m = new Map(); sc.traverse((o) => { if (o.isBone) m.set(o.name, o); }); return m; };
+  const SB = bonesOf(ss), TB = bonesOf(ts);
+  const wq = (o) => o.getWorldQuaternion(new THREE.Quaternion()), wp = (o) => o.getWorldPosition(new THREE.Vector3());
+  const A = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), turn), Ai = A.clone().invert();
+  const M = new Map(Object.entries(map).filter(([t, s]) => TB.has(t) && SB.has(s)));
+  const Ws0 = new Map(), Wt0 = new Map(), C = new Map();
+  for (const [t, s] of M) {
+    Ws0.set(t, wq(SB.get(s))); Wt0.set(t, wq(TB.get(t)));
+    let tc = null; const q = [...TB.get(t).children];                       // the first mapped bone below, breadth first
+    while (q.length && !tc) { const o = q.shift(); if (o.isBone && M.has(o.name)) tc = o; else q.push(...o.children); }
+    const c = new THREE.Quaternion();
+    if (tc) {
+      const dt = wp(tc).sub(wp(TB.get(t))).normalize(), ds = wp(SB.get(M.get(tc.name))).sub(wp(SB.get(s))).applyQuaternion(A).normalize();
+      c.setFromUnitVectors(dt, ds);
+    }
+    C.set(t, c);
+  }
+  const order = []; ts.traverse((o) => { if (o.isBone) order.push(o); });   // parents first
+  const restLocal = new Map(order.map((b) => [b.name, b.quaternion.clone()]));
+  const sh = SB.get(M.get('mixamorigHips')), th = TB.get('mixamorigHips');
+  const sh0 = wp(sh), th0 = wp(th), k = th0.y / sh0.y;
+  const mixer = new THREE.AnimationMixer(ss), out = {};
+  for (const clip of S.animations) {
+    if (!clips.test(clip.name)) continue;
+    mixer.stopAllAction(); mixer.clipAction(clip).reset().play();
+    const N = Math.max(2, Math.round(clip.duration * fps)), times = [], Q = new Map([...M.keys()].map((n) => [n, []])), HP = [];
+    for (let i = 0; i <= N; i++) {
+      const t = (i / N) * clip.duration; times.push(+t.toFixed(4));
+      mixer.setTime(t); ss.updateMatrixWorld(true);
+      const W = new Map();
+      for (const b of order) {
+        const n = b.name, pw = b.parent && W.has(b.parent.name) ? W.get(b.parent.name) : wq(b.parent);
+        if (!M.has(n)) { W.set(n, pw.clone().multiply(restLocal.get(n))); continue; }
+        const Wt = A.clone().multiply(wq(SB.get(M.get(n)))).multiply(Ws0.get(n).clone().invert()).multiply(Ai).multiply(C.get(n)).multiply(Wt0.get(n));
+        W.set(n, Wt);
+        const loc = pw.clone().invert().multiply(Wt);
+        Q.get(n).push(+loc.x.toFixed(4), +loc.y.toFixed(4), +loc.z.toFixed(4), +loc.w.toFixed(4));
+      }
+      const hp = wp(sh).sub(sh0).applyQuaternion(A).multiplyScalar(k).add(th0);
+      th.parent.worldToLocal(hp); HP.push(+hp.x.toFixed(4), +hp.y.toFixed(4), +hp.z.toFixed(4));
+    }
+    const tracks = [...M.keys()].map((n) => ({ name: n + '.quaternion', type: 'quaternion', times, values: Q.get(n) }));
+    tracks.push({ name: 'mixamorigHips.position', type: 'vector', times, values: HP });
+    const nm = rename[clip.name] || clip.name;
+    out[nm] = { name: nm, duration: clip.duration, tracks, uuid: THREE.MathUtils.generateUUID(), blendMode: 2500 };
+  }
+  return out;
+}

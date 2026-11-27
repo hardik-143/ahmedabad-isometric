@@ -2895,7 +2895,10 @@ window.addEventListener('keydown', (e) => {
   else if (k === '-' || k === '_') zoomAt(innerWidth / 2, innerHeight / 2, 1.4);
   else keys.add(k);
 });
-window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+window.addEventListener('keyup', (e) => {
+  keys.delete(e.key.toLowerCase());
+  if (WALK.on && e.key === ' ' && e.target && e.target.tagName === 'BUTTON') e.preventDefault();   // browsers click a focused button on Space's release
+});
 function stepKeys(dt) {
   if (WALK.on) return false;
   let dx = 0, dy = 0;
@@ -6043,23 +6046,82 @@ const CH_MODELS = ['man', 'suit', 'longsleeve', 'casual', 'woman', 'woman2', 'ch
 // Soldier's Mixamo Walk / Run / Idle retargeted to each body (tools/retarget/mixamo.js -> models/people/mixamo_anims.json).
 // Their bones carry other names, so the bones the code reaches for are looked up here.
 const CH_MIXAMO = { ch12: { rotY: Math.PI / 2 } };
-// the people on the street: Mixamo bodies cut to ~13k triangles and 512 px (tools/mixamo_char.py ... 512 0.4); the men walk
-// with the Soldier's walk, the women with Mixamo's female walk; everyone idles with a relaxed breathing idle
+// the people on the street: Mixamo bodies cut to ~10k triangles and 512 px (tools/mixamo_char.py ... 512 0.2); the men walk
+// with the Soldier's walk, the women with Mixamo's female walk; men idle with a breathing idle, women with Mixamo's female
+// idle; jumps are the Quaternius people's, retargeted (tools/retarget/mixamo.js retargetMapped)
 const CROWD = { men: ['ch01', 'ch28', 'ch33'], women: ['ch07', 'ch21', 'ch22', 'ch27'] };
 for (const m of [...CROWD.men, ...CROWD.women]) CH_MIXAMO[m] = { rotY: Math.PI / 2 };
+// what you can be: each look is one Mixamo body in its own clothes, recoloured from the Top / Bottom / Skin / Hair rows
+const AV_LOOK = { shirt: ['ch12', 'Shirt & trousers'], tshirt: ['ch01', 'T-shirt & jeans'], hoodie: ['ch28', 'Hoodie'], suit: ['ch33', 'Suit & tie'],
+  tee: ['ch22', 'Tee & jeans'], shirtf: ['ch21', 'Shirt & trousers'], blazer: ['ch27', 'Blazer'], trousersuit: ['ch07', 'Trouser suit'] };
+const AV_LOOK_M = ['shirt', 'tshirt', 'hoodie', 'suit'], AV_LOOK_F = ['tee', 'shirtf', 'blazer', 'trousersuit'];
+const LOOK_OF_OUTFIT = { shirt: 'shirt', tshirt: 'tshirt', kurta: 'shirt', office: 'suit', suit: 'suit', saree: 'tee', salwar: 'shirtf', western: 'tee' };   // profiles saved before looks
+const avLook = (pf) => (AV_LOOK[pf.look] ? pf.look : LOOK_OF_OUTFIT[pf.outfit] || 'shirt');
+const OUTFIT_OF_LOOK = { shirt: 'shirt', tshirt: 'tshirt', hoodie: 'tshirt', suit: 'suit', tee: 'western', shirtf: 'western', blazer: 'western', trousersuit: 'western' };
 const MIXAMO_WALK = 1.6956, MIXAMO_RUN = 4.2954, MIXAMO_HIP = 0.983;   // the Soldier's ground speeds (m/s) at its hip height (m)
 const MIXAMO_BONE = { Hips: 'mixamorigHips', Abdomen: 'mixamorigSpine', Neck: 'mixamorigNeck', Head: 'mixamorigHead' };
 for (const [sd, S] of [['L', 'Left'], ['R', 'Right']]) Object.assign(MIXAMO_BONE, { ['UpperLeg' + sd]: `mixamorig${S}UpLeg`, ['LowerLeg' + sd]: `mixamorig${S}Leg`,
   ['LowerLeg' + sd + '_end']: `mixamorig${S}Foot`, ['Foot' + sd]: null, ['UpperArm' + sd]: `mixamorig${S}Arm`, ['LowerArm' + sd]: `mixamorig${S}ForeArm`, ['Palm' + sd]: `mixamorig${S}Hand` });
 const chBone = (m, n) => (CH_MIXAMO[m] ? MIXAMO_BONE[n] : n);
-const CH_PLAYER = 'ch12';
-const CH_FEM = { woman: 1, woman2: 1 };
+const CH_PLAYER = 'ch12';   // while a saved look's body is missing
+const CH_FEM = { woman: 1, woman2: 1 }; for (const m of CROWD.women) CH_FEM[m] = 1;
 const CH_WALK_U = 4.383, CH_RUN_U = 9.706;
 const CH_OUTFIT = {
   shirt: { m: 'longsleeve' }, tshirt: { m: 'man' }, kurta: { m: 'longsleeve', skirt: 'knee' }, suit: { m: 'suit' }, office: { m: 'casual' },
   saree: { m: 'woman2', skirt: 'ankle' }, salwar: { m: 'woman', skirt: 'knee' }, western: { m: 'woman' },
 };
 const CH_HAIR = ['#14100d', '#3b2a20', '#6b4a2e', '#8f8a85'];
+// ---- recolouring a textured (Mixamo) body part by part. Clothes and hair: the texture's brightness times the chosen
+// colour, the part's mean brightness brought to 1, so folds and seams stay. Skin: the texture times target / the body's
+// mean skin colour, only on texels whose hue is skin's (eyes, lips and brows keep their own colours). Each body's parts
+// are measured once from the texture under their vertices.
+function mxParts(sc) {
+  const names = []; sc.traverse((n) => { if (n.isMesh) names.push(n.name); });
+  const jacket = names.some((n) => /_(Suit|Hoody)$/.test(n));   // a jacket is the top; the shirt peeping out under it stays as it is
+  const role = (n) => /_Body$/.test(n) ? 'skin' : /_(Hair|Eyelas+hes)$/.test(n) ? 'hair' : /_(Suit|Hoody)$/.test(n) || (!jacket && /_Shirt$/.test(n)) ? 'top' : /_Pants$/.test(n) ? 'bot' : null;
+  const cv = document.createElement('canvas'), cx = cv.getContext('2d', { willReadFrequently: true }), px = new Map();
+  const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const out = {};
+  sc.traverse((n) => {
+    if (!n.isMesh) return;
+    const r = role(n.name), map = n.material.map, uv = n.geometry.attributes.uv;
+    if (!r || !map || !map.image || !uv) return;
+    let D = px.get(map);
+    if (!D) { const im = map.image; cv.width = im.width; cv.height = im.height; cx.drawImage(im, 0, 0); D = { w: im.width, h: im.height, a: cx.getImageData(0, 0, im.width, im.height).data }; px.set(map, D); }
+    let R = 0, G = 0, B = 0, Y = 0, c = 0; const step = Math.max(1, Math.floor(uv.count / 4000));
+    for (let i = 0; i < uv.count; i += step) {
+      const x = Math.min(D.w - 1, Math.floor((((uv.getX(i) % 1) + 1) % 1) * D.w)), y = Math.min(D.h - 1, Math.floor((((uv.getY(i) % 1) + 1) % 1) * D.h)), o = (y * D.w + x) * 4;
+      if (D.a[o + 3] < 128) continue;
+      const r1 = lin(D.a[o]), g1 = lin(D.a[o + 1]), b1 = lin(D.a[o + 2]); R += r1; G += g1; B += b1; Y += 0.2126 * r1 + 0.7152 * g1 + 0.0722 * b1; c++;
+    }
+    if (c) out[n.name] = { role: r, k: c / Math.max(Y, 1e-4), ref: [R / c, G / c, B / c] };
+  });
+  return out;
+}
+const MX_FRAG = `#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D( map, vMapUv );
+  #ifdef MX_SKIN
+    vec3 mxC = sampledDiffuseColor.rgb;
+    float mxW = uMix * ( 1.0 - smoothstep( 0.16, 0.42, distance( mxC / max( dot( mxC, vec3( 0.3333 ) ), 1e-4 ), uRef / max( dot( uRef, vec3( 0.3333 ) ), 1e-4 ) ) ) );
+    sampledDiffuseColor.rgb = mix( mxC, mxC * uTint / max( uRef, vec3( 1e-3 ) ), mxW );
+  #else
+    float mxY = dot( sampledDiffuseColor.rgb, vec3( 0.2126, 0.7152, 0.0722 ) );
+    sampledDiffuseColor.rgb = mix( sampledDiffuseColor.rgb, uTint * min( mxY * uK, 1.8 ), uMix );
+  #endif
+  diffuseColor *= sampledDiffuseColor;
+#endif`;
+function mxMaterial(src, part) {
+  const L = new THREE.MeshLambertMaterial({ map: src.map, transparent: src.transparent, opacity: src.opacity, alphaTest: src.alphaTest, side: src.side });
+  const U = L.userData.mx = { uTint: { value: new THREE.Color(1, 1, 1) }, uMix: { value: 0 }, uK: { value: part.k }, uRef: { value: new THREE.Color().fromArray(part.ref) } };
+  L.name = part.role; L.defines = part.role === 'skin' ? { MX_SKIN: '' } : {};
+  L.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, U);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uTint; uniform float uMix; uniform float uK; uniform vec3 uRef;')
+      .replace('#include <map_fragment>', MX_FRAG);
+  };
+  L.customProgramCacheKey = () => 'mx' + (part.role === 'skin' ? 's' : 'c');
+  return L;
+}
 function loadChars() {
   if (CHAR.p) return CHAR.p;
   CHAR.state = 1;
@@ -6089,7 +6151,7 @@ function loadChars() {
         if (nm === 'Walk' && d.speed) wU = d.speed; if (nm === 'Run' && d.speed) rU = d.speed;
       }
       CHAR.tpl[m] = sc;
-      CHAR.info[m] = { S, H, clips, walk: wU * S, run: rU * S, hipsRest: sc.getObjectByName(chBone(m, 'Hips')).matrixWorld.clone(),
+      CHAR.info[m] = { S, H, clips, walk: wU * S, run: rU * S, hipsRest: sc.getObjectByName(chBone(m, 'Hips')).matrixWorld.clone(), mx: CH_MIXAMO[m] ? mxParts(sc) : null,
         hipY: P('Hips').y, kneeY: P('LowerLegL').y, footY: P(CH_MIXAMO[m] ? 'LowerLegL_end' : 'FootL').y, legX: Math.abs(P('UpperLegL').x - P('Hips').x), cx: P('Hips').x, cz: P('Hips').z };
     });
     CHAR.state = 2;
@@ -6100,12 +6162,16 @@ const chCol = (v, list, dflt) => v instanceof THREE.Color ? v : new THREE.Color(
 function makeChar(pf) {
   const m = pf.model || (CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt).m, I = CHAR.info[m];
   const obj = CHAR.SK.clone(CHAR.tpl[m]);
-  const C = { model: m, obj, root: new THREE.Group(), mixer: new THREE.AnimationMixer(obj), acts: {}, cur: null, extra: [], mats: {}, idleT: 0 };
+  const C = { model: m, obj, root: new THREE.Group(), mixer: new THREE.AnimationMixer(obj), acts: {}, cur: null, extra: [], mats: {}, mx: null, idleT: 0 };
   obj.traverse((n) => {
     n.renderOrder = 12;                                   // after the ground layers, which draw without a depth test
     if (!n.isMesh) return;
     n.frustumCulled = false; n.castShadow = true; n.receiveShadow = true;
-    const x = n.material; let L = C.mats[x.name];
+    const x = n.material, part = I.mx && I.mx[n.name];
+    if (part) {   // a Mixamo body's top, bottom, skin or hair: its own recolourable material
+      const L = mxMaterial(x, part); (C.mx = C.mx || {})[part.role] = [...((C.mx && C.mx[part.role]) || []), L]; n.material = L; return;
+    }
+    let L = C.mats[x.name];
     if (!L) {   // textured models (Mixamo) keep their textures; the others are recoloured per person
       L = C.mats[x.name] = new THREE.MeshLambertMaterial({ color: x.color.clone(), map: x.map || null, transparent: x.transparent, opacity: x.opacity, alphaTest: x.alphaTest });
       L.name = x.name;
@@ -6133,6 +6199,15 @@ function chTurnHead(C, yaw) {
   }
 }
 function chLook(C, pf) {
+  if (C.mx) {   // a Mixamo body: recolour its parts; an index of -1 (or a colour of null) keeps the part as the body was made
+    const pick = (v, list, k) => (v == null || v === -1 ? null : chCol(v, list, k));
+    const top = pick(pf.topC !== undefined ? pf.topC : pf.top, AV_TOP, '#2980b9'), bot = pick(pf.botC !== undefined ? pf.botC : pf.bot, AV_BOT, '#2c3e50');
+    const skin = pick(pf.skinC !== undefined ? pf.skinC : pf.skin, AV_SKIN, '#8d5a3b'), hair = pf.hairc === -1 ? null : new THREE.Color(CH_HAIR[pf.hairc | 0] || CH_HAIR[0]);
+    for (const [role, c] of [['top', top], ['bot', bot], ['skin', skin], ['hair', hair]]) for (const L of C.mx[role] || []) {
+      L.userData.mx.uMix.value = c ? 1 : 0; if (c) L.userData.mx.uTint.value.copy(c);
+    }
+    return;
+  }
   const o = CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt, I = CHAR.info[C.model];
   const top = chCol(pf.topC ?? pf.top, AV_TOP, '#2980b9'), bot = chCol(pf.botC ?? pf.bot, AV_BOT, '#2c3e50'), skin = chCol(pf.skinC ?? pf.skin, AV_SKIN, '#8d5a3b');
   const hair = new THREE.Color(CH_HAIR[pf.hairc | 0] || CH_HAIR[0]), dark = new THREE.Color('#2a2624');
@@ -6729,7 +6804,8 @@ async function initAccount() {
 function rebuildAvatar() {
   const W = WALK;
   if (W.av) { if (W.av.mixer) chDispose(W.av); else W.holder.remove(W.av.root); }
-  W.av = CHAR.state === 2 ? makeChar({ ...ACC.pf, model: CH_PLAYER }) : buildAvatar(ACC.pf);   // the box person stands in while the models load
+  const lm = AV_LOOK[avLook(ACC.pf)][0];
+  W.av = CHAR.state === 2 ? makeChar({ ...ACC.pf, model: CHAR.info[lm] ? lm : CH_PLAYER }) : buildAvatar(ACC.pf);   // the box person stands in while the models load
   W.av.root.traverse((o) => { o.renderOrder = 12; });
   W.holder.add(W.av.root);
   if (W.rideMesh) { W.holder.remove(W.rideMesh); if (W.rideMesh.userData.own) W.rideMesh.geometry.dispose(); W.rideMesh = null; }
@@ -7140,7 +7216,9 @@ function stepFoot(dt, spec) {
   // the ground: a flyover deck you are on, or the street; eased, so ramps and kerbs never jolt
   const gy = groundAt(P.x, P.z, P.y), onGround = P.vy <= 0 && P.y - gy < 0.35;
   let jumped = false, landed = false;
-  if (onGround) P.y += (gy - P.y) * Math.min(1, dt * 14);
+  // coming down, the last 35 cm count as ground and are eased: that is the landing (falling never reaches the air branch's
+  // own landing test from there, which left the jump animation running for good)
+  if (onGround) { P.y += (gy - P.y) * Math.min(1, dt * 14); if (P.vy < 0) { P.vy = 0; landed = true; } }
   if ((keys.has(' ') || W.jumpQ) && onGround) { P.vy = 4.6; jumped = true; }
   W.jumpQ = false;
   if (!onGround || P.vy > 0) { P.vy -= 12 * dt; P.y = Math.max(gy, P.y + P.vy * dt); if (P.y === gy && P.vy < 0) { P.vy = 0; landed = true; } }
@@ -7303,7 +7381,11 @@ function stepPedPool(dt) {
     const crowd = p.pants ? CROWD.men : CROWD.women, model = CHAR.info[crowd[0]] ? crowd[Math.floor(h * 7919) % crowd.length] : CH_OUTFIT[outfit].m;
     let C = PEDPOOL.list.find((c) => !c.ped && c.model === model);
     if (!C) { if (PEDPOOL.list.length >= 40) continue; C = makeChar({ outfit, model }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
-    chLook(C, { outfit, topC: p.shirt, botC: p.pants ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length], skin: (h * 97 | 0) % 4, hairc: (h * 13) % 1 < 0.12 ? 3 : (h * 7) % 1 < 0.2 ? 1 : 0 });
+    // a Mixamo body keeps its own top for about a third of the people and its own trousers for about a quarter: the rest
+    // are recoloured, so seven bodies make a varied crowd
+    const own = C.mx ? [(h * 31) % 1 < 0.33, (h * 17) % 1 < 0.25] : [false, false];
+    chLook(C, { outfit, topC: own[0] ? null : p.shirt, botC: own[1] ? null : p.pants ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length],
+      skin: (h * 97 | 0) % 4, hairc: (h * 13) % 1 < 0.12 ? 3 : (h * 7) % 1 < 0.2 ? 1 : 0 });
     C.ped = p; p.skin = C; C.root.visible = true; C.idleT = 0; C.face = undefined; C.look = 0;
   }
   const W = WALK, P = W.P, onFoot = W.on && !W.ride && W.mode === 'walk';
@@ -7376,18 +7458,26 @@ function closeAvatar() { const W = WALK; if (W.panel) W.yaw = Math.atan2(-Math.c
 function renderAvatarPanel() {
   const pf = ACC.pf, el = $('avPanel');
   const opts = (key, dict) => Object.entries(dict).map(([k, v]) => `<button class="opt${pf[key] === k ? ' on' : ''}" data-k="${key}" data-v="${k}">${v}</button>`).join('');
-  const sw = (key, list) => list.map((c, i) => `<button class="sw${pf[key] === i ? ' on' : ''}" data-k="${key}" data-i="${i}" style="background:${c}"></button>`).join('');
+  // the first swatch on a row (a slash) keeps that part as the body was made
+  const sw = (key, list, own) => (own ? `<button class="sw own${pf[key] === -1 ? ' on' : ''}" data-k="${key}" data-i="-1" title="As it comes"></button>` : '')
+    + list.map((c, i) => `<button class="sw${pf[key] === i ? ' on' : ''}" data-k="${key}" data-i="${i}" style="background:${c}"></button>`).join('');
+  const lk = avLook(pf), looks = (ks) => ks.map((k) => `<button class="opt${lk === k ? ' on' : ''}" data-k="look" data-v="${k}">${AV_LOOK[k][1]}</button>`).join('');
   el.innerHTML = `<div class="hd">Who's out in Amdavad today?</div>
     <label>Name<input id="avName" maxlength="20" placeholder="Your name" value="${(pf.name || '').replace(/"/g, '&quot;')}"></label>
-    <div class="row"><span>Outfit</span><div>${opts('outfit', AV_OUTFIT)}</div></div>
-    <div class="row"><span>Top</span><div>${sw('top', AV_TOP)}</div></div>
-    <div class="row"><span>${pf.outfit === 'kurta' ? 'Pyjama' : pf.outfit === 'saree' ? 'Blouse' : 'Bottom'}</span><div>${sw('bot', AV_BOT)}</div></div>
-    <div class="row"><span>Skin</span><div>${sw('skin', AV_SKIN)}</div></div>
-    <div class="row"><span>Hair</span><div>${sw('hairc', CH_HAIR)}</div></div>
+    <div class="row"><span>Him</span><div>${looks(AV_LOOK_M)}</div></div>
+    <div class="row"><span>Her</span><div>${looks(AV_LOOK_F)}</div></div>
+    <div class="row"><span>Top</span><div>${sw('top', AV_TOP, true)}</div></div>
+    <div class="row"><span>Bottom</span><div>${sw('bot', AV_BOT, true)}</div></div>
+    <div class="row"><span>Skin</span><div>${sw('skin', AV_SKIN, true)}</div></div>
+    <div class="row"><span>Hair</span><div>${sw('hairc', CH_HAIR, true)}</div></div>
     <div class="row"><span>Scooter</span><div>${sw('scoot', ['#c0392b', '#2980b9', '#f4f1ea', '#151515', '#f1c40f'])}</div></div>
     <button class="go" id="avGo">Start exploring</button>
     <div class="acct">${ACC.clerk ? (ACC.user ? `Signed in as <b>${ACC.user.firstName || ACC.user.username || 'you'}</b> · saved to your account` : `<a href="#" id="avSign">Sign in</a> to keep your avatar on every device`) : 'Playing as a guest · saved on this device'}</div>`;
-  el.querySelectorAll('button[data-k]').forEach((b) => (b.onclick = () => { const k = b.dataset.k; pf[k] = b.dataset.v !== undefined ? b.dataset.v : +b.dataset.i; saveProfile(); rebuildAvatar(); renderAvatarPanel(); }));
+  el.querySelectorAll('button[data-k]').forEach((b) => (b.onclick = () => {
+    const k = b.dataset.k; pf[k] = b.dataset.v !== undefined ? b.dataset.v : +b.dataset.i;
+    if (k === 'look') pf.outfit = OUTFIT_OF_LOOK[pf.look] || 'shirt';   // the stand-in box person (models still loading) dresses alike
+    saveProfile(); rebuildAvatar(); renderAvatarPanel();
+  }));
   $('avName').oninput = (e) => { pf.name = e.target.value.slice(0, 20); saveProfile(); walkUI(); };
   $('avGo').onclick = () => { saveProfile(true); closeAvatar(); walkUI(); };
   const s = $('avSign'); if (s) s.onclick = (e) => { e.preventDefault(); ACC.clerk.openSignIn({}); };
@@ -7451,7 +7541,10 @@ function walkKey(e, k) {
   if (k === 'c') { if (CFG.ride !== false) cycleRide(); return true; }
   if (k === 'q') { skipWait(); return true; }
   if (k === 'escape') { if (WALK.panel) closeAvatar(); else if (WALK.ride && WALK.ride.phase === 'wait') { WALK.ride = null; walkUI(); } else exitWalk(); return true; }
-  if (k === ' ') { e.preventDefault(); keys.add(' '); return true; }
+  if (k === ' ') {   // jump; and a button clicked a moment ago (the avatar button, a ride) must not take Space as a click
+    e.preventDefault(); const a = document.activeElement; if (a && a !== document.body && a.tagName !== 'INPUT') a.blur();
+    keys.add(' '); return true;
+  }
   if (k === 'n' || k === 't' || k === 'r') return false;   // time of day / weather still work
   keys.add(k); return true;
 }
