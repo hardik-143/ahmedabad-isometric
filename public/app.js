@@ -2153,13 +2153,12 @@ function buildFlowerPark() {
     G.quad(Q(-1, -1, y1), Q(1, -1, y1), Q(1, 1, y1), Q(-1, 1, y1), [0, 1, 0], col);
   };
   // paths and lawn: a 2 m mosaic over the park, slightly above the parkland so it reads over the ground layer
-  const beds = [], tiles = [];
+  const beds = [];
   for (let z = z0; z < z1; z += 2) for (let x = x0; x < x1; x += 2) {
     const cx = x + 1, cz = z + 1; if (!inside(cx, cz)) continue;
     const path = onPath(cx, cz);
     if (inPond(cx, cz, 1.6)) continue;
     G.quad([x, 0.04, z], [x + 2, 0.04, z], [x + 2, 0.04, z + 2], [x, 0.04, z + 2], [0, 1, 0], path ? paving : lawn);
-    tiles.push([x, z, !path]);
     if (!path && !onPath(cx, cz + 1.2) && !onPath(cx, cz - 1.2) && !onPath(cx + 1.2, cz) && !onPath(cx - 1.2, cz)) beds.push([cx, cz]);
   }
   // flower beds: bands of colour running across the park (marigold, zinnia, petunia, salvia, rose...), a rose garden by the
@@ -2167,7 +2166,6 @@ function buildFlowerPark() {
   const FL = ['#f7b500', '#ff6f1a', '#e6194b', '#f032a5', '#9b5de5', '#ffffff', '#ffd166', '#ff4d6d', '#c77dff', '#ff9f1c'].map((h) => new THREE.Color(h));
   const ROSE = [new THREE.Color('#d1123f'), new THREE.Color('#ff5c8a'), new THREE.Color('#ffffff')];
   const keep = beds.filter(([x, z]) => ((Math.floor(x / 14) + Math.floor(z / 14) * 3) % 5) !== 0);   // lawn left open in 14 m patches
-  { const KB = new Set(keep.map(([x, z]) => Math.round(x - 1) + ',' + Math.round(z - 1))); for (const t of tiles) if (KB.has(Math.round(t[0]) + ',' + Math.round(t[1]))) t[2] = false; }
   const geo = new THREE.BoxGeometry(2, 0.24, 2); geo.translate(0, 0.12, 0);   // beds tile without gaps
   const cv = document.createElement('canvas'); cv.width = cv.height = 128; const cx2 = cv.getContext('2d');
   // a mass of blooms: the bed's own colour (the instance colour times white), scattered dark leaf between them, random
@@ -2282,111 +2280,9 @@ function buildFlowerPark() {
   LM.emissiveIntensity = LM.userData.glow * (tod.night || 0);
   const lm = glow.mesh(LM); lm.renderOrder = 10; lm.castShadow = false; group.ground.add(lm);
   PLACES.push({ name: 'Riverfront Flower Park', test: (x, z, y) => Math.abs(y || 0) < 1 && x > x0 && x < x1 && z > z0 && z < z1 && inT(x, z) && !promAt(x, z) });
-  if (pond) for (const t of tiles) if (inPond(t[0] + 1, t[1] + 1, 1.6)) t[2] = false;
-  FLOWER = { x0, x1, z0, z1, pond, gate, walkX, tiles };
+  FLOWER = { x0, x1, z0, z1, pond, gate, walkX };
 }
 let FLOWER = null;
-// ---------------------------------------------------------------- grass (after hardik-143/dynamic-forest's grass.js)
-// clumps of five blades at fixed spots wrapped into a square patch round you, swaying, pushed aside at your feet and thinning
-// out at the patch's edge. Where they grow comes from a mask redrawn as you move (600 m round you): thick on the parkland
-// and the Flower Park's lawns, sparse dry tufts on open ground, none on roads, the riverfront paving, beds, paths or water
-const GRASS = { mesh: null, cv: null, tex: null, ox: 1e9, oz: 1e9, W: 600, N: 1024 };
-function grassMask(cx, cz) {
-  const G = GRASS, c = G.cv.getContext('2d'), N = G.N, W = G.W, k = N / W, x0 = cx - W / 2, z0 = cz - W / 2;
-  G.ox = x0; G.oz = z0;
-  const X = (x) => (x - x0) * k, Z = (z) => (z - z0) * k, inWin = (xs, zs) => !(Math.max(...xs) < x0 || Math.min(...xs) > x0 + W || Math.max(...zs) < z0 || Math.min(...zs) > z0 + W);
-  const tris = (V, I, sc, col) => { c.fillStyle = col; c.beginPath();
-    for (let t = 0; t < I.length; t += 3) { const a = I[t] * 2, b = I[t + 1] * 2, d = I[t + 2] * 2, xs = [V[a] * sc, V[b] * sc, V[d] * sc], zs = [V[a + 1] * sc, V[b + 1] * sc, V[d + 1] * sc]; if (!inWin(xs, zs)) continue;
-      c.moveTo(X(xs[0]), Z(zs[0])); c.lineTo(X(xs[1]), Z(zs[1])); c.lineTo(X(xs[2]), Z(zs[2])); c.closePath(); }
-    c.fill(); };
-  c.globalCompositeOperation = 'source-over';
-  c.fillStyle = 'rgb(0,40,0)'; c.fillRect(0, 0, N, N);                         // open ground: a few dry tufts (green channel)
-  if (PARK_GEO) tris(PARK_GEO.V, PARK_GEO.I, 0.5, 'rgb(255,0,0)');             // parkland: grass (red channel)
-  if (WATER_GEO) tris(WATER_GEO.V, WATER_GEO.I, 0.5, '#000');
-  const R = TR && TR.river;
-  if (R) {
-    if (R.upper && R.upper.v.length) tris(R.upper.v, R.upper.i, 1, '#000');   // the riverfront's paving
-    const P = R.walls[0]; c.fillStyle = '#000'; c.beginPath(); for (let j = 0; j + 1 < P.length; j += 2) j ? c.lineTo(X(P[j]), Z(P[j + 1])) : c.moveTo(X(P[j]), Z(P[j + 1])); c.closePath(); c.fill();   // the channel
-  }
-  const RD = ROADS;   // roads, with a margin for the kerb and footpath
-  if (RD) { c.strokeStyle = '#000'; c.lineCap = c.lineJoin = 'round';
-    for (let i = 0; i < RD.n; i++) {
-      const p0 = RD.start[i], L = RD.lens[i]; let near = false;
-      for (let j = 0; j < L && !near; j += 4) { const x = RD.xy[(p0 + j) * 2] * 0.5, z = RD.xy[(p0 + j) * 2 + 1] * 0.5; near = x > x0 - 200 && x < x0 + W + 200 && z > z0 - 200 && z < z0 + W + 200; }
-      if (!near) continue;
-      c.lineWidth = (RD.hw[i] / 10 * 2 + 3) * k; c.beginPath();
-      for (let j = 0; j < L; j++) { const x = RD.xy[(p0 + j) * 2] * 0.5, z = RD.xy[(p0 + j) * 2 + 1] * 0.5; j ? c.lineTo(X(x), Z(z)) : c.moveTo(X(x), Z(z)); }
-      c.stroke();
-    } }
-  if (FLOWER && FLOWER.tiles) for (const [tx, tz, lawn] of FLOWER.tiles) { c.fillStyle = lawn ? 'rgb(255,0,0)' : '#000'; c.fillRect(X(tx), Z(tz), 2 * k + 0.5, 2 * k + 0.5); }   // lawn tiles grow, beds and paths don't
-  G.tex.needsUpdate = true;
-  const u = G.mesh.userData.uniforms; u.uMaskO.value.set(x0, z0);
-}
-function grassInit() {
-  const mobile = matchMedia('(pointer: coarse)').matches, count = mobile ? 9000 : 22000, patch = mobile ? 34 : 44;
-  const pos = [], tA = [], idx = [];
-  for (let b = 0; b < 5; b++) {   // a clump: five blades of different heights, each two quads and a tip
-    const a = (b / 5) * 6.2832 + 0.3 + b * 0.7, ca = Math.cos(a), sa = Math.sin(a), rr = 0.04 + (b % 3) * 0.05, ox = Math.cos(a + 1.3) * rr, oz = Math.sin(a + 1.3) * rr;
-    const base = pos.length / 3, W = 0.022 + (b % 2) * 0.008, hk = 0.75 + ((b * 7) % 5) * 0.1;
-    for (const [x, y] of [[-W, 0], [W, 0], [-W * 0.7, 0.5], [W * 0.7, 0.5], [0, 1]]) { pos.push(ox + ca * x + ox * y * 1.5, y * hk, oz + sa * x + oz * y * 1.5); tA.push(y); }
-    idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2, base + 2, base + 3, base + 4);
-  }
-  const geo = new THREE.InstancedBufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('aT', new THREE.Float32BufferAttribute(tA, 1)); geo.setIndex(idx);
-  let sd = 777; const rnd = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-  const off = new Float32Array(count * 2); for (let i = 0; i < count * 2; i++) off[i] = rnd() * patch;
-  geo.setAttribute('aOffset', new THREE.InstancedBufferAttribute(off, 2)); geo.instanceCount = count;
-  GRASS.cv = document.createElement('canvas'); GRASS.cv.width = GRASS.cv.height = GRASS.N;
-  GRASS.tex = new THREE.CanvasTexture(GRASS.cv); GRASS.tex.colorSpace = THREE.NoColorSpace; GRASS.tex.generateMipmaps = false; GRASS.tex.minFilter = THREE.LinearFilter; GRASS.tex.flipY = false;
-  const uniforms = { uCam: { value: new THREE.Vector3() }, uFeet: { value: new THREE.Vector3() }, uTime: U.uTime, uPatch: { value: patch }, uMask: { value: GRASS.tex }, uMaskO: { value: new THREE.Vector2() }, uMaskW: { value: GRASS.W } };
-  const mat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
-  mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, uniforms);
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
-      attribute vec2 aOffset; attribute float aT;
-      uniform vec3 uCam; uniform vec3 uFeet; uniform float uTime; uniform float uPatch; uniform sampler2D uMask; uniform vec2 uMaskO; uniform float uMaskW;
-      varying vec3 vGrass; varying float vT;
-      float gHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
-      .replace('#include <beginnormal_vertex>', 'vec3 objectNormal = vec3(0.0, 1.0, 0.0);')
-      .replace('#include <begin_vertex>', `
-      vec2 wp = uCam.xz + mod(aOffset - uCam.xz + 0.5 * uPatch, uPatch) - 0.5 * uPatch;
-      float h1 = gHash(aOffset), h2 = gHash(aOffset + 17.3), h3 = gHash(aOffset * 1.7 + 3.1);
-      vec4 mask = texture2D(uMask, (wp - uMaskO) / uMaskW);
-      float fade = smoothstep(uPatch * 0.5, uPatch * 0.3, length(wp - uCam.xz));
-      float lush = mask.r, dry = mask.g * step(h3, 0.16);
-      float amount = max(lush, dry) * fade;
-      if (h3 > amount * 1.25 && dry < 0.01) amount = 0.0;
-      float height = (0.2 + h1 * 0.34) * (0.45 + 0.55 * amount) * (dry > lush ? 0.55 : 1.0);
-      vec3 transformed = position;
-      float rot = h2 * 6.2832;
-      transformed.xz = mat2(cos(rot), -sin(rot), sin(rot), cos(rot)) * transformed.xz;
-      transformed.y *= height;
-      transformed.xz *= amount > 0.0 ? 0.8 + h3 * 0.6 : 0.0;
-      float t2 = aT * aT, sway = sin(uTime * 1.6 + wp.x * 0.35 + wp.y * 0.21) * 0.5 + 0.5 + 0.35 * sin(uTime * 3.7 + wp.x * 1.3);
-      transformed.x += (sway * 0.22 + 0.05) * t2 * height; transformed.z += sway * 0.1 * t2 * height;
-      vec2 away = wp - uFeet.xz; float push = smoothstep(1.1, 0.0, length(away)) * step(abs(uFeet.y), 1.5);
-      transformed.xz += normalize(away + 0.0001) * push * t2 * height * 0.9; transformed.y *= 1.0 - push * 0.5;
-      if (amount <= 0.0) transformed = vec3(0.0);
-      transformed += vec3(wp.x, 0.0, wp.y);
-      vec3 baseC = mix(vec3(0.06, 0.11, 0.025), vec3(0.09, 0.13, 0.03), h1);
-      vec3 tipC = mix(vec3(0.30, 0.40, 0.10), vec3(0.44, 0.42, 0.14), smoothstep(0.55, 0.95, gHash(floor(wp / 9.0))) * 0.8) * (0.85 + h2 * 0.3);
-      vec3 dryC = mix(vec3(0.30, 0.26, 0.14), vec3(0.62, 0.55, 0.32), aT);
-      vGrass = dry > lush ? dryC : mix(baseC, tipC, aT); vT = aT;`);
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vGrass; varying float vT;')
-      .replace('#include <color_fragment>', '#include <color_fragment>\n diffuseColor.rgb = vGrass;')
-      .replace('#include <opaque_fragment>', 'outgoingLight += vGrass * 0.18 * vT;\n#include <opaque_fragment>');   // a little light through the blades
-  };
-  mat.customProgramCacheKey = () => 'grass1';
-  const mesh = new THREE.Mesh(geo, mat); mesh.frustumCulled = false; mesh.receiveShadow = true; mesh.renderOrder = 9; mesh.userData.uniforms = uniforms; mesh.visible = false;
-  GRASS.mesh = mesh; scene.add(mesh);
-}
-function stepGrass() {
-  if (!GRASS.mesh) grassInit();
-  const F = walkFocus(), u = GRASS.mesh.userData.uniforms, P = WALK.P;
-  if (Math.abs(F.x - (GRASS.ox + GRASS.W / 2)) > GRASS.W * 0.3 || Math.abs(F.z - (GRASS.oz + GRASS.W / 2)) > GRASS.W * 0.3) grassMask(F.x, F.z);
-  u.uCam.value.set(F.x, 0, F.z); u.uFeet.value.set(P.x, (P.y || 0) - groundAt(P.x, P.z, P.y || 0), P.z);
-  GRASS.mesh.visible = true;
-}
 const FP_COL = [];   // walls: the pond's rim, the gate's pillars
 
 // roads
@@ -7521,7 +7417,7 @@ function exitWalk() {
   const W = WALK; if (!W.on || CFG.start) return;   // on foot only: there is no map to go back to
   if (document.pointerLockElement) document.exitPointerLock();
   ACC.pf.last = [Math.round(W.P.x), Math.round(W.P.z)]; saveProfile(true);
-  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); if (GRASS.mesh) GRASS.mesh.visible = false; $('wkPop').classList.remove('show'); stepDress();
+  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); $('wkPop').classList.remove('show'); stepDress();
   scene.fog.near = 1e7; scene.fog.far = 2e7;
   view.tx = W.P.x; view.tz = W.P.z; view.az = W.prevAz; view.mpp = 0.3;
   document.body.classList.remove('walking'); dirty = true; updateSunDir();
@@ -7828,7 +7724,6 @@ function stepWalk(dt) {
   if (W.av && W.av.mixer) W.av.mixer.update(dt);
   if (W.av && W.av.mixer && W.mode !== 'walk' && !W.ride && (W.mode === 'cycle' || (W.rideMesh && W.rideMesh.userData.own))) ridePose(W.av, W.mode, W.crank || 0);
   stepPedPool(dt);
-  stepGrass();
   // --- camera
   if (W.panel) { W.yaw = lerpAng(W.yaw, Math.atan2(Math.cos(P.th), Math.sin(P.th)), Math.min(1, dt * 4)); W.pitch = lerp(W.pitch, 0.1, Math.min(1, dt * 4)); }
   else if (!W.ride && performance.now() - W.lookT > (W.mode === 'walk' ? 2500 : 1500) && Math.abs(P.v) > 1.5) W.yaw = lerpAng(W.yaw, Math.atan2(-Math.cos(P.th), -Math.sin(P.th)), Math.min(1, dt * (W.mode === 'walk' ? 1.2 : 2.2)));   // swing in behind, GTA style
