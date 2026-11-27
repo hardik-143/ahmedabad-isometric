@@ -1,6 +1,6 @@
 """A Mixamo character (FBX, T-pose, with skin) -> a light GLB for the app (run headless with the bpy module):
 
-    python tools/mixamo_char.py in.fbx out.glb [texture_px=1024]
+    python tools/mixamo_char.py in.fbx out.glb [texture_px=1024] [keep=0.35]   (keep: decimate to that share of the triangles)
 
 - bones renamed from Mixamo's numbered prefix (mixamorig4:Hips) to mixamorig:Hips, so every Mixamo clip drives every
   character by bone name
@@ -8,9 +8,10 @@
 - the T-pose action Mixamo bakes in is dropped; the app brings its own walk / run / idle
 """
 import bpy, os, re, sys
-args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[-3:]
+args = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else sys.argv[1:]
 src, out = [a for a in args if a.endswith('.fbx')][0], [a for a in args if a.endswith('.glb')][0]
 px = int(next((a for a in args if a.isdigit()), '1024'))
+keep = float(next((a for a in args if a.startswith('0.')), '1'))   # people in the crowd: fewer triangles
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.fbx(filepath=src)
 for a in list(bpy.data.actions): bpy.data.actions.remove(a)
@@ -21,6 +22,14 @@ for o in bpy.data.objects:
     if o.type == 'MESH':
         for g in o.vertex_groups: g.name = re.sub(r'^mixamorig\d*:', 'mixamorig:', g.name)
         o.data.uv_layers.active_index = 0
+if keep < 1:
+    for o in bpy.data.objects:
+        if o.type == 'MESH':
+            d = o.modifiers.new('decimate', 'DECIMATE'); d.ratio = keep
+            bpy.context.view_layer.objects.active = o
+            bpy.ops.object.modifier_move_to_index(modifier='decimate', index=0)   # before the armature modifier
+            bpy.ops.object.modifier_apply(modifier='decimate')
+            print(o.name, 'decimated to', len(o.data.polygons), 'faces')
 # keep only base colour, downscaled
 tmp = os.path.join(os.path.dirname(os.path.abspath(out)), '_tex'); os.makedirs(tmp, exist_ok=True)
 done = {}

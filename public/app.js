@@ -6038,11 +6038,15 @@ const AV_HAIRC = '#1b1410', AV_SHOE = '#3a2a1e';
 // measured from the planted foot (4.383 and 9.706 model units a second), and every clip plays at ground speed / clip
 // speed, so feet never slide. Saree and kurta / kameez add a skirt that rides on the hip bone.
 const CHAR = { state: 0, p: null, tpl: {}, info: {}, SK: null };
-const CH_MODELS = ['man', 'suit', 'longsleeve', 'casual', 'woman', 'woman2', 'ch12'];
+const CH_MODELS = ['man', 'suit', 'longsleeve', 'casual', 'woman', 'woman2', 'ch12', 'ch01', 'ch28', 'ch33', 'ch07', 'ch21', 'ch22', 'ch27'];
 // Mixamo characters (tools/mixamo_char.py: bones renamed to mixamorig:*, colour texture only), moved by the three.js
 // Soldier's Mixamo Walk / Run / Idle retargeted to each body (tools/retarget/mixamo.js -> models/people/mixamo_anims.json).
 // Their bones carry other names, so the bones the code reaches for are looked up here.
 const CH_MIXAMO = { ch12: { rotY: Math.PI / 2 } };
+// the people on the street: Mixamo bodies cut to ~13k triangles and 512 px (tools/mixamo_char.py ... 512 0.4); the men walk
+// with the Soldier's walk, the women with Mixamo's female walk; everyone idles with a relaxed breathing idle
+const CROWD = { men: ['ch01', 'ch28', 'ch33'], women: ['ch07', 'ch21', 'ch22', 'ch27'] };
+for (const m of [...CROWD.men, ...CROWD.women]) CH_MIXAMO[m] = { rotY: Math.PI / 2 };
 const MIXAMO_WALK = 1.6956, MIXAMO_RUN = 4.2954, MIXAMO_HIP = 0.983;   // the Soldier's ground speeds (m/s) at its hip height (m)
 const MIXAMO_BONE = { Hips: 'mixamorigHips', Abdomen: 'mixamorigSpine', Neck: 'mixamorigNeck', Head: 'mixamorigHead' };
 for (const [sd, S] of [['L', 'Left'], ['R', 'Right']]) Object.assign(MIXAMO_BONE, { ['UpperLeg' + sd]: `mixamorig${S}UpLeg`, ['LowerLeg' + sd]: `mixamorig${S}Leg`,
@@ -6076,8 +6080,8 @@ function loadChars() {
       const clips = {}; for (const c of g.animations) clips[c.name] = c;
       let wU = CH_WALK_U, rU = CH_RUN_U;
       if (CH_MIXAMO[m] && MXA && MXA[m]) {   // Mixamo bodies: the Soldier's clips retargeted to each (tools/retarget/mixamo.js), strides scaled by hip height
-        for (const [nm, d] of Object.entries(MXA[m])) clips[nm] = THREE.AnimationClip.parse(d);
-        const k = P('Hips').y / MIXAMO_HIP; wU = MIXAMO_WALK * k; rU = MIXAMO_RUN * k;
+        for (const [nm, d] of Object.entries(MXA[m])) if (nm[0] !== '_') clips[nm] = THREE.AnimationClip.parse(d);
+        const k = P('Hips').y / MIXAMO_HIP; wU = MXA[m]._speed ? MXA[m]._speed.walk * P('Hips').y : MIXAMO_WALK * k; rU = MIXAMO_RUN * k;
       }
       if (MOCAP && MOCAP[m] && !CH_MIXAMO[m]) for (const nm of ['Walk', 'Run', 'Idle']) {
         const d = MOCAP[m][nm]; if (!d) continue;
@@ -6140,7 +6144,7 @@ function chLook(C, pf) {
   set('Shoes', dark); set('Socks', dark);
   for (const e of C.extra) { e.removeFromParent(); e.geometry.dispose(); e.material.dispose(); }
   C.extra.length = 0;
-  if (o.skirt) {   // the saree drape / kurta or kameez hem: a flared skirt riding on the hip bone
+  if (o.skirt && !CH_MIXAMO[C.model]) {   // the saree drape / kurta or kameez hem: a flared skirt riding on the hip bone (Mixamo bodies wear their own clothes)
     const H = I.H, y1 = I.hipY + 0.045 * H, y0 = o.skirt === 'ankle' ? I.footY + 0.01 * H : I.kneeY - 0.02 * H, h = y1 - y0;
     const mesh = new THREE.Mesh(new THREE.CylinderGeometry(I.legX * (o.skirt === 'ankle' ? 1.5 : 1.38), I.legX * (o.skirt === 'ankle' ? 2.1 : 1.7), h, 20, 1, true),
       new THREE.MeshLambertMaterial({ color: top.clone().multiplyScalar(0.97), side: THREE.DoubleSide }));
@@ -7296,9 +7300,9 @@ function stepPedPool(dt) {
     if (p.skin) continue;
     if (p.hh == null) p.hh = Math.random();
     const h = p.hh, outfit = p.pants ? (h < 0.32 ? 'shirt' : h < 0.6 ? 'tshirt' : h < 0.78 ? 'kurta' : h < 0.92 ? 'office' : 'suit') : (h < 0.55 ? 'saree' : h < 0.85 ? 'salwar' : 'western');
-    const model = CH_OUTFIT[outfit].m;
+    const crowd = p.pants ? CROWD.men : CROWD.women, model = CHAR.info[crowd[0]] ? crowd[Math.floor(h * 7919) % crowd.length] : CH_OUTFIT[outfit].m;
     let C = PEDPOOL.list.find((c) => !c.ped && c.model === model);
-    if (!C) { if (PEDPOOL.list.length >= 40) continue; C = makeChar({ outfit }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
+    if (!C) { if (PEDPOOL.list.length >= 40) continue; C = makeChar({ outfit, model }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
     chLook(C, { outfit, topC: p.shirt, botC: p.pants ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length], skin: (h * 97 | 0) % 4, hairc: (h * 13) % 1 < 0.12 ? 3 : (h * 7) % 1 < 0.2 ? 1 : 0 });
     C.ped = p; p.skin = C; C.root.visible = true; C.idleT = 0; C.face = undefined; C.look = 0;
   }
