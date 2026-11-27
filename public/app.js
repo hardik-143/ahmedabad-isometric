@@ -27,7 +27,21 @@ const CFG = {
   vehicles: ['hatch', 'sedan', 'suv', 'auto', 'scooter', 'bike', 'tempo', 'truck'],        // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
   start: null,               // open straight on foot at the foot of this landmark, with no map view to go back to (null: the map)
   ride: true,                // C: your own cycle / scooter / rickshaw (F also gets on traffic autos and scooters, when there is traffic)
+  zone: { x: -110, z: 930, r: 420 },   // on foot, the playable area: Patang Hotel, the I love Amdavad sign and Nehru Bridge; haze and a soft wall at its edge (null: the whole city)
 };
+// on foot, everything outside the playable zone fades into the sky colour, however close you stand to the edge:
+// a fog measured from the zone centre (world space), added to the ordinary distance fog (and only while the distance fog is on)
+if (CFG.zone) {
+  const Z = CFG.zone, SC = THREE.ShaderChunk, f = (v) => v.toFixed(1);
+  SC.fog_pars_vertex = SC.fog_pars_vertex.replace('varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying vec2 vZoneP;');
+  SC.fog_vertex = SC.fog_vertex.replace('vFogDepth = - mvPosition.z;', `vFogDepth = - mvPosition.z;
+	vZoneP = ( inverse( viewMatrix ) * vec4( mvPosition.xyz, 1.0 ) ).xz - vec2( ${f(Z.x)}, ${f(Z.z)} );`);   // the position, not its distance: a distance would be interpolated wrongly across big ground triangles
+  SC.fog_pars_fragment = SC.fog_pars_fragment.replace('varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying vec2 vZoneP;');
+  SC.fog_fragment = SC.fog_fragment.replace('gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );', `#ifndef FOG_EXP2
+		if ( fogNear < 1e6 ) fogFactor = max( fogFactor, 0.94 * smoothstep( ${f(Z.r - 20)}, ${f(Z.r + 180)}, length( vZoneP ) ) );
+	#endif
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );`);
+}
 const TIPS = [
   CFG.buildings && 'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
   'Press <b>Q</b> / <b>E</b> to swing the city round 90°, or <b>right-drag</b> to rotate freely.',
@@ -2566,6 +2580,12 @@ function drawRadar(Q) {
   rctx.beginPath();
   Q.forEach(([x, z], i) => { const [a, b] = mapXY(x, z); i ? rctx.lineTo(a - px, b - pz) : rctx.moveTo(a - px, b - pz); });
   rctx.closePath(); rctx.fillStyle = 'rgba(255,255,255,0.08)'; rctx.fill(); rctx.lineWidth = 1.6 / s; rctx.strokeStyle = 'rgba(255,255,255,0.75)'; rctx.stroke();
+  if (CFG.zone && WALK.on) {   // the playable zone: everything outside it dimmed, its edge in orange
+    const Z = CFG.zone, [zx, zz] = mapXY(Z.x, Z.z), zr = Math.abs(mapXY(Z.x + Z.r, Z.z)[0] - zx);
+    rctx.beginPath(); rctx.rect(-px - 2000, -pz - 2000, 4000 + mapCanvas.width, 4000 + mapCanvas.height); rctx.arc(zx - px, zz - pz, zr, 0, Math.PI * 2, true);
+    rctx.fillStyle = 'rgba(10,12,16,0.62)'; rctx.fill('evenodd');
+    rctx.beginPath(); rctx.arc(zx - px, zz - pz, zr, 0, Math.PI * 2); rctx.lineWidth = 2.4 / s; rctx.strokeStyle = '#ff9d2e'; rctx.stroke();
+  }
   rctx.restore();
   // player marker
   rctx.save(); rctx.translate(R / 2, R / 2);
@@ -6477,7 +6497,7 @@ function busPose(tr) {
   return { x: (fx + bx) / 2, y: (fy + by) / 2, z: (fz + bz) / 2, hx, hz, docked, k, si: docked && tr.bay[k] >= 0 ? tr.bay[k] >> 2 : -1, last: k === n - 1, left: Dp[k] - T };
 }
 function nearStation(x, z) {
-  if (!TR) return null;
+  if (!TR || CFG.zone) return null;   // a bus or train would carry you out of the playable zone
   for (const s of TR.metro.stations) {
     if (s.ug) { for (const [ex, ez] of s.ent || []) if (Math.hypot(x - ex, z - ez) < 14) return { kind: 'metro', s }; continue; }
     const rx = x - s.x, rz = z - s.z, a = rx * s.ux + rz * s.uz, b = -rx * s.uz + rz * s.ux;
@@ -6855,6 +6875,7 @@ function stepWalk(dt) {
     $('wkPrompt').innerHTML = ns ? `<b>E</b> ${ns.kind === 'metro' ? 'take the Metro from' : 'wait for a Janmarg bus at'} <b>${ns.s.n}</b>`
       : nv ? `<b>F</b> get on the <b>${nv.c ? (nv.c.t === 3 ? 'auto rickshaw' : 'scooter') : nv.pk.kind === 'auto' ? 'auto rickshaw' : 'scooter'}</b>` : '';
     if (W.mode === 'walk') stepFoot(dt, spec); else stepVehicle(dt, spec);
+    zoneClamp();
   }
   $('wkPrompt').style.display = $('wkPrompt').innerHTML ? '' : 'none';
   // --- keep the collision set around the player
@@ -6895,6 +6916,17 @@ function stepWalk(dt) {
   whereDirty = true;
 }
 const lerpAng = (a, b, t) => { let d = wmod(b - a + Math.PI, Math.PI * 2) - Math.PI; return a + d * t; };
+// ---- the playable zone (CFG.zone): a soft wall at its edge, and the city beyond it fades into haze
+let zoneMsgT = -1e9;
+function zoneClamp() {
+  const Z = CFG.zone; if (!Z) return;
+  const P = WALK.P, dx = P.x - Z.x, dz = P.z - Z.z, d = Math.hypot(dx, dz);
+  if (d <= Z.r) return;
+  P.x = Z.x + dx / d * Z.r; P.z = Z.z + dz / d * Z.r;
+  if (WALK.mode !== 'walk') P.v *= 0.5;
+  if (performance.now() - zoneMsgT > 6000) { zoneMsgT = performance.now(); hudPop('More of Amdavad coming soon', 'area'); }
+}
+
 function moveInput() {
   const W = WALK; let f = 0, s = 0;
   if (keys.has('w') || keys.has('arrowup')) f += 1; if (keys.has('s') || keys.has('arrowdown')) f -= 1;
