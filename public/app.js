@@ -474,6 +474,12 @@ const LAND = groundMat(`
   vec3 c = mix(vec3(0.71,0.63,0.50), vec3(0.79,0.71,0.57), n1);
   c = mix(c, vec3(0.60,0.60,0.42), smoothstep(0.55, 0.8, n3)*0.35);
   c *= 0.94 + 0.10*n2;
+  // close up: grit and pebbles, trodden darker patches and wisps of dry grass (fading out where a pixel covers a lot of ground)
+  float gdet = 1.0 - smoothstep(0.05, 0.6, length(fwidth(p)));
+  float g1 = vnoise(mod(p*1.3, 1024.0)), g2 = vnoise(mod(p*4.7, 1024.0)), g3 = vnoise(mod(p*0.33, 1024.0)), g4 = vnoise(mod(p*11.0, 1024.0));
+  c *= 1.0 + gdet * (0.11*(g1 - 0.5) + 0.08*(g2 - 0.5) + 0.07*(step(0.82, g4) - 0.1));
+  c = mix(c, vec3(0.56,0.55,0.36), gdet * smoothstep(0.6, 0.78, g3) * smoothstep(0.45, 0.75, g1) * 0.4);
+  c = mix(c, c*0.84, gdet * smoothstep(0.68, 0.85, vnoise(mod(p*0.11, 1024.0))) * 0.55);
   float d = length(p);
   c = mix(c, vec3(0.66,0.62,0.53), smoothstep(17000.0, 34000.0, d));
   diffuseColor.rgb = pow(c, vec3(2.2));`);
@@ -481,6 +487,12 @@ const PARK = groundMat(`
   vec2 p = vWPos.xz;
   vec3 c = mix(vec3(0.30,0.45,0.16), vec3(0.42,0.55,0.20), fbm(mod(p*0.02, 512.0)));
   c *= 0.88 + 0.18*vnoise(mod(p*0.7, 1024.0));
+  // close up: blade-grain streaks, clover-dark and sun-dried patches
+  float gdet = 1.0 - smoothstep(0.05, 0.6, length(fwidth(p)));
+  float b1 = vnoise(mod(vec2(p.x*8.0 + p.y*2.3, p.y*1.9), 1024.0)), b2 = vnoise(mod(p*3.1, 1024.0)), cl = vnoise(mod(p*0.27, 1024.0));
+  c *= 1.0 + gdet * (0.18*(b1 - 0.5) + 0.12*(b2 - 0.5));
+  c = mix(c, c*vec3(1.12,1.04,0.7), gdet * smoothstep(0.62, 0.82, cl) * 0.55);
+  c = mix(c, c*vec3(0.8,0.9,0.8), gdet * smoothstep(0.7, 0.9, vnoise(mod(p*0.6 + 31.0, 1024.0))) * 0.5);
   diffuseColor.rgb = pow(c, vec3(2.2));`);
 const WATER_FC = `
   vec2 p = vWPos.xz;
@@ -604,7 +616,68 @@ function roadMat(pass) {
 }
 const ROAD0 = roadMat(0), ROAD1 = roadMat(1);
 
-const treeMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+// trees (after the generator in hardik-143/dynamic-forest): a bark trunk and main branches, a crown of leaf cards (alpha-cut
+// clusters of leaves) lit as one rounded mass, stirring in the breeze. Three kinds, each with its own leaf-and-bark atlas
+// (leaf cluster in the left 7/8, bark in the right 1/8): 0 a round neem/peepal, 1 a flowering gulmohar, 2 a tall ashoka
+function treeAtlas(kind) {
+  const S = 512, cv = document.createElement('canvas'); cv.width = cv.height = S; const g = cv.getContext('2d');
+  let sd = 1357 + kind * 101; const r = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const hsl = (h, s2, l) => `hsl(${h},${s2}%,${l}%)`, LW = S * 0.875, cx = LW / 2, cy = S / 2;
+  const P = [{ h: [86, 112], s: [38, 56], l: [20, 36], n: 200, size: 32, w: 0.42 }, { h: [78, 100], s: [42, 58], l: [26, 40], n: 230, size: 17, w: 0.38 }, { h: [96, 118], s: [42, 58], l: [15, 28], n: 120, size: 44, w: 0.2 }][kind];
+  g.strokeStyle = 'rgba(70,52,38,0.9)'; g.lineCap = 'round';   // twigs
+  for (let i = 0; i < 6; i++) { g.lineWidth = 2 + r() * 3; const a = r() * 6.283; g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(a) * LW * 0.33, cy + Math.sin(a) * LW * 0.33); g.stroke(); }
+  for (let i = 0; i < P.n; i++) {
+    const depth = i / P.n, a = r() * 6.283, d = Math.pow(r(), 0.7) * LW * 0.4, x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
+    const L = P.size * (0.7 + r() * 0.6), W = L * P.w * 0.5, hue = P.h[0] + r() * (P.h[1] - P.h[0]), sat = P.s[0] + r() * (P.s[1] - P.s[0]), lit = P.l[0] + r() * (P.l[1] - P.l[0]) + depth * 8;
+    g.save(); g.translate(x, y); g.rotate(kind === 2 ? Math.PI / 2 + (r() - 0.5) * 0.9 : a + (r() - 0.5) * 1.4);   // ashoka leaves hang down
+    if (kind === 1 && r() < 0.42) {   // gulmohar: clusters of scarlet-orange blooms among the feathery leaves
+      for (let k = 0; k < 5; k++) { g.rotate(1.2566); g.fillStyle = hsl(4 + r() * 18, 82 + r() * 10, 44 + r() * 12); g.beginPath(); g.ellipse(L * 0.45, 0, L * 0.42, L * 0.28, 0, 0, 6.283); g.fill(); }
+    } else {
+      const gr = g.createLinearGradient(0, -W, 0, W); gr.addColorStop(0, hsl(hue, sat, lit + 7)); gr.addColorStop(1, hsl(hue, sat, lit - 5));
+      g.fillStyle = gr; g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(L * 0.45, -W * 1.3, L, 0); g.quadraticCurveTo(L * 0.45, W * 1.3, 0, 0); g.fill();
+      g.strokeStyle = hsl(hue, sat - 10, lit + 14); g.globalAlpha = 0.5; g.lineWidth = 1; g.beginPath(); g.moveTo(0, 0); g.lineTo(L * 0.85, 0); g.stroke(); g.globalAlpha = 1;
+    }
+    g.restore();
+  }
+  // bark: ridges and fissures down a strip on the right
+  const base = [[86, 68, 52], [112, 104, 92], [94, 80, 64]][kind], X0 = LW, BW = S - LW;
+  g.fillStyle = `rgb(${base})`; g.fillRect(X0, 0, BW, S);
+  for (let i = 0; i < 26; i++) {
+    const light = r() < 0.55; let x = X0 + r() * BW;
+    g.strokeStyle = light ? `rgba(${base[0] + 50},${base[1] + 45},${base[2] + 38},0.55)` : 'rgba(15,10,6,0.65)'; g.lineWidth = light ? 2 + r() * 5 : 1 + r() * 2;
+    g.beginPath(); for (let y = -10; y <= S + 10; y += 16) { x = clamp(x + (r() - 0.5) * 5, X0 + 1, S - 1); g.lineTo(x, y); } g.stroke();
+  }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+const TREE_TEX = [0, 1, 2].map(treeAtlas);
+const TREE_MATS = TREE_TEX.map((map, k) => {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, map, alphaTest: 0.5, side: THREE.DoubleSide });
+  m.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = U.uTime;
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aLeaf; uniform float uTime;')
+      .replace('#include <color_vertex>', `#include <color_vertex>
+      #ifdef USE_INSTANCING_COLOR
+        vColor.xyz = mix(color.xyz, color.xyz * instanceColor.xyz, aLeaf);
+      #endif`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+      if (aLeaf > 0.5) {
+        #ifdef USE_INSTANCING
+        vec3 ip = instanceMatrix[3].xyz;
+        #else
+        vec3 ip = vec3(0.0);
+        #endif
+        float ph = uTime * 1.5 + ip.x * 0.37 + ip.z * 0.29, sw = clamp(position.y / 7.0, 0.0, 1.0);
+        transformed.x += sin(ph + position.y * 0.8) * 0.07 * sw;
+        transformed.z += cos(ph * 0.83 + position.x) * 0.06 * sw;
+      }`);
+    // leaf cards are seen from both sides: keep the crown's rounded normals instead of flipping them on the back face
+    sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\n#ifdef DOUBLE_SIDED\nnormal *= faceDirection;\n#endif');
+  };
+  m.customProgramCacheKey = () => 'tree3';
+  return m;
+});
+const TREE_DEPTH = TREE_TEX.map((map) => new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map, alphaTest: 0.5, side: THREE.DoubleSide }));
+const treeMat = TREE_MATS[0];
 const tankMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   vHead: 'varying vec3 vLN;', vBody: 'vLN = normal;', fHead: 'varying vec3 vLN;',
   fColor: `float top = step(0.7, normalize(vLN).y);
@@ -2082,12 +2155,13 @@ function buildFlowerPark() {
     G.quad(Q(-1, -1, y1), Q(1, -1, y1), Q(1, 1, y1), Q(-1, 1, y1), [0, 1, 0], col);
   };
   // paths and lawn: a 2 m mosaic over the park, slightly above the parkland so it reads over the ground layer
-  const beds = [];
+  const beds = [], tiles = [];
   for (let z = z0; z < z1; z += 2) for (let x = x0; x < x1; x += 2) {
     const cx = x + 1, cz = z + 1; if (!inside(cx, cz)) continue;
     const path = onPath(cx, cz);
     if (inPond(cx, cz, 1.6)) continue;
     G.quad([x, 0.04, z], [x + 2, 0.04, z], [x + 2, 0.04, z + 2], [x, 0.04, z + 2], [0, 1, 0], path ? paving : lawn);
+    tiles.push([x, z, !path]);
     if (!path && !onPath(cx, cz + 1.2) && !onPath(cx, cz - 1.2) && !onPath(cx + 1.2, cz) && !onPath(cx - 1.2, cz)) beds.push([cx, cz]);
   }
   // flower beds: bands of colour running across the park (marigold, zinnia, petunia, salvia, rose...), a rose garden by the
@@ -2095,6 +2169,7 @@ function buildFlowerPark() {
   const FL = ['#f7b500', '#ff6f1a', '#e6194b', '#f032a5', '#9b5de5', '#ffffff', '#ffd166', '#ff4d6d', '#c77dff', '#ff9f1c'].map((h) => new THREE.Color(h));
   const ROSE = [new THREE.Color('#d1123f'), new THREE.Color('#ff5c8a'), new THREE.Color('#ffffff')];
   const keep = beds.filter(([x, z]) => ((Math.floor(x / 14) + Math.floor(z / 14) * 3) % 5) !== 0);   // lawn left open in 14 m patches
+  { const KB = new Set(keep.map(([x, z]) => Math.round(x - 1) + ',' + Math.round(z - 1))); for (const t of tiles) if (KB.has(Math.round(t[0]) + ',' + Math.round(t[1]))) t[2] = false; }
   const geo = new THREE.BoxGeometry(2, 0.24, 2); geo.translate(0, 0.12, 0);   // beds tile without gaps
   const cv = document.createElement('canvas'); cv.width = cv.height = 128; const cx2 = cv.getContext('2d');
   // a mass of blooms: the bed's own colour (the instance colour times white), scattered dark leaf between them, random
@@ -2111,6 +2186,14 @@ function buildFlowerPark() {
     sc.set(1, nearPond ? 1.1 : 0.85 + (((band % 3) + 3) % 3) * 0.12, 1); m4.compose(new THREE.Vector3(x, 0.02, z), q, sc); im.setMatrixAt(i, m4); im.setColorAt(i, col);   // one height a band
   });
   im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im);
+  { // the beds are solid round their outside edge (0.6 m, so not a kerb you step up): you walk the paths and lawns
+    const K = new Set(keep.map(([x, z]) => Math.round(x) + ',' + Math.round(z)));
+    for (const [x, z] of keep) for (const [dx, dz] of [[2, 0], [-2, 0], [0, 2], [0, -2]]) {
+      if (K.has(Math.round(x + dx) + ',' + Math.round(z + dz))) continue;
+      const ex = x + dx / 2, ez = z + dz / 2, tx = dz / 2, tz = dx / 2;
+      FP_COL.push([ex - tx, ez - tz, ex + tx, ez + tz, 0, 0.6]);
+    }
+  }
   // the lotus pond: a stone rim, water, lotus leaves with pink flowers
   if (pond) {
     const N = 40, rim = [0.8, 0.77, 0.7];
@@ -2146,11 +2229,12 @@ function buildFlowerPark() {
       if (k < 12) { const a2 = ((k + 1) / 12) * Math.PI; tube([x, y, az], [w + Math.cos(a2) * 2.4, Math.sin(a2) * 3.4, az], 0.06, steel); }
       bloom(x, y, az, 0.28, FL[(k + Math.round(az)) % FL.length].toArray());
     }
+    for (const sd of [-1, 1]) PROP_COL.circ.push([w + sd * 2.4, az, 0.14, 3.4]);
   }
   // glowing flower lamps along the walk: a stem and a flower head that lights up after dark
   for (let z = z0 + 8; z < z1 - 6; z += 8) {
     const w = walkX(z); if (w == null) continue;
-    for (const sd of [-1, 1]) { const x = w + sd * 2.4; if (!inside(x, z)) continue; tube([x, 0, z], [x, 1.5, z], 0.04, [0.2, 0.45, 0.2]); bloom(x, 1.72, z, 0.34, FL[(Math.round(z / 8) + (sd > 0 ? 3 : 0)) % FL.length].toArray()); }
+    for (const sd of [-1, 1]) { const x = w + sd * 2.4; if (!inside(x, z)) continue; PROP_COL.circ.push([x, z, 0.16, 1.9]); tube([x, 0, z], [x, 1.5, z], 0.04, [0.2, 0.45, 0.2]); bloom(x, 1.72, z, 0.34, FL[(Math.round(z / 8) + (sd > 0 ? 3 : 0)) % FL.length].toArray()); }
   }
   // the walk's edges lit with a warm strip, end to end
   for (let z = z0 + 2; z < z1 - 2; z += 2) {
@@ -2200,9 +2284,111 @@ function buildFlowerPark() {
   LM.emissiveIntensity = LM.userData.glow * (tod.night || 0);
   const lm = glow.mesh(LM); lm.renderOrder = 10; lm.castShadow = false; group.ground.add(lm);
   PLACES.push({ name: 'Riverfront Flower Park', test: (x, z, y) => Math.abs(y || 0) < 1 && x > x0 && x < x1 && z > z0 && z < z1 && inT(x, z) && !promAt(x, z) });
-  FLOWER = { x0, x1, z0, z1, pond, gate, walkX };
+  if (pond) for (const t of tiles) if (inPond(t[0] + 1, t[1] + 1, 1.6)) t[2] = false;
+  FLOWER = { x0, x1, z0, z1, pond, gate, walkX, tiles };
 }
 let FLOWER = null;
+// ---------------------------------------------------------------- grass (after hardik-143/dynamic-forest's grass.js)
+// clumps of five blades at fixed spots wrapped into a square patch round you, swaying, pushed aside at your feet and thinning
+// out at the patch's edge. Where they grow comes from a mask redrawn as you move (600 m round you): thick on the parkland
+// and the Flower Park's lawns, sparse dry tufts on open ground, none on roads, the riverfront paving, beds, paths or water
+const GRASS = { mesh: null, cv: null, tex: null, ox: 1e9, oz: 1e9, W: 600, N: 1024 };
+function grassMask(cx, cz) {
+  const G = GRASS, c = G.cv.getContext('2d'), N = G.N, W = G.W, k = N / W, x0 = cx - W / 2, z0 = cz - W / 2;
+  G.ox = x0; G.oz = z0;
+  const X = (x) => (x - x0) * k, Z = (z) => (z - z0) * k, inWin = (xs, zs) => !(Math.max(...xs) < x0 || Math.min(...xs) > x0 + W || Math.max(...zs) < z0 || Math.min(...zs) > z0 + W);
+  const tris = (V, I, sc, col) => { c.fillStyle = col; c.beginPath();
+    for (let t = 0; t < I.length; t += 3) { const a = I[t] * 2, b = I[t + 1] * 2, d = I[t + 2] * 2, xs = [V[a] * sc, V[b] * sc, V[d] * sc], zs = [V[a + 1] * sc, V[b + 1] * sc, V[d + 1] * sc]; if (!inWin(xs, zs)) continue;
+      c.moveTo(X(xs[0]), Z(zs[0])); c.lineTo(X(xs[1]), Z(zs[1])); c.lineTo(X(xs[2]), Z(zs[2])); c.closePath(); }
+    c.fill(); };
+  c.globalCompositeOperation = 'source-over';
+  c.fillStyle = 'rgb(0,40,0)'; c.fillRect(0, 0, N, N);                         // open ground: a few dry tufts (green channel)
+  if (PARK_GEO) tris(PARK_GEO.V, PARK_GEO.I, 0.5, 'rgb(255,0,0)');             // parkland: grass (red channel)
+  if (WATER_GEO) tris(WATER_GEO.V, WATER_GEO.I, 0.5, '#000');
+  const R = TR && TR.river;
+  if (R) {
+    if (R.upper && R.upper.v.length) tris(R.upper.v, R.upper.i, 1, '#000');   // the riverfront's paving
+    const P = R.walls[0]; c.fillStyle = '#000'; c.beginPath(); for (let j = 0; j + 1 < P.length; j += 2) j ? c.lineTo(X(P[j]), Z(P[j + 1])) : c.moveTo(X(P[j]), Z(P[j + 1])); c.closePath(); c.fill();   // the channel
+  }
+  const RD = ROADS;   // roads, with a margin for the kerb and footpath
+  if (RD) { c.strokeStyle = '#000'; c.lineCap = c.lineJoin = 'round';
+    for (let i = 0; i < RD.n; i++) {
+      const p0 = RD.start[i], L = RD.lens[i]; let near = false;
+      for (let j = 0; j < L && !near; j += 4) { const x = RD.xy[(p0 + j) * 2] * 0.5, z = RD.xy[(p0 + j) * 2 + 1] * 0.5; near = x > x0 - 200 && x < x0 + W + 200 && z > z0 - 200 && z < z0 + W + 200; }
+      if (!near) continue;
+      c.lineWidth = (RD.hw[i] / 10 * 2 + 3) * k; c.beginPath();
+      for (let j = 0; j < L; j++) { const x = RD.xy[(p0 + j) * 2] * 0.5, z = RD.xy[(p0 + j) * 2 + 1] * 0.5; j ? c.lineTo(X(x), Z(z)) : c.moveTo(X(x), Z(z)); }
+      c.stroke();
+    } }
+  if (FLOWER && FLOWER.tiles) for (const [tx, tz, lawn] of FLOWER.tiles) { c.fillStyle = lawn ? 'rgb(255,0,0)' : '#000'; c.fillRect(X(tx), Z(tz), 2 * k + 0.5, 2 * k + 0.5); }   // lawn tiles grow, beds and paths don't
+  G.tex.needsUpdate = true;
+  const u = G.mesh.userData.uniforms; u.uMaskO.value.set(x0, z0);
+}
+function grassInit() {
+  const mobile = matchMedia('(pointer: coarse)').matches, count = mobile ? 9000 : 22000, patch = mobile ? 34 : 44;
+  const pos = [], tA = [], idx = [];
+  for (let b = 0; b < 5; b++) {   // a clump: five blades of different heights, each two quads and a tip
+    const a = (b / 5) * 6.2832 + 0.3 + b * 0.7, ca = Math.cos(a), sa = Math.sin(a), rr = 0.04 + (b % 3) * 0.05, ox = Math.cos(a + 1.3) * rr, oz = Math.sin(a + 1.3) * rr;
+    const base = pos.length / 3, W = 0.022 + (b % 2) * 0.008, hk = 0.75 + ((b * 7) % 5) * 0.1;
+    for (const [x, y] of [[-W, 0], [W, 0], [-W * 0.7, 0.5], [W * 0.7, 0.5], [0, 1]]) { pos.push(ox + ca * x + ox * y * 1.5, y * hk, oz + sa * x + oz * y * 1.5); tA.push(y); }
+    idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2, base + 2, base + 3, base + 4);
+  }
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('aT', new THREE.Float32BufferAttribute(tA, 1)); geo.setIndex(idx);
+  let sd = 777; const rnd = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const off = new Float32Array(count * 2); for (let i = 0; i < count * 2; i++) off[i] = rnd() * patch;
+  geo.setAttribute('aOffset', new THREE.InstancedBufferAttribute(off, 2)); geo.instanceCount = count;
+  GRASS.cv = document.createElement('canvas'); GRASS.cv.width = GRASS.cv.height = GRASS.N;
+  GRASS.tex = new THREE.CanvasTexture(GRASS.cv); GRASS.tex.colorSpace = THREE.NoColorSpace; GRASS.tex.generateMipmaps = false; GRASS.tex.minFilter = THREE.LinearFilter; GRASS.tex.flipY = false;
+  const uniforms = { uCam: { value: new THREE.Vector3() }, uFeet: { value: new THREE.Vector3() }, uTime: U.uTime, uPatch: { value: patch }, uMask: { value: GRASS.tex }, uMaskO: { value: new THREE.Vector2() }, uMaskW: { value: GRASS.W } };
+  const mat = new THREE.MeshLambertMaterial({ side: THREE.DoubleSide });
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, uniforms);
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', `#include <common>
+      attribute vec2 aOffset; attribute float aT;
+      uniform vec3 uCam; uniform vec3 uFeet; uniform float uTime; uniform float uPatch; uniform sampler2D uMask; uniform vec2 uMaskO; uniform float uMaskW;
+      varying vec3 vGrass; varying float vT;
+      float gHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }`)
+      .replace('#include <beginnormal_vertex>', 'vec3 objectNormal = vec3(0.0, 1.0, 0.0);')
+      .replace('#include <begin_vertex>', `
+      vec2 wp = uCam.xz + mod(aOffset - uCam.xz + 0.5 * uPatch, uPatch) - 0.5 * uPatch;
+      float h1 = gHash(aOffset), h2 = gHash(aOffset + 17.3), h3 = gHash(aOffset * 1.7 + 3.1);
+      vec4 mask = texture2D(uMask, (wp - uMaskO) / uMaskW);
+      float fade = smoothstep(uPatch * 0.5, uPatch * 0.3, length(wp - uCam.xz));
+      float lush = mask.r, dry = mask.g * step(h3, 0.16);
+      float amount = max(lush, dry) * fade;
+      if (h3 > amount * 1.25 && dry < 0.01) amount = 0.0;
+      float height = (0.2 + h1 * 0.34) * (0.45 + 0.55 * amount) * (dry > lush ? 0.55 : 1.0);
+      vec3 transformed = position;
+      float rot = h2 * 6.2832;
+      transformed.xz = mat2(cos(rot), -sin(rot), sin(rot), cos(rot)) * transformed.xz;
+      transformed.y *= height;
+      transformed.xz *= amount > 0.0 ? 0.8 + h3 * 0.6 : 0.0;
+      float t2 = aT * aT, sway = sin(uTime * 1.6 + wp.x * 0.35 + wp.y * 0.21) * 0.5 + 0.5 + 0.35 * sin(uTime * 3.7 + wp.x * 1.3);
+      transformed.x += (sway * 0.22 + 0.05) * t2 * height; transformed.z += sway * 0.1 * t2 * height;
+      vec2 away = wp - uFeet.xz; float push = smoothstep(1.1, 0.0, length(away)) * step(abs(uFeet.y), 1.5);
+      transformed.xz += normalize(away + 0.0001) * push * t2 * height * 0.9; transformed.y *= 1.0 - push * 0.5;
+      if (amount <= 0.0) transformed = vec3(0.0);
+      transformed += vec3(wp.x, 0.0, wp.y);
+      vec3 baseC = mix(vec3(0.06, 0.11, 0.025), vec3(0.09, 0.13, 0.03), h1);
+      vec3 tipC = mix(vec3(0.30, 0.40, 0.10), vec3(0.44, 0.42, 0.14), smoothstep(0.55, 0.95, gHash(floor(wp / 9.0))) * 0.8) * (0.85 + h2 * 0.3);
+      vec3 dryC = mix(vec3(0.30, 0.26, 0.14), vec3(0.62, 0.55, 0.32), aT);
+      vGrass = dry > lush ? dryC : mix(baseC, tipC, aT); vT = aT;`);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vGrass; varying float vT;')
+      .replace('#include <color_fragment>', '#include <color_fragment>\n diffuseColor.rgb = vGrass;')
+      .replace('#include <opaque_fragment>', 'outgoingLight += vGrass * 0.18 * vT;\n#include <opaque_fragment>');   // a little light through the blades
+  };
+  mat.customProgramCacheKey = () => 'grass1';
+  const mesh = new THREE.Mesh(geo, mat); mesh.frustumCulled = false; mesh.receiveShadow = true; mesh.renderOrder = 9; mesh.userData.uniforms = uniforms; mesh.visible = false;
+  GRASS.mesh = mesh; scene.add(mesh);
+}
+function stepGrass() {
+  if (!GRASS.mesh) grassInit();
+  const F = walkFocus(), u = GRASS.mesh.userData.uniforms, P = WALK.P;
+  if (Math.abs(F.x - (GRASS.ox + GRASS.W / 2)) > GRASS.W * 0.3 || Math.abs(F.z - (GRASS.oz + GRASS.W / 2)) > GRASS.W * 0.3) grassMask(F.x, F.z);
+  u.uCam.value.set(F.x, 0, F.z); u.uFeet.value.set(P.x, (P.y || 0) - groundAt(P.x, P.z, P.y || 0), P.z);
+  GRASS.mesh.visible = true;
+}
 const FP_COL = [];   // walls: the pond's rim, the gate's pillars
 
 // roads
@@ -2504,7 +2690,69 @@ async function buildFarBuildings(progressBase, progressSpan) {
 }
 
 // near detail (lazy)
-let treeGeo, tankGeo, mumtyGeo, solarGeo;
+let treeGeo, tankGeo, mumtyGeo, solarGeo, TREE_GEOS;
+// one tree of each kind at scale 1 (kind 0 about 8 m, the ashoka about 11 m): the trunk and main branches as bark tubes, the
+// crown as leaf cards half along the branch ends, half over the crown's shell, darker deep inside and underneath
+function treeKindGeo(kind) {
+  const Pp = [], Nn = [], Cc = [], UV = [], LF = [], I = [];
+  let sd = 4242 + kind * 977; const rnd = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z), runit = () => { const z = rnd() * 2 - 1, a = rnd() * 6.2832, q = Math.sqrt(1 - z * z); return V3(Math.cos(a) * q, z, Math.sin(a) * q); };
+  const v = (p, n, c, u, w, lf) => { Pp.push(p.x, p.y, p.z); Nn.push(n.x, n.y, n.z); Cc.push(c, c, c); UV.push(u, w); LF.push(lf); };
+  const tube = (pts, radii, segs) => {   // tapering tube through pts, frames carried along; bark UVs in the atlas' right strip
+    let N = null, len = 0; const base = Pp.length / 3;
+    for (let i = 0; i < pts.length; i++) {
+      const T = pts[Math.min(pts.length - 1, i + 1)].clone().sub(pts[Math.max(0, i - 1)]).normalize();
+      if (!N) N = (Math.abs(T.y) < 0.9 ? V3(0, 1, 0) : V3(1, 0, 0)).cross(T).normalize(); else N.sub(T.clone().multiplyScalar(N.dot(T))).normalize();
+      const B = T.clone().cross(N); if (i) len += pts[i].distanceTo(pts[i - 1]);
+      for (let k = 0; k <= segs; k++) { const an = (k / segs) * 6.2832, d = N.clone().multiplyScalar(Math.cos(an)).addScaledVector(B, Math.sin(an)); v(pts[i].clone().addScaledVector(d, radii[i]), d, 0.95, 0.885 + 0.11 * (k / segs), len / 2.5, 0); }
+    }
+    for (let i = 0; i < pts.length - 1; i++) for (let k = 0; k < segs; k++) { const q = base + i * (segs + 1) + k, w = q + segs + 1; I.push(q, w, q + 1, q + 1, w, w + 1); }
+  };
+  const K = [{ C: V3(0, 5.3, 0), R: 3.0, Ry: 2.25, top: 3.1, tr: 0.25, mains: 5, el: [0.3, 0.8], cards: 84, card: 2.6, up: 0.25 },
+    { C: V3(0, 4.9, 0), R: 4.3, Ry: 1.35, top: 2.4, tr: 0.3, mains: 6, el: [0.3, 0.55], cards: 84, card: 2.5, up: 0.8 },
+    { C: V3(0, 6.4, 0), R: 1.45, Ry: 4.7, top: 1.6, tr: 0.2, mains: 0, el: [0, 0], cards: 72, card: 1.75, up: -0.45 }][kind];
+  const { C, R, Ry } = K;
+  const ray = (o, d) => { const ox = (o.x - C.x) / R, oy = (o.y - C.y) / Ry, oz = (o.z - C.z) / R, dx = d.x / R, dy = d.y / Ry, dz = d.z / R, A = dx * dx + dy * dy + dz * dz, B = 2 * (ox * dx + oy * dy + oz * dz), Q = ox * ox + oy * oy + oz * oz - 1, D = B * B - 4 * A * Q; return D < 0 ? 1 : (-B + Math.sqrt(D)) / (2 * A); };
+  // trunk (a little lean, a flared foot) and its leader up into the crown
+  const lean = V3((rnd() - 0.5) * 0.5, 0, (rnd() - 0.5) * 0.5), crownTop = C.y + Ry * (kind === 2 ? 0.95 : 0.5), trunk = [], trR = [];
+  for (let k = 0; k <= 6; k++) {
+    const t = k / 6, y = -0.3 + t * (crownTop + 0.3);
+    trunk.push(V3(lean.x * t * t * 2, y, lean.z * t * t * 2));
+    trR.push(K.tr * (1 + 0.45 * Math.max(0, 1 - y / 1.1) ** 2) * (y < K.top ? 1 - 0.3 * y / K.top : 0.7 * Math.max(0.1, 1 - (y - K.top) / (crownTop - K.top))));
+  }
+  tube(trunk, trR, 6);
+  const tips = [];
+  for (let k = 0; k < K.mains; k++) {
+    const sy = K.top + (k / K.mains) * (C.y - K.top) * 0.8, start = V3(lean.x * (sy / crownTop) ** 2 * 2, sy, lean.z * (sy / crownTop) ** 2 * 2);
+    const az = k * 2.39996 + rnd() * 0.5, el = K.el[0] + rnd() * (K.el[1] - K.el[0]), d = V3(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el));
+    const t = ray(start, d) * (0.8 + rnd() * 0.12), end = start.clone().addScaledVector(d, t), pts = [], radii = [], r0 = K.tr * (0.6 - 0.2 * k / K.mains);
+    for (let q = 0; q <= 4; q++) { const u = q / 4, p = start.clone().lerp(end, u); p.y += Math.sin(u * Math.PI) * t * 0.12; if (q) p.add(V3((rnd() - 0.5) * 0.2, (rnd() - 0.5) * 0.15, (rnd() - 0.5) * 0.2)); pts.push(p); radii.push(r0 * (1 - u * 0.85)); }
+    tube(pts, radii, 4); tips.push(pts);
+  }
+  // the leaf cards
+  for (let k = 0; k < K.cards; k++) {
+    let p;
+    if (tips.length && k % 2 === 0) { const b = tips[Math.floor(rnd() * tips.length)], u = 0.35 + rnd() * 0.65, si = Math.min(b.length - 2, Math.floor(u * (b.length - 1))); p = b[si].clone().lerp(b[si + 1], u * (b.length - 1) - si).add(runit().multiplyScalar(0.3 + rnd() * 0.7)); }
+    else { const d = runit(), rad = 0.5 + Math.pow(rnd(), 0.6) * 0.5, tp = kind === 2 ? 1 - 0.5 * Math.max(0, d.y) : 1; p = V3(C.x + d.x * R * rad * tp, C.y + d.y * Ry * rad, C.z + d.z * R * rad * tp); }
+    if (p.y < K.top - 0.4) p.y = K.top - 0.4 + rnd() * 0.5;
+    const o = V3((p.x - C.x) / R, (p.y - C.y) / Ry, (p.z - C.z) / R), rn = o.length(); o.normalize();
+    const nrm = o.clone().add(runit().multiplyScalar(0.8)).add(V3(0, K.up, 0)).normalize();
+    const t0 = (Math.abs(nrm.y) < 0.95 ? V3(0, 1, 0) : V3(1, 0, 0)).cross(nrm).normalize(), b0 = nrm.clone().cross(t0), rl = rnd() * 6.2832;
+    const au = t0.clone().multiplyScalar(Math.cos(rl)).addScaledVector(b0, Math.sin(rl)), av = b0.clone().multiplyScalar(Math.cos(rl)).addScaledVector(t0, -Math.sin(rl));
+    const sz = K.card * (0.75 + rnd() * 0.5), sm = Math.min(1, Math.max(0, (rn - 0.15) / 0.85)), ao = (0.42 + 0.6 * sm * sm * (3 - 2 * sm)) * (0.75 + 0.25 * Math.min(1, Math.max(0, (p.y - (C.y - Ry)) / (2 * Ry)))) * (0.9 + rnd() * 0.2);
+    const flip = rnd() < 0.5, base = Pp.length / 3;
+    for (const [cu, cv] of [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]) {
+      const q = p.clone().addScaledVector(au, cu * sz).addScaledVector(av, cv * sz);
+      v(q, V3((q.x - C.x) / R, (q.y - C.y) / Ry * 1.3 + 0.25, (q.z - C.z) / R).normalize(), Math.min(1.15, ao * 1.12), ((flip ? 0.5 - cu : cu + 0.5)) * 0.875, cv + 0.5, 1);
+    }
+    I.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(Pp, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(Nn, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(Cc, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
+  g.setAttribute('aLeaf', new THREE.Float32BufferAttribute(LF, 1)); g.setIndex(I); g.computeBoundingSphere();
+  return g;
+}
 const solarMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   vHead: 'varying vec3 vLN;', vBody: 'vLN = normal;', fHead: 'varying vec3 vLN;',
   fColor: `vec3 n = normalize(vLN);
@@ -2515,10 +2763,8 @@ const solarMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   }`,
 });
 function initDetailGeos() {
-  const canopy = new THREE.IcosahedronGeometry(1, 0); canopy.scale(3.0, 2.5, 3.0); canopy.translate(0, 5.0, 0);
-  const trunk = new THREE.CylinderGeometry(0.22, 0.32, 3.4, 5); trunk.translate(0, 1.7, 0);
   const paint = (g, c) => { const n = g.attributes.position.count; const a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set(c, i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g.index ? g.toNonIndexed() : g; };
-  treeGeo = mergeGeometries([paint(canopy.toNonIndexed(), [1, 1, 1]), paint(trunk.toNonIndexed(), [0.55, 0.42, 0.33])]);
+  TREE_GEOS = [treeKindGeo(0), treeKindGeo(1), treeKindGeo(2)]; treeGeo = TREE_GEOS[0];
   // Sintex-style water tank: ribbed body, conical lid with a cap, on a small steel stand
   const body = new THREE.CylinderGeometry(0.62, 0.6, 1.2, 16, 1, true); body.translate(0, 0.32 + 0.6, 0);
   const lid = new THREE.CylinderGeometry(0.2, 0.63, 0.24, 16); lid.translate(0, 0.32 + 1.2 + 0.12, 0);
@@ -2548,6 +2794,7 @@ function initDetailGeos() {
   ]);
 }
 const TREE_COLS = ['#557f2f', '#6f9a36', '#86924a', '#b9653a', '#47732d'].map((h) => new THREE.Color(h));
+const TREE_TINT = [[1, 1, 1], [1.06, 1.1, 0.92], [1.12, 1.06, 0.8], [1.05, 1, 0.95], [0.95, 1, 0.95]];   // by variety: deep, fresh, dusty olive, (gulmohar), (ashoka)
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
 
 function buildCells(ch) {   // a slice of ~400 cell houses a call, so a dense chunk never stalls a frame; true when done
@@ -2567,20 +2814,27 @@ function buildTrees(ch) {
   const tb = chBuf(ch, 'trees'); if (!tb) return;
   const r = new Reader(tb[0], tb[1]); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), SC = r.arr(Uint8Array, n), VR = r.arr(Uint8Array, n);
-  const im = new THREE.InstancedMesh(treeGeo, treeMat, n), tc = (ch.tcol = new Float32Array(n * 4));   // trunks: x, z, radius, height
+  // one instanced mesh per kind: the orange-flowering ones are gulmohar, the tall narrow ones ashoka, the rest round
+  const kindOf = (vr) => (vr === 3 ? 1 : vr === 4 ? 2 : 0), cnt = [0, 0, 0];
+  for (let i = 0; i < n; i++) cnt[kindOf(VR[i])]++;
+  const IM = cnt.map((c, k) => (c ? new THREE.InstancedMesh(TREE_GEOS[k], TREE_MATS[k], c) : null)), at = [0, 0, 0];
+  const tc = (ch.tcol = new Float32Array(n * 4));   // trunks: x, z, radius, height
   for (let i = 0; i < n; i++) {
-    const s = SC[i] / 64, vr = VR[i];
+    const s = SC[i] / 64, vr = VR[i], k = kindOf(vr), im = IM[k];
     _p.set(X[i] * 0.1, 0, Z[i] * 0.1);
     _e.set(0, hash1(i + ch.cx * 131 + ch.cy * 977) * 6.283, 0); _q.setFromEuler(_e);
-    if (vr === 4) _s.set(s * 0.55, s * 1.5, s * 0.55); else _s.set(s, s * (0.9 + 0.2 * hash1(i * 3)), s);
-    _m.compose(_p, _q, _s); im.setMatrixAt(i, _m);
-    tc[i * 4] = ch.ox + _p.x; tc[i * 4 + 1] = ch.oz + _p.z; tc[i * 4 + 2] = 0.3 * _s.x + 0.04; tc[i * 4 + 3] = 3.4 * _s.y;
-    const c = TREE_COLS[vr]; const j = 0.88 + 0.22 * hash1(i * 17 + 3);
-    im.setColorAt(i, _tmpC.setRGB(c.r * j, c.g * j, c.b * j));
+    if (k === 2) _s.set(s * 0.9, s * (0.95 + 0.15 * hash1(i * 3)), s * 0.9); else _s.set(s, s * (0.9 + 0.2 * hash1(i * 3)), s);
+    _m.compose(_p, _q, _s); im.setMatrixAt(at[k], _m);
+    tc[i * 4] = ch.ox + _p.x; tc[i * 4 + 1] = ch.oz + _p.z; tc[i * 4 + 2] = (k === 2 ? 0.24 : 0.3) * _s.x + 0.04; tc[i * 4 + 3] = 3.4 * _s.y;
+    const c = TREE_TINT[vr], j = 0.86 + 0.26 * hash1(i * 17 + 3);   // the leaves' own colours, tinted a little per tree
+    im.setColorAt(at[k]++, _tmpC.setRGB(c[0] * j, c[1] * j, c[2] * j));
   }
-  im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10;
-  im.computeBoundingSphere();
-  ch.trees.push(im); group.near.add(im);
+  for (const im of IM) {
+    if (!im) continue;
+    im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; im.customDepthMaterial = TREE_DEPTH[TREE_MATS.indexOf(im.material)];
+    im.computeBoundingSphere();
+    ch.trees.push(im); group.near.add(im);
+  }
   if (WALK.on && Math.abs(ch.ox - WCOL.cx) < WCOL.R + 500 && Math.abs(ch.oz - WCOL.cz) < WCOL.R + 500) WCOL.stale = true;   // new trunks to walk round
 }
 const _tmpC = new THREE.Color();
@@ -3482,8 +3736,19 @@ function buildRiverfront() {
   const R = TR && TR.river; if (!R) return;
   const wy = R.wy, py = R.py; RIVER_UWY.value = wy; RIVER_UPY.value = py;
   const out = [];
-  const lid = flatMeshTiles(R.lid, 0.0, LIDMAT, 5.5); for (const m of lid) m.receiveShadow = false;
-  out.push(...lid);
+  // the depth-only lid covers ALL the land, with one hole: the channel inside the retaining walls. (It used to be a band
+  // along the banks, and from further off the sunken far wall and lower promenade showed through the land beyond it.)
+  // 12 cm down so road paint and paving just above the ground never fight it for depth at a distance
+  {
+    const P = R.walls[0], ring = [];
+    for (let j = 0; j + 1 < P.length; j += 2) { const v = new THREE.Vector2(P[j], P[j + 1]); if (!ring.length || ring[ring.length - 1].distanceTo(v) > 0.01) ring.push(v); }
+    if (ring.length > 3 && ring[0].distanceTo(ring[ring.length - 1]) < 0.01) ring.pop();
+    const S = 140000, outer = [new THREE.Vector2(-S, -S), new THREE.Vector2(S, -S), new THREE.Vector2(S, S), new THREE.Vector2(-S, S)];
+    const all = outer.concat(ring), faces = THREE.ShapeUtils.triangulateShape(outer, [ring]);
+    const pos = new Float32Array(all.length * 3); all.forEach((v, k) => { pos[k * 3] = v.x; pos[k * 3 + 1] = -0.12; pos[k * 3 + 2] = v.y; });
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setIndex(faces.flat());
+    const lid = new THREE.Mesh(g, LIDMAT); lid.renderOrder = 5.5; lid.frustumCulled = false; lid.receiveShadow = false; out.push(lid);
+  }
   out.push(...flatMeshTiles(R.water, wy, RWATER, 6));
   out.push(...flatMeshTiles(R.prom, py, RIVERMAT, 6, { kind: 1, col: lin('#c9c0b2') }));
   // upper promenade paving: a flat ground layer between parks and roads
@@ -3675,6 +3940,22 @@ function buildRiverProps() {
     im.computeBoundingSphere(); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im); return im;
   };
   inst(benchGeo(), benches); inst(binGeo(), bins);
+  // potted shrubs: a concrete pot with a clipped bush, between every other pair of lamps a few metres in from the railing
+  const pots = [];
+  R.lamps.forEach(([x, z], i) => {
+    if (i % 2) return; const q = nearWall(x, z); if (q.d > 25) return;
+    const px = x + q.ux * 15 + q.nx * 4.2, pz = z + q.uz * 15 + q.nz * 4.2;
+    if (onRoad(px, pz) || waterAt(px, pz) || PROP_COL.box.some(([bx, bz]) => Math.hypot(bx - px, bz - pz) < 2.5)) return;
+    pots.push([px, pz, 1, 0]); PROP_COL.circ.push([px, pz, 0.62, 1.3]);
+  });
+  if (pots.length) {
+    const pg = new THREE.CylinderGeometry(0.58, 0.46, 0.62, 8); pg.translate(0, 0.31, 0);
+    const pc = new Float32Array(pg.attributes.position.count * 3); for (let k = 0; k < pc.length; k += 3) { pc[k] = 0.62; pc[k + 1] = 0.6; pc[k + 2] = 0.56; } pg.setAttribute('color', new THREE.BufferAttribute(pc, 3));
+    inst(pg, pots);
+    const bush = new THREE.InstancedMesh(TREE_GEOS[0], TREE_MATS[0], pots.length), m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc = new THREE.Vector3(0.24, 0.2, 0.24), pp = new THREE.Vector3();
+    pots.forEach(([x, z], k) => { qq.setFromAxisAngle(_vy, hash1(k * 31) * 6.28); m4.compose(pp.set(x, 0.25, z), qq, sc); bush.setMatrixAt(k, m4); bush.setColorAt(k, _tmpC.setRGB(1.05, 1.1, 0.95)); });
+    bush.computeBoundingSphere(); bush.castShadow = true; bush.receiveShadow = true; bush.renderOrder = 10; bush.customDepthMaterial = TREE_DEPTH[0]; group.ground.add(bush); RIVER_FINE.push(bush);
+  }
   // the riverfront road: tall single-arm LED lights on its river-side kerb every ~32 m, arms over the carriageway
   const lights = [], taken = new Set(), Rd = ROADS;
   let bx0 = 1e9, bx1 = -1e9, bz0 = 1e9, bz1 = -1e9; for (const [ax, az] of segs) { bx0 = Math.min(bx0, ax); bx1 = Math.max(bx1, ax); bz0 = Math.min(bz0, az); bz1 = Math.max(bz1, az); }
@@ -4890,6 +5171,7 @@ function buildSignals() {
       armKey.set(k * 2 + e, { si, ph, stop: rz + 4.6 });
       const px = sx + dx * 4.9 + Lx * (hw + 0.9), pz = sz + dz * 4.9 + Lz * (hw + 0.9), tall = hw >= 5;
       cbox(G, px, pz, dx, dz, 0.09, 0.09, 0, tall ? 6.3 : 3.7, pole);
+      PROP_COL.circ.push([px, pz, 0.14, tall ? 6.3 : 3.7]);
       heads.push([px + Lx * 0.0, 2.55, pz, dx, dz, si, ph]);
       if (tall) {
         const ax = px - Lx * hw * 0.42, az = pz - Lz * hw * 0.42;
@@ -7241,7 +7523,7 @@ function exitWalk() {
   const W = WALK; if (!W.on || CFG.start) return;   // on foot only: there is no map to go back to
   if (document.pointerLockElement) document.exitPointerLock();
   ACC.pf.last = [Math.round(W.P.x), Math.round(W.P.z)]; saveProfile(true);
-  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); $('wkPop').classList.remove('show'); stepDress();
+  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); if (GRASS.mesh) GRASS.mesh.visible = false; $('wkPop').classList.remove('show'); stepDress();
   scene.fog.near = 1e7; scene.fog.far = 2e7;
   view.tx = W.P.x; view.tz = W.P.z; view.az = W.prevAz; view.mpp = 0.3;
   document.body.classList.remove('walking'); dirty = true; updateSunDir();
@@ -7548,6 +7830,7 @@ function stepWalk(dt) {
   if (W.av && W.av.mixer) W.av.mixer.update(dt);
   if (W.av && W.av.mixer && W.mode !== 'walk' && !W.ride && (W.mode === 'cycle' || (W.rideMesh && W.rideMesh.userData.own))) ridePose(W.av, W.mode, W.crank || 0);
   stepPedPool(dt);
+  stepGrass();
   // --- camera
   if (W.panel) { W.yaw = lerpAng(W.yaw, Math.atan2(Math.cos(P.th), Math.sin(P.th)), Math.min(1, dt * 4)); W.pitch = lerp(W.pitch, 0.1, Math.min(1, dt * 4)); }
   else if (!W.ride && performance.now() - W.lookT > (W.mode === 'walk' ? 2500 : 1500) && Math.abs(P.v) > 1.5) W.yaw = lerpAng(W.yaw, Math.atan2(-Math.cos(P.th), -Math.sin(P.th)), Math.min(1, dt * (W.mode === 'walk' ? 1.2 : 2.2)));   // swing in behind, GTA style
