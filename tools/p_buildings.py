@@ -435,6 +435,7 @@ for k in _hit:
     polys[k] = g
 _okp2 = (shapely.get_type_id(polys) == 3) & (shapely.area(polys) > 6)
 polys, hs, isfab, special, src = polys[_okp2], hs[_okp2], isfab[_okp2], special[_okp2], src[_okp2]
+polys = shapely.orient_polygons(polys, exterior_cw=False)   # the cut can flip an outline: the app draws a flipped one inside out
 print('patang: cleared', int((~_okp).sum()), 'footprints, trimmed', len(_hit))
 
 # other bespoke landmarks: clear their traced outlines (the model replaces them)
