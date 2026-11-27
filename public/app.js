@@ -720,7 +720,7 @@ function buildingMeshes(S, ox, oz, filter, noWindows, out, canvasCtx, b0 = 0, b1
       }
     };
     for (let b = i; b < j; b++) {
-      if (!filter(kind[b])) continue;
+      if (!filter(kind[b]) || (S.bes && S.bes[b])) continue;   // modelled on its own (BESPOKE_BLD)
       const fl = floors[b];
       const H = fl * 31 + 5;
       const pal = PAL[style[b]];
@@ -2067,12 +2067,110 @@ function unloadChunk(ch) {
   ch.reg = []; ch.blk = []; ch.blocks = false; disposeNear(ch);
   ch.sd = null; ch.wS = null; ch.tcol = null; WCOL.stale = true;
 }
+// ---- buildings modelled on their own instead of as survey blocks. The survey footprint stays solid (collision); only
+// its drawing (walls, parapet, street dress) is replaced by the model, built on the same footprint.
+const BESPOKE_BLD = [
+  // Chinubhai Centre (Hasmukh C. Patel, 1980-84), at the foot of the Patang tower: showrooms below, offices above, and
+  // the river (east) side stepped back floor by floor into shaded terrace gardens
+  { x: -312, z: 957, r: 22, minFl: 8, need: 'patang', build: buildChinubhai },
+];
+function markBespoke(S, ox, oz) {   // S.bes[b] = 1 + index into BESPOKE_BLD; S.besRing[b] = the outline in metres
+  if (S.bes !== undefined) return S;
+  S.bes = null;
+  const list = BESPOKE_BLD.filter((o) => CFG.landmarks.includes(o.need) && Math.abs(o.x - ox) < 600 + o.r && Math.abs(o.z - oz) < 600 + o.r);
+  if (!list.length) return S;
+  let rr = 0, pp = 0;
+  for (let b = 0; b < S.n; b++) {
+    const m = S.rl[rr]; let cx = 0, cz = 0;
+    for (let j = 0; j < m; j++) { cx += S.abs[(pp + j) * 2]; cz += S.abs[(pp + j) * 2 + 1]; }
+    cx = ox + cx / m * 0.1; cz = oz + cz / m * 0.1;
+    const k = list.findIndex((o) => Math.hypot(cx - o.x, cz - o.z) < o.r && S.floors[b] >= o.minFl);
+    if (k >= 0) {
+      if (!S.bes) { S.bes = new Uint8Array(S.n); S.besRing = {}; }
+      S.bes[b] = BESPOKE_BLD.indexOf(list[k]) + 1;
+      S.besRing[b] = Array.from({ length: m }, (_, j) => [ox + S.abs[(pp + j) * 2] * 0.1, oz + S.abs[(pp + j) * 2 + 1] * 0.1]);
+    }
+    for (let k2 = 0; k2 < S.rc[b]; k2++) pp += S.rl[rr++];
+  }
+  return S;
+}
+function clipHalf(poly, ax, az, c) {   // the part of a polygon where x * ax + z * az <= c (Sutherland-Hodgman, one plane)
+  const out = [], d = (p) => p[0] * ax + p[1] * az - c;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length], da = d(a), db = d(b);
+    if (da <= 0) out.push(a);
+    if ((da < 0) !== (db < 0) && da !== db) { const t = da / (da - db); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); }
+  }
+  return out;
+}
+function buildChinubhai(ring, fl) {
+  const G = new Geo(true), e0 = [0, 0, 0, 0], FH = 3.1, conc = C255(198, 192, 180), concD = C255(168, 162, 150), green = C255(74, 122, 52), soil = C255(96, 72, 52);
+  const area = (P) => { let a = 0; for (let i = 0; i < P.length; i++) { const p = P[i], q = P[(i + 1) % P.length]; a += p[0] * q[1] - q[0] * p[1]; } return a / 2; };
+  const walls = (P, y0, y1, col, kind, out = 0) => {   // a band of wall round polygon P, pushed out by 'out' metres
+    const cw = area(P) < 0;
+    for (let i = 0; i < P.length; i++) {
+      const a = P[i], b = P[(i + 1) % P.length], dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz); if (L < 0.05) continue;
+      const nx = (cw ? -dz : dz) / L, nz = (cw ? dx : -dx) / L, ox = nx * out, oz = nz * out;
+      lq(G, [a[0] + ox, y0, a[1] + oz], [b[0] + ox, y0, b[1] + oz], [b[0] + ox, y1, b[1] + oz], [a[0] + ox, y1, a[1] + oz], [nx, 0, nz], kind ? [kind, 0, y0, 0] : e0, col);
+      if (out > 0) {   // the projecting slab's soffit and top
+        lq(G, [a[0], y0, a[1]], [b[0], y0, b[1]], [b[0] + ox, y0, b[1] + oz], [a[0] + ox, y0, a[1] + oz], [0, -1, 0], e0, concD);
+        lq(G, [a[0], y1, a[1]], [b[0], y1, b[1]], [b[0] + ox, y1, b[1] + oz], [a[0] + ox, y1, a[1] + oz], [0, 1, 0], e0, conc);
+      }
+    }
+  };
+  const cap = (P, y, col) => {   // a flat roof / terrace floor over polygon P
+    const flat = P.flat(), tri = earcut(flat), base = G.p.length / 3;
+    for (const [x, z] of P) G.v(x, y, z, 0, 1, 0, e0, col);
+    for (let t = 0; t < tri.length; t += 3) {   // wound to face up
+      const [a, b, c] = [tri[t], tri[t + 1], tri[t + 2]], A = P[a], B = P[b], C = P[c];
+      const up = (B[1] - A[1]) * (C[0] - A[0]) - (B[0] - A[0]) * (C[1] - A[1]) > 0;
+      G.i.push(base + a, up ? base + b : base + c, up ? base + c : base + b);
+    }
+  };
+  let xE = -1e9; for (const [x] of ring) xE = Math.max(xE, x);
+  const setback = (f) => Math.max(0, f - 2) * 2.6;   // from the third floor up, each floor steps back from the river
+  const floorPoly = (f) => clipHalf(ring, 1, 0, xE - setback(f));
+  for (let f = 0; f < fl; f++) {
+    const P = floorPoly(f); if (P.length < 3) break;
+    const y0 = f * FH;
+    if (f === 0) { walls(P, 0, 0.35, concD, 0); walls(P, 0.35, FH - 0.35, C255(60, 80, 96), 2); }   // showroom glass
+    else { walls(P, y0, y0 + 1.0, conc, 3); walls(P, y0 + 1.0, y0 + FH - 0.35, C255(60, 80, 96), 2); }   // concrete sill band, ribbon window
+    walls(P, y0 + FH - 0.35, y0 + FH, conc, 0, 0.35);   // floor slab, projecting
+    cap(P, y0 + FH, conc);
+    // a terrace garden where the floor above steps back: planters along its river edge
+    const Pn = floorPoly(f + 1);
+    if (f + 1 < fl && setback(f + 1) > setback(f) && Pn.length >= 3) {
+      const xc = xE - setback(f) - 0.45, cut = clipHalf(clipHalf(P, 1, 0, xc + 0.3), -1, 0, -(xc - 0.3));
+      let z0 = 1e9, z1 = -1e9; for (const [, z] of cut) { z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+      if (z1 - z0 > 1) {
+        const box = [[xc - 0.35, z0 + 0.3], [xc + 0.35, z0 + 0.3], [xc + 0.35, z1 - 0.3], [xc - 0.35, z1 - 0.3]];
+        walls(box, y0 + FH, y0 + FH + 0.7, concD, 0); cap(box, y0 + FH + 0.65, soil);
+        for (let z = z0 + 0.8; z < z1 - 0.6; z += 1.1) {   // shrubs
+          const h = 0.5 + 0.35 * hash1(z * 7.3 + f), r = 0.38;
+          walls([[xc - r, z - r], [xc + r, z - r], [xc + r, z + r], [xc - r, z + r]], y0 + FH + 0.65, y0 + FH + 0.65 + h, green, 0);
+          cap([[xc - r, z - r], [xc + r, z - r], [xc + r, z + r], [xc - r, z + r]], y0 + FH + 0.65 + h, green);
+        }
+      }
+    }
+  }
+  // the roof: parapet and the lift / stair room
+  const top = floorPoly(fl - 1), yR = fl * FH;
+  if (top.length >= 3) {
+    walls(top, yR, yR + 1.0, conc, 0); cap(top, yR + 1.0 - 0.02, concD);
+    let mx = 1e9; for (const [x] of top) mx = Math.min(mx, x);
+    let zs = 0; for (const [, z] of top) zs += z; zs /= top.length;
+    const room = [[mx + 2, zs - 3], [mx + 8, zs - 3], [mx + 8, zs + 3], [mx + 2, zs + 3]];
+    walls(room, yR, yR + 3.2, concD, 0); cap(room, yR + 3.2, conc);
+  }
+  return G.mesh(LMK);
+}
 function chunkBlocks(ch) {   // the chunk's buildings (blocks of cell houses are drawn until the cells replace them)
   ch.blocks = true;
   const cb = chBuf(ch, 'bld'); if (!cb) return;
-  const S = decodeBld(cb[0], cb[1]);
+  const S = markBespoke(decodeBld(cb[0], cb[1]), ch.ox, ch.oz);
   buildingMeshes(S, ch.ox, ch.oz, (kd) => kd === 0, false, ch.reg, STREAM ? null : mapCtx);
   buildingMeshes(S, ch.ox, ch.oz, (kd) => kd === 1, true, ch.blk, STREAM ? null : mapCtx);
+  if (S.bes) for (let b = 0; b < S.n; b++) if (S.bes[b]) ch.reg.push(BESPOKE_BLD[S.bes[b] - 1].build(S.besRing[b], S.floors[b]));
   for (const m of ch.reg) group.bld.add(m);
   for (const m of ch.blk) { group.bld.add(m); m.visible = !(ch.cells && ch.cells.length); }
 }
@@ -2231,7 +2329,7 @@ function parapetMesh(S, ox, oz) {
     ringStart[i] = rr; ptStart[i] = pp;
     const r0 = rr; for (let k = 0; k < rc[i]; k++) pp += rl[rr++];
     const ws = PAL[style[i]].ws;
-    if (kind[i] !== 0 || floors[i] < 1 || ws === 0 || ws === 10 || (polT[i] === 2 && rc[i] === 1)) continue;
+    if (kind[i] !== 0 || floors[i] < 1 || ws === 0 || ws === 10 || (polT[i] === 2 && rc[i] === 1) || (S.bes && S.bes[i])) continue;
     ok[i] = 1; ne += pp - ptStart[i];
   }
   ringStart[n] = rr; ptStart[n] = pp;
@@ -2306,7 +2404,7 @@ function buildProps(ch) {
   ch.props = [];
   for (const k of ['bld', 'cells']) {   // parapets on buildings and cell houses
     const cb = chBuf(ch, k); if (!cb) continue;
-    const pm = parapetMesh(decodeBld(cb[0], cb[1]), ch.ox, ch.oz);
+    const pm = parapetMesh(markBespoke(decodeBld(cb[0], cb[1]), ch.ox, ch.oz), ch.ox, ch.oz);
     if (pm) { group.near.add(pm); ch.props.push(pm); }
   }
   const pb = chBuf(ch, 'props'); if (!pb) return;
@@ -6804,10 +6902,11 @@ function buildDressCell(cx, cz) {
   for (const ch of chunks) {
     if (Math.abs(ch.ox - cx * DRESS.C) > 700 || Math.abs(ch.oz - cz * DRESS.C) > 700) continue;
     for (const [S, skipBlk] of dressSets(ch)) {
+      markBespoke(S, ch.ox, ch.oz);
       const I = dressIndex(S, ch.ox, ch.oz), L = I.map.get(colKey(cx, cz)); if (!L) continue;
       const { floors, style, kind, rl, abs, polT, rc } = S;
       for (const b of L) {
-        if (polT[b] || (skipBlk && kind[b] === 1)) continue;
+        if (polT[b] || (skipBlk && kind[b] === 1) || (S.bes && S.bes[b])) continue;
         const pal = PAL[style[b]]; if (pal.ws !== 1 && pal.ws !== 3) continue;
         const fl = floors[b], cw = pal.ws === 3 ? 2.6 : 3.1, H = fl * 3.1 + 0.5;
         const paint = bldPaint(b, ch.ox, ch.oz, pal), parC = paint ? paint.map((q) => srgbToLin(q) * 0 + q / 255 * 0.92) : slabC;
