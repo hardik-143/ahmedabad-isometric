@@ -616,68 +616,7 @@ function roadMat(pass) {
 }
 const ROAD0 = roadMat(0), ROAD1 = roadMat(1);
 
-// trees (after the generator in hardik-143/dynamic-forest): a bark trunk and main branches, a crown of leaf cards (alpha-cut
-// clusters of leaves) lit as one rounded mass, stirring in the breeze. Three kinds, each with its own leaf-and-bark atlas
-// (leaf cluster in the left 7/8, bark in the right 1/8): 0 a round neem/peepal, 1 a flowering gulmohar, 2 a tall ashoka
-function treeAtlas(kind) {
-  const S = 512, cv = document.createElement('canvas'); cv.width = cv.height = S; const g = cv.getContext('2d');
-  let sd = 1357 + kind * 101; const r = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-  const hsl = (h, s2, l) => `hsl(${h},${s2}%,${l}%)`, LW = S * 0.875, cx = LW / 2, cy = S / 2;
-  const P = [{ h: [86, 112], s: [38, 56], l: [20, 36], n: 200, size: 32, w: 0.42 }, { h: [78, 100], s: [42, 58], l: [26, 40], n: 230, size: 17, w: 0.38 }, { h: [96, 118], s: [42, 58], l: [15, 28], n: 120, size: 44, w: 0.2 }][kind];
-  g.strokeStyle = 'rgba(70,52,38,0.9)'; g.lineCap = 'round';   // twigs
-  for (let i = 0; i < 6; i++) { g.lineWidth = 2 + r() * 3; const a = r() * 6.283; g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(a) * LW * 0.33, cy + Math.sin(a) * LW * 0.33); g.stroke(); }
-  for (let i = 0; i < P.n; i++) {
-    const depth = i / P.n, a = r() * 6.283, d = Math.pow(r(), 0.7) * LW * 0.4, x = cx + Math.cos(a) * d, y = cy + Math.sin(a) * d;
-    const L = P.size * (0.7 + r() * 0.6), W = L * P.w * 0.5, hue = P.h[0] + r() * (P.h[1] - P.h[0]), sat = P.s[0] + r() * (P.s[1] - P.s[0]), lit = P.l[0] + r() * (P.l[1] - P.l[0]) + depth * 8;
-    g.save(); g.translate(x, y); g.rotate(kind === 2 ? Math.PI / 2 + (r() - 0.5) * 0.9 : a + (r() - 0.5) * 1.4);   // ashoka leaves hang down
-    if (kind === 1 && r() < 0.42) {   // gulmohar: clusters of scarlet-orange blooms among the feathery leaves
-      for (let k = 0; k < 5; k++) { g.rotate(1.2566); g.fillStyle = hsl(4 + r() * 18, 82 + r() * 10, 44 + r() * 12); g.beginPath(); g.ellipse(L * 0.45, 0, L * 0.42, L * 0.28, 0, 0, 6.283); g.fill(); }
-    } else {
-      const gr = g.createLinearGradient(0, -W, 0, W); gr.addColorStop(0, hsl(hue, sat, lit + 7)); gr.addColorStop(1, hsl(hue, sat, lit - 5));
-      g.fillStyle = gr; g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(L * 0.45, -W * 1.3, L, 0); g.quadraticCurveTo(L * 0.45, W * 1.3, 0, 0); g.fill();
-      g.strokeStyle = hsl(hue, sat - 10, lit + 14); g.globalAlpha = 0.5; g.lineWidth = 1; g.beginPath(); g.moveTo(0, 0); g.lineTo(L * 0.85, 0); g.stroke(); g.globalAlpha = 1;
-    }
-    g.restore();
-  }
-  // bark: ridges and fissures down a strip on the right
-  const base = [[86, 68, 52], [112, 104, 92], [94, 80, 64]][kind], X0 = LW, BW = S - LW;
-  g.fillStyle = `rgb(${base})`; g.fillRect(X0, 0, BW, S);
-  for (let i = 0; i < 26; i++) {
-    const light = r() < 0.55; let x = X0 + r() * BW;
-    g.strokeStyle = light ? `rgba(${base[0] + 50},${base[1] + 45},${base[2] + 38},0.55)` : 'rgba(15,10,6,0.65)'; g.lineWidth = light ? 2 + r() * 5 : 1 + r() * 2;
-    g.beginPath(); for (let y = -10; y <= S + 10; y += 16) { x = clamp(x + (r() - 0.5) * 5, X0 + 1, S - 1); g.lineTo(x, y); } g.stroke();
-  }
-  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
-}
-const TREE_TEX = [0, 1, 2].map(treeAtlas);
-const TREE_MATS = TREE_TEX.map((map, k) => {
-  const m = new THREE.MeshLambertMaterial({ vertexColors: true, map, alphaTest: 0.5, side: THREE.DoubleSide });
-  m.onBeforeCompile = (sh) => {
-    sh.uniforms.uTime = U.uTime;
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute float aLeaf; uniform float uTime;')
-      .replace('#include <color_vertex>', `#include <color_vertex>
-      #ifdef USE_INSTANCING_COLOR
-        vColor.xyz = mix(color.xyz, color.xyz * instanceColor.xyz, aLeaf);
-      #endif`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>
-      if (aLeaf > 0.5) {
-        #ifdef USE_INSTANCING
-        vec3 ip = instanceMatrix[3].xyz;
-        #else
-        vec3 ip = vec3(0.0);
-        #endif
-        float ph = uTime * 1.5 + ip.x * 0.37 + ip.z * 0.29, sw = clamp(position.y / 7.0, 0.0, 1.0);
-        transformed.x += sin(ph + position.y * 0.8) * 0.07 * sw;
-        transformed.z += cos(ph * 0.83 + position.x) * 0.06 * sw;
-      }`);
-    // leaf cards are seen from both sides: keep the crown's rounded normals instead of flipping them on the back face
-    sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', '#include <normal_fragment_begin>\n#ifdef DOUBLE_SIDED\nnormal *= faceDirection;\n#endif');
-  };
-  m.customProgramCacheKey = () => 'tree3';
-  return m;
-});
-const TREE_DEPTH = TREE_TEX.map((map) => new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map, alphaTest: 0.5, side: THREE.DoubleSide }));
-const treeMat = TREE_MATS[0];
+const treeMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
 const tankMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   vHead: 'varying vec3 vLN;', vBody: 'vLN = normal;', fHead: 'varying vec3 vLN;',
   fColor: `float top = step(0.7, normalize(vLN).y);
@@ -2586,69 +2525,7 @@ async function buildFarBuildings(progressBase, progressSpan) {
 }
 
 // near detail (lazy)
-let treeGeo, tankGeo, mumtyGeo, solarGeo, TREE_GEOS;
-// one tree of each kind at scale 1 (kind 0 about 8 m, the ashoka about 11 m): the trunk and main branches as bark tubes, the
-// crown as leaf cards half along the branch ends, half over the crown's shell, darker deep inside and underneath
-function treeKindGeo(kind) {
-  const Pp = [], Nn = [], Cc = [], UV = [], LF = [], I = [];
-  let sd = 4242 + kind * 977; const rnd = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
-  const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z), runit = () => { const z = rnd() * 2 - 1, a = rnd() * 6.2832, q = Math.sqrt(1 - z * z); return V3(Math.cos(a) * q, z, Math.sin(a) * q); };
-  const v = (p, n, c, u, w, lf) => { Pp.push(p.x, p.y, p.z); Nn.push(n.x, n.y, n.z); Cc.push(c, c, c); UV.push(u, w); LF.push(lf); };
-  const tube = (pts, radii, segs) => {   // tapering tube through pts, frames carried along; bark UVs in the atlas' right strip
-    let N = null, len = 0; const base = Pp.length / 3;
-    for (let i = 0; i < pts.length; i++) {
-      const T = pts[Math.min(pts.length - 1, i + 1)].clone().sub(pts[Math.max(0, i - 1)]).normalize();
-      if (!N) N = (Math.abs(T.y) < 0.9 ? V3(0, 1, 0) : V3(1, 0, 0)).cross(T).normalize(); else N.sub(T.clone().multiplyScalar(N.dot(T))).normalize();
-      const B = T.clone().cross(N); if (i) len += pts[i].distanceTo(pts[i - 1]);
-      for (let k = 0; k <= segs; k++) { const an = (k / segs) * 6.2832, d = N.clone().multiplyScalar(Math.cos(an)).addScaledVector(B, Math.sin(an)); v(pts[i].clone().addScaledVector(d, radii[i]), d, 0.95, 0.885 + 0.11 * (k / segs), len / 2.5, 0); }
-    }
-    for (let i = 0; i < pts.length - 1; i++) for (let k = 0; k < segs; k++) { const q = base + i * (segs + 1) + k, w = q + segs + 1; I.push(q, w, q + 1, q + 1, w, w + 1); }
-  };
-  const K = [{ C: V3(0, 5.3, 0), R: 3.0, Ry: 2.25, top: 3.1, tr: 0.25, mains: 5, el: [0.3, 0.8], cards: 84, card: 2.6, up: 0.25 },
-    { C: V3(0, 4.9, 0), R: 4.3, Ry: 1.35, top: 2.4, tr: 0.3, mains: 6, el: [0.3, 0.55], cards: 84, card: 2.5, up: 0.8 },
-    { C: V3(0, 6.4, 0), R: 1.45, Ry: 4.7, top: 1.6, tr: 0.2, mains: 0, el: [0, 0], cards: 72, card: 1.75, up: -0.45 }][kind];
-  const { C, R, Ry } = K;
-  const ray = (o, d) => { const ox = (o.x - C.x) / R, oy = (o.y - C.y) / Ry, oz = (o.z - C.z) / R, dx = d.x / R, dy = d.y / Ry, dz = d.z / R, A = dx * dx + dy * dy + dz * dz, B = 2 * (ox * dx + oy * dy + oz * dz), Q = ox * ox + oy * oy + oz * oz - 1, D = B * B - 4 * A * Q; return D < 0 ? 1 : (-B + Math.sqrt(D)) / (2 * A); };
-  // trunk (a little lean, a flared foot) and its leader up into the crown
-  const lean = V3((rnd() - 0.5) * 0.5, 0, (rnd() - 0.5) * 0.5), crownTop = C.y + Ry * (kind === 2 ? 0.95 : 0.5), trunk = [], trR = [];
-  for (let k = 0; k <= 6; k++) {
-    const t = k / 6, y = -0.3 + t * (crownTop + 0.3);
-    trunk.push(V3(lean.x * t * t * 2, y, lean.z * t * t * 2));
-    trR.push(K.tr * (1 + 0.45 * Math.max(0, 1 - y / 1.1) ** 2) * (y < K.top ? 1 - 0.3 * y / K.top : 0.7 * Math.max(0.1, 1 - (y - K.top) / (crownTop - K.top))));
-  }
-  tube(trunk, trR, 6);
-  const tips = [];
-  for (let k = 0; k < K.mains; k++) {
-    const sy = K.top + (k / K.mains) * (C.y - K.top) * 0.8, start = V3(lean.x * (sy / crownTop) ** 2 * 2, sy, lean.z * (sy / crownTop) ** 2 * 2);
-    const az = k * 2.39996 + rnd() * 0.5, el = K.el[0] + rnd() * (K.el[1] - K.el[0]), d = V3(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el));
-    const t = ray(start, d) * (0.8 + rnd() * 0.12), end = start.clone().addScaledVector(d, t), pts = [], radii = [], r0 = K.tr * (0.6 - 0.2 * k / K.mains);
-    for (let q = 0; q <= 4; q++) { const u = q / 4, p = start.clone().lerp(end, u); p.y += Math.sin(u * Math.PI) * t * 0.12; if (q) p.add(V3((rnd() - 0.5) * 0.2, (rnd() - 0.5) * 0.15, (rnd() - 0.5) * 0.2)); pts.push(p); radii.push(r0 * (1 - u * 0.85)); }
-    tube(pts, radii, 4); tips.push(pts);
-  }
-  // the leaf cards
-  for (let k = 0; k < K.cards; k++) {
-    let p;
-    if (tips.length && k % 2 === 0) { const b = tips[Math.floor(rnd() * tips.length)], u = 0.35 + rnd() * 0.65, si = Math.min(b.length - 2, Math.floor(u * (b.length - 1))); p = b[si].clone().lerp(b[si + 1], u * (b.length - 1) - si).add(runit().multiplyScalar(0.3 + rnd() * 0.7)); }
-    else { const d = runit(), rad = 0.5 + Math.pow(rnd(), 0.6) * 0.5, tp = kind === 2 ? 1 - 0.5 * Math.max(0, d.y) : 1; p = V3(C.x + d.x * R * rad * tp, C.y + d.y * Ry * rad, C.z + d.z * R * rad * tp); }
-    if (p.y < K.top - 0.4) p.y = K.top - 0.4 + rnd() * 0.5;
-    const o = V3((p.x - C.x) / R, (p.y - C.y) / Ry, (p.z - C.z) / R), rn = o.length(); o.normalize();
-    const nrm = o.clone().add(runit().multiplyScalar(0.8)).add(V3(0, K.up, 0)).normalize();
-    const t0 = (Math.abs(nrm.y) < 0.95 ? V3(0, 1, 0) : V3(1, 0, 0)).cross(nrm).normalize(), b0 = nrm.clone().cross(t0), rl = rnd() * 6.2832;
-    const au = t0.clone().multiplyScalar(Math.cos(rl)).addScaledVector(b0, Math.sin(rl)), av = b0.clone().multiplyScalar(Math.cos(rl)).addScaledVector(t0, -Math.sin(rl));
-    const sz = K.card * (0.75 + rnd() * 0.5), sm = Math.min(1, Math.max(0, (rn - 0.15) / 0.85)), ao = (0.42 + 0.6 * sm * sm * (3 - 2 * sm)) * (0.75 + 0.25 * Math.min(1, Math.max(0, (p.y - (C.y - Ry)) / (2 * Ry)))) * (0.9 + rnd() * 0.2);
-    const flip = rnd() < 0.5, base = Pp.length / 3;
-    for (const [cu, cv] of [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]]) {
-      const q = p.clone().addScaledVector(au, cu * sz).addScaledVector(av, cv * sz);
-      v(q, V3((q.x - C.x) / R, (q.y - C.y) / Ry * 1.3 + 0.25, (q.z - C.z) / R).normalize(), Math.min(1.15, ao * 1.12), ((flip ? 0.5 - cu : cu + 0.5)) * 0.875, cv + 0.5, 1);
-    }
-    I.push(base, base + 1, base + 2, base, base + 2, base + 3);
-  }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(Pp, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(Nn, 3));
-  g.setAttribute('color', new THREE.Float32BufferAttribute(Cc, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(UV, 2));
-  g.setAttribute('aLeaf', new THREE.Float32BufferAttribute(LF, 1)); g.setIndex(I); g.computeBoundingSphere();
-  return g;
-}
+let treeGeo, tankGeo, mumtyGeo, solarGeo;
 const solarMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   vHead: 'varying vec3 vLN;', vBody: 'vLN = normal;', fHead: 'varying vec3 vLN;',
   fColor: `vec3 n = normalize(vLN);
@@ -2659,8 +2536,10 @@ const solarMat = hook(new THREE.MeshLambertMaterial({ vertexColors: true }), {
   }`,
 });
 function initDetailGeos() {
+  const canopy = new THREE.IcosahedronGeometry(1, 0); canopy.scale(3.0, 2.5, 3.0); canopy.translate(0, 5.0, 0);
+  const trunk = new THREE.CylinderGeometry(0.22, 0.32, 3.4, 5); trunk.translate(0, 1.7, 0);
   const paint = (g, c) => { const n = g.attributes.position.count; const a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set(c, i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g.index ? g.toNonIndexed() : g; };
-  TREE_GEOS = [treeKindGeo(0), treeKindGeo(1), treeKindGeo(2)]; treeGeo = TREE_GEOS[0];
+  treeGeo = mergeGeometries([paint(canopy.toNonIndexed(), [1, 1, 1]), paint(trunk.toNonIndexed(), [0.55, 0.42, 0.33])]);
   // Sintex-style water tank: ribbed body, conical lid with a cap, on a small steel stand
   const body = new THREE.CylinderGeometry(0.62, 0.6, 1.2, 16, 1, true); body.translate(0, 0.32 + 0.6, 0);
   const lid = new THREE.CylinderGeometry(0.2, 0.63, 0.24, 16); lid.translate(0, 0.32 + 1.2 + 0.12, 0);
@@ -2690,7 +2569,6 @@ function initDetailGeos() {
   ]);
 }
 const TREE_COLS = ['#557f2f', '#6f9a36', '#86924a', '#b9653a', '#47732d'].map((h) => new THREE.Color(h));
-const TREE_TINT = [[1, 1, 1], [1.06, 1.1, 0.92], [1.12, 1.06, 0.8], [1.05, 1, 0.95], [0.95, 1, 0.95]];   // by variety: deep, fresh, dusty olive, (gulmohar), (ashoka)
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
 
 function buildCells(ch) {   // a slice of ~400 cell houses a call, so a dense chunk never stalls a frame; true when done
@@ -2710,27 +2588,20 @@ function buildTrees(ch) {
   const tb = chBuf(ch, 'trees'); if (!tb) return;
   const r = new Reader(tb[0], tb[1]); const n = r.u32();
   const X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), SC = r.arr(Uint8Array, n), VR = r.arr(Uint8Array, n);
-  // one instanced mesh per kind: the orange-flowering ones are gulmohar, the tall narrow ones ashoka, the rest round
-  const kindOf = (vr) => (vr === 3 ? 1 : vr === 4 ? 2 : 0), cnt = [0, 0, 0];
-  for (let i = 0; i < n; i++) cnt[kindOf(VR[i])]++;
-  const IM = cnt.map((c, k) => (c ? new THREE.InstancedMesh(TREE_GEOS[k], TREE_MATS[k], c) : null)), at = [0, 0, 0];
-  const tc = (ch.tcol = new Float32Array(n * 4));   // trunks: x, z, radius, height
+  const im = new THREE.InstancedMesh(treeGeo, treeMat, n), tc = (ch.tcol = new Float32Array(n * 4));   // trunks: x, z, radius, height
   for (let i = 0; i < n; i++) {
-    const s = SC[i] / 64, vr = VR[i], k = kindOf(vr), im = IM[k];
+    const s = SC[i] / 64, vr = VR[i];
     _p.set(X[i] * 0.1, 0, Z[i] * 0.1);
     _e.set(0, hash1(i + ch.cx * 131 + ch.cy * 977) * 6.283, 0); _q.setFromEuler(_e);
-    if (k === 2) _s.set(s * 0.9, s * (0.95 + 0.15 * hash1(i * 3)), s * 0.9); else _s.set(s, s * (0.9 + 0.2 * hash1(i * 3)), s);
-    _m.compose(_p, _q, _s); im.setMatrixAt(at[k], _m);
-    tc[i * 4] = ch.ox + _p.x; tc[i * 4 + 1] = ch.oz + _p.z; tc[i * 4 + 2] = (k === 2 ? 0.24 : 0.3) * _s.x + 0.04; tc[i * 4 + 3] = 3.4 * _s.y;
-    const c = TREE_TINT[vr], j = 0.86 + 0.26 * hash1(i * 17 + 3);   // the leaves' own colours, tinted a little per tree
-    im.setColorAt(at[k]++, _tmpC.setRGB(c[0] * j, c[1] * j, c[2] * j));
+    if (vr === 4) _s.set(s * 0.55, s * 1.5, s * 0.55); else _s.set(s, s * (0.9 + 0.2 * hash1(i * 3)), s);
+    _m.compose(_p, _q, _s); im.setMatrixAt(i, _m);
+    tc[i * 4] = ch.ox + _p.x; tc[i * 4 + 1] = ch.oz + _p.z; tc[i * 4 + 2] = 0.3 * _s.x + 0.04; tc[i * 4 + 3] = 3.4 * _s.y;
+    const c = TREE_COLS[vr]; const j = 0.88 + 0.22 * hash1(i * 17 + 3);
+    im.setColorAt(i, _tmpC.setRGB(c.r * j, c.g * j, c.b * j));
   }
-  for (const im of IM) {
-    if (!im) continue;
-    im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; im.customDepthMaterial = TREE_DEPTH[TREE_MATS.indexOf(im.material)];
-    im.computeBoundingSphere();
-    ch.trees.push(im); group.near.add(im);
-  }
+  im.position.set(ch.ox, 0, ch.oz); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10;
+  im.computeBoundingSphere();
+  ch.trees.push(im); group.near.add(im);
   if (WALK.on && Math.abs(ch.ox - WCOL.cx) < WCOL.R + 500 && Math.abs(ch.oz - WCOL.cz) < WCOL.R + 500) WCOL.stale = true;   // new trunks to walk round
 }
 const _tmpC = new THREE.Color();
@@ -3848,9 +3719,9 @@ function buildRiverProps() {
     const pg = new THREE.CylinderGeometry(0.58, 0.46, 0.62, 8); pg.translate(0, 0.31, 0);
     const pc = new Float32Array(pg.attributes.position.count * 3); for (let k = 0; k < pc.length; k += 3) { pc[k] = 0.62; pc[k + 1] = 0.6; pc[k + 2] = 0.56; } pg.setAttribute('color', new THREE.BufferAttribute(pc, 3));
     inst(pg, pots);
-    const bush = new THREE.InstancedMesh(TREE_GEOS[0], TREE_MATS[0], pots.length), m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc = new THREE.Vector3(0.24, 0.2, 0.24), pp = new THREE.Vector3();
-    pots.forEach(([x, z], k) => { qq.setFromAxisAngle(_vy, hash1(k * 31) * 6.28); m4.compose(pp.set(x, 0.25, z), qq, sc); bush.setMatrixAt(k, m4); bush.setColorAt(k, _tmpC.setRGB(1.05, 1.1, 0.95)); });
-    bush.computeBoundingSphere(); bush.castShadow = true; bush.receiveShadow = true; bush.renderOrder = 10; bush.customDepthMaterial = TREE_DEPTH[0]; group.ground.add(bush); RIVER_FINE.push(bush);
+    const bush = new THREE.InstancedMesh(treeGeo, treeMat, pots.length), m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc = new THREE.Vector3(0.24, 0.2, 0.24), pp = new THREE.Vector3();   // a 1.7 m bush on its stem
+    pots.forEach(([x, z], k) => { qq.setFromAxisAngle(_vy, hash1(k * 31) * 6.28); m4.compose(pp.set(x, 0.25, z), qq, sc); bush.setMatrixAt(k, m4); bush.setColorAt(k, TREE_COLS[1 + (k % 2)]); });
+    bush.computeBoundingSphere(); bush.castShadow = true; bush.receiveShadow = true; bush.renderOrder = 10; group.ground.add(bush); RIVER_FINE.push(bush);
   }
   // the riverfront road: tall single-arm LED lights on its river-side kerb every ~32 m, arms over the carriageway
   const lights = [], taken = new Set(), Rd = ROADS;
