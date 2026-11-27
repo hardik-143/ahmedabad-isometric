@@ -22,6 +22,34 @@ for o in bpy.data.objects:
     if o.type == 'MESH':
         for g in o.vertex_groups: g.name = re.sub(r'^mixamorig\d*:', 'mixamorig:', g.name)
         o.data.uv_layers.active_index = 0
+# some Mixamo characters (Ch12) come as one merged mesh: split it into named parts (Body, Shirt, Pants, Shoes, Belt, Hair)
+# so the app can recolour clothes, skin and hair one by one. Every piece of clothing is its own loose part in the source;
+# pieces are told apart by material and by where they sit on the T-posed body (metres, z up)
+meshes = [o for o in bpy.data.objects if o.type == 'MESH']
+if len(meshes) == 1:
+    from mathutils import Vector
+    me = meshes[0]; name = me.name.split('_')[0].split('.')[0]
+    bpy.ops.object.select_all(action='DESELECT'); bpy.context.view_layer.objects.active = me; me.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT'); bpy.ops.mesh.select_all(action='SELECT'); bpy.ops.mesh.separate(type='LOOSE'); bpy.ops.object.mode_set(mode='OBJECT')
+    groups = {}
+    for o in [o for o in bpy.data.objects if o.type == 'MESH']:
+        ws = [o.matrix_world @ v.co for v in o.data.vertices]
+        z0, z1 = min(w.z for w in ws), max(w.z for w in ws); x0, x1 = min(w.x for w in ws), max(w.x for w in ws)
+        mats = {o.data.materials[p.material_index].name for p in o.data.polygons}
+        if any('hair' in m.lower() for m in mats): g = 'Hair'
+        elif z1 < 0.16: g = 'Shoes'
+        elif z0 < 0.25 and z1 > 0.8: g = 'Pants'
+        elif z0 > 0.95 and z1 < 1.06 and x1 - x0 < 0.4: g = 'Belt'
+        elif z0 > 0.9 and z1 < 1.6 and x1 - x0 > 0.5 and abs(x0 + x1) < 0.1: g = 'Shirt'
+        else: g = 'Body'                                   # head, arms, eyes
+        groups.setdefault(g, []).append(o)
+    for g, objs in groups.items():
+        bpy.ops.object.select_all(action='DESELECT')
+        for o in objs: o.select_set(True)
+        bpy.context.view_layer.objects.active = objs[0]
+        if len(objs) > 1: bpy.ops.object.join()
+        objs[0].name = objs[0].data.name = f'{name}_{g}'
+        print('part', objs[0].name, len(objs[0].data.polygons), 'faces')
 if keep < 1:
     for o in bpy.data.objects:
         if o.type == 'MESH':
