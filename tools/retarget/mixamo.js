@@ -6,7 +6,7 @@
 //   JSON.stringify(await retargetMixamo('Soldier.glb', '/models/people/ch12.glb'))
 // The Soldier: https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/Soldier.glb
 // The result goes into public/models/people/mixamo_anims.json under the body's name.
-export async function retargetMixamo(sourceUrl, targetUrl) {
+export async function retargetMixamo(sourceUrl, targetUrl, { turn = Math.PI, clips = /^(Walk|Run|Idle)$/, rename = {}, fps = 30 } = {}) {
   const THREE = await import('three'); const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
   const L = new GLTFLoader();
   const [S, T] = await Promise.all([L.loadAsync(sourceUrl), L.loadAsync(targetUrl)]);
@@ -17,16 +17,16 @@ export async function retargetMixamo(sourceUrl, targetUrl) {
   const wq = (o) => o.getWorldQuaternion(new THREE.Quaternion());
   const Ws0 = new Map(names.map((n) => [n, wq(SB.get(n))])), Wt0 = new Map(names.map((n) => [n, wq(TB.get(n))]));
   // which way each faces: the Soldier faces -z, the body +z: turn the Soldier's motion half round
-  const A = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI), Ai = A.clone().invert();
+  const A = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), turn), Ai = A.clone().invert();   // the Soldier faces -z (turn PI); clips from tools/mixamo_anim.py face +z (turn 0)
   const sh = SB.get('mixamorigHips'), th = TB.get('mixamorigHips');
   const sh0 = sh.getWorldPosition(new THREE.Vector3()), th0 = th.getWorldPosition(new THREE.Vector3()), k = th0.y / sh0.y;
   // target bones in hierarchy order (parents first)
   const order = []; ts.traverse((o) => { if (o.isBone && names.includes(o.name)) order.push(o); });
   const mixer = new THREE.AnimationMixer(ss), out = {};
   for (const clip of S.animations) {
-    if (!/^(Walk|Run|Idle)$/.test(clip.name)) continue;
+    if (!clips.test(clip.name)) continue;
     mixer.stopAllAction(); const act = mixer.clipAction(clip); act.reset().play();
-    const N = Math.max(2, Math.round(clip.duration * 30)), times = [], Q = new Map(order.map((b) => [b.name, []])), HP = [];
+    const N = Math.max(2, Math.round(clip.duration * fps)), times = [], Q = new Map(order.map((b) => [b.name, []])), HP = [];
     for (let i = 0; i <= N; i++) {
       const t = (i / N) * clip.duration; times.push(+t.toFixed(4));
       mixer.setTime(t); ss.updateMatrixWorld(true);
@@ -38,15 +38,16 @@ export async function retargetMixamo(sourceUrl, targetUrl) {
         W.set(n, Wt);
         const pw = b.parent && W.has(b.parent.name) ? W.get(b.parent.name) : wq(b.parent);
         const loc = pw.clone().invert().multiply(Wt);
-        Q.get(n).push(+loc.x.toFixed(5), +loc.y.toFixed(5), +loc.z.toFixed(5), +loc.w.toFixed(5));
+        Q.get(n).push(+loc.x.toFixed(4), +loc.y.toFixed(4), +loc.z.toFixed(4), +loc.w.toFixed(4));
       }
       // hips: the Soldier's movement from its rest position, turned and scaled to the body, in the hips' parent space
       const hp = sh.getWorldPosition(new THREE.Vector3()).sub(sh0).applyQuaternion(A).multiplyScalar(k).add(th0);
-      th.parent.worldToLocal(hp); HP.push(+hp.x.toFixed(5), +hp.y.toFixed(5), +hp.z.toFixed(5));
+      th.parent.worldToLocal(hp); HP.push(+hp.x.toFixed(4), +hp.y.toFixed(4), +hp.z.toFixed(4));
     }
     const tracks = order.map((b) => ({ name: b.name + '.quaternion', type: 'quaternion', times, values: Q.get(b.name) }));
     tracks.push({ name: 'mixamorigHips.position', type: 'vector', times, values: HP });
-    out[clip.name] = { name: clip.name, duration: clip.duration, tracks, uuid: THREE.MathUtils.generateUUID(), blendMode: 2500 };
+    const nm = rename[clip.name] || clip.name;
+    out[nm] = { name: nm, duration: clip.duration, tracks, uuid: THREE.MathUtils.generateUUID(), blendMode: 2500 };
   }
   return out;
 }
