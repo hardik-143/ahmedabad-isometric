@@ -7888,7 +7888,7 @@ function pedBump(p) {
   C.say = { e, t: 2.4 };
   sayVoice(C, p, li);
 }
-// ---- and they say it out loud: each person keeps one of three voices for their gender (audio/say/<voice>_<line>.mp3)
+// ---- and they say it out loud: each person keeps one of three Indian voices for their gender (audio/say/<voice>_<line>.mp3, ElevenLabs)
 const SAY_VO = { m: ['m1', 'm2', 'm3'], f: ['f1', 'f2', 'f3'] };
 const SND = { ctx: null, buf: new Map(), last: null };
 function sndCtx() {
@@ -7905,7 +7905,7 @@ function sndClip(name) {
   }
   return b;
 }
-// browsers only let a page make sound after a tap or key press: the first one starts the audio and fetches the clips (~370 KB)
+// browsers only let a page make sound after a tap or key press: the first one starts the audio and fetches the clips (~430 KB)
 function sndUnlock() {
   const c = sndCtx(); if (!c) return;
   const s = c.createBufferSource(); s.buffer = c.createBuffer(1, 1, 22050); s.connect(c.destination); s.start();   // iOS wants a sound inside the gesture
