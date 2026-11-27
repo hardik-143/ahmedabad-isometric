@@ -7211,10 +7211,11 @@ function rebuildAvatar() {
     W.rideMesh = buildRide(W.mode, ACC.pf, W.rideCol); W.holder.add(W.rideMesh);
     const sp3 = RIDE_SPEC[W.mode], own = W.rideMesh.userData.own || W.mode === 'cycle';
     const s = W.av.mixer ? (own || !sp3.seat3old ? sp3.seat3 : sp3.seat3old) : sp3.seat;
-    // a body with no sitting clip stands on the ride: move it down and back so its hips sit where a seated person's do
-    // (hips 0.39 m up and 0.21 m behind the feet); arms and legs are then placed on the ride (ridePose)
-    const I = W.av.mixer && CHAR.info[W.av.model], noSit = I && !I.clips.Sitting, fix = noSit ? [-0.12, 0.394 - I.hipY * I.S, 0] : [0, 0, 0];
-    W.av.root.position.set(s[0] + fix[0], s[1] + fix[1], s[2] + fix[2]);
+    // a body with no sitting clip (the Mixamo people) stands on the ride with its hip joints put on the seat (RIDE_POSE.hip:
+    // a hand's width above the cushion); legs, body and arms are then placed on the ride every frame (ridePose)
+    const I = W.av.mixer && CHAR.info[W.av.model], noSit = I && !I.clips.Sitting, RP = RIDE_POSE[W.mode];
+    if (noSit && RP && RP.hip) W.av.root.position.set(RP.hip[0] - I.cz * I.S, RP.hip[1] - I.hipY * I.S, 0);
+    else { const fix = noSit ? [-0.12, 0.394 - I.hipY * I.S, 0] : [0, 0, 0]; W.av.root.position.set(s[0] + fix[0], s[1] + fix[1], s[2] + fix[2]); }
     if (W.av.mixer) chPlay(W.av, noSit ? 'Idle' : 'Sitting', 0);
   }
 }
@@ -7724,9 +7725,12 @@ function ik2(a, b, c, target, pole) {   // a: upper bone, b: lower bone, c: the 
 }
 const _pw = new THREE.Vector3(), _pp = new THREE.Vector3(), _pl = new THREE.Vector3(), _pm = new THREE.Matrix4();
 // where hands and feet go on each ride (bike frame: +x forward, y up, z right); lean tips the upper body forward
+// (scooter and rickshaw, from tools/vehicles_blender.py: the scooter's seat top 0.8 m from x -0.74 to -0.1, floorboard
+// 0.33 m, grips at x 0.44, 1.04 m up, 0.33 m out; the rickshaw's driver's seat top 0.68 m from x 0.3 to 0.6, footwell
+// floor 0.36 m, grips at x 0.68, 1.04 m up, 0.27 m out.) hip: where a Mixamo body's hip joints go, feet: ankles, grip: wrists
 const RIDE_POSE = { cycle: { lean: 0.27, grip: [CYC.grip[0] - 0.03, CYC.grip[1] + 0.02, CYC.grip[2]], feet: null },
-  scooter: { lean: 0.3, grip: [0.36, 1.04, 0.3], feet: [0.12, 0.37, 0.12] },
-  auto: { lean: 0.06, grip: [0.67, 1.05, 0.27], feet: [0.8, 0.39, 0.13] } };
+  scooter: { lean: 0.3, grip: [0.36, 1.04, 0.3], feet: [0.12, 0.37, 0.12], hip: [-0.27, 0.9], mx: { grip: [0.41, 0.995, 0.31], feet: [0.12, 0.42, 0.13], lean: [0.06, 0.3] } },
+  auto: { lean: 0.06, grip: [0.67, 1.05, 0.27], feet: [0.8, 0.39, 0.13], hip: [0.43, 0.8], mx: { grip: [0.64, 0.985, 0.26], feet: [0.8, 0.45, 0.15], lean: [0.04, 0.25] } } };
 function ridePose(C, mode, crank) {
   const RP = RIDE_POSE[mode]; if (!RP) return;
   const g = (n) => { if (!(n in C.rig)) { const b = chBone(C.model, n); C.rig[n] = b ? C.obj.getObjectByName(b) : null; } return C.rig[n]; };
@@ -7737,16 +7741,35 @@ function ridePose(C, mode, crank) {
   _pl.set(0, 0, 1).transformDirection(H.matrixWorld);
   // a Mixamo body has no sitting clip and longer legs than the Quaternius people the ride poses were made for: it leans
   // less (its standing idle is already braced), keeps its head level, and puts its feet further forward
-  const mx = !!CH_MIXAMO[C.model], I = CHAR.info[C.model], lean = RP.lean * (mx ? 0.3 : 1);
-  const ab = g('Abdomen'); if (ab) { _iq.setFromAxisAngle(_pl, -lean); boneWorldTurn(ab, _iq); }
-  if (mx) { const nk = g('Neck'); if (nk) { _iq.setFromAxisAngle(_pl, lean * 0.9 + 0.12); boneWorldTurn(nk, _iq); } }
-  const reach = mx ? Math.max(0, I.hipY * I.S - 0.684) : 0;   // how much longer the legs are than the poses assume
+  const mx = !!CH_MIXAMO[C.model], I = CHAR.info[C.model], MX = mx && RP.mx;
+  let lean = RP.lean * (mx ? 0.3 : 1);
+  const ab = g('Abdomen');
+  if (MX && ab) {   // lean from the waist just enough that the hands reach the grips with the elbows still bent
+    const ua = g('UpperArmR'), la = g('LowerArmR'), pa = g('PalmR');
+    if (ua && la && pa) {
+      ua.getWorldPosition(_ia); la.getWorldPosition(_ib); pa.getWorldPosition(_ic); ab.getWorldPosition(_it);
+      const arm = _ia.distanceTo(_ib) + _ib.distanceTo(_ic), up = _ia.distanceTo(_it);
+      toW(MX.grip[0], MX.grip[1], MX.grip[2], _pp);
+      const d = _ia.distanceTo(_pp), over = d - arm * 0.86;   // shoulder to grip, against 86% of the arm's length
+      lean = clamp(MX.lean[0] + Math.max(0, over) / Math.max(0.2, up), MX.lean[0], MX.lean[1]);
+      // a short rider (the women are 10 cm shorter) still out of reach at the most lean slides forward on the seat, eased
+      const rest = Math.max(0, over - (MX.lean[1] - MX.lean[0]) * up);
+      if (C.seatX == null) C.seatX = C.root.position.x;
+      const f0 = C.seatF || 0, want = clamp(rest > 0.002 ? f0 + rest : f0 - 0.002, 0, 0.12);   // settles where the reach just suffices
+      C.seatF = f0 + (want - f0) * 0.25;
+      C.root.position.x = C.seatX + C.seatF; C.root.updateMatrixWorld(true);
+    }
+  }
+  if (ab) { _iq.setFromAxisAngle(_pl, -lean); boneWorldTurn(ab, _iq); }
+  if (mx) { const nk = g('Neck'); if (nk) { _iq.setFromAxisAngle(_pl, lean * 0.85 + (MX ? 0.04 : 0.12)); boneWorldTurn(nk, _iq); } }
+  const reach = mx && !MX ? Math.max(0, I.hipY * I.S - 0.684) : 0;   // how much longer the legs are than the poses assume
   // feet on the pedals: the left crank is opposite the right one
   _pw.set(1, 0, 0).transformDirection(H.matrixWorld);   // forward: knees point this way
   for (const [sd, ph] of [['L', crank + Math.PI], ['R', crank]]) {
     const up = g('UpperLeg' + sd), lo = g('LowerLeg' + sd), end = g('LowerLeg' + sd + '_end'), foot = g('Foot' + sd); if (!up || !lo || !end) continue;
     const zs = sd === 'L' ? -0.15 : 0.15;   // which side the model's left / right leg is on
-    if (RP.feet) toW(RP.feet[0] + reach * 0.9, RP.feet[1], Math.sign(zs) * RP.feet[2], _pp);   // feet on the floorboard
+    const FT = MX ? MX.feet : RP.feet;
+    if (FT) toW(FT[0] + reach * 0.9, FT[1], Math.sign(zs) * FT[2], _pp);   // feet on the floorboard
     else { const px = CYC.bb[0] + Math.sin(ph) * CYC.crank, py = CYC.bb[1] - Math.cos(ph) * CYC.crank; toW(px - 0.03, py + 0.07, zs, _pp); }
     _iu.copy(_pw).addScaledVector(_pl, zs * 0.4);
     ik2(up, lo, end, _pp, _iu.clone().normalize());
@@ -7756,9 +7779,37 @@ function ridePose(C, mode, crank) {
   for (const sd of ['L', 'R']) {
     const up = g('UpperArm' + sd), lo = g('LowerArm' + sd), end = g('Palm' + sd); if (!up || !lo || !end) continue;
     const zs = sd === 'L' ? -1 : 1;
-    toW(RP.grip[0], RP.grip[1], zs * RP.grip[2], _pp);
+    const GR = MX ? MX.grip : RP.grip;
+    toW(GR[0], GR[1], zs * GR[2], _pp);
     _iu.copy(_pl).multiplyScalar(zs).addScaledVector(_pw, -0.6).addScaledVector(_by, -0.3).normalize();
     ik2(up, lo, end, _pp, _iu);
+    if (MX) gripHand(C, sd, _pw);
+  }
+}
+// a Mixamo hand on a handlebar grip: the palm turned down onto it, the fingers curled round it, the thumb under it
+const _gn = new THREE.Vector3(), _gf = new THREE.Vector3(), _ga = new THREE.Vector3(), _gq = new THREE.Quaternion(), _gd = new THREE.Vector3(0, -1, 0);
+function gripHand(C, sd, fwd) {
+  const S = sd === 'L' ? 'Left' : 'Right', hand = C.obj.getObjectByName(`mixamorig${S}Hand`); if (!hand) return;
+  if (!C.palm) C.palm = {};
+  if (!C.palm[sd]) {   // the palm's normal in the hand's own frame, from the rest (T) pose, where palms face down
+    const t = CHAR.tpl[C.model].getObjectByName(`mixamorig${S}Hand`); t.updateWorldMatrix(true, false);
+    C.palm[sd] = new THREE.Vector3(0, -1, 0).applyQuaternion(t.getWorldQuaternion(new THREE.Quaternion()).invert());
+  }
+  hand.updateWorldMatrix(true, false);
+  _gn.copy(C.palm[sd]).applyQuaternion(hand.getWorldQuaternion(_gq)).normalize();
+  _gq.setFromUnitVectors(_gn, _gd); boneWorldTurn(hand, _gq);                  // palm down
+  const mid1 = C.obj.getObjectByName(`mixamorig${S}HandMiddle1`), mid2 = C.obj.getObjectByName(`mixamorig${S}HandMiddle2`);
+  if (mid1 && mid2) {                                                           // fingers pointing forward and in, along the grip's line
+    mid1.getWorldPosition(_ia); hand.getWorldPosition(_ib); _gf.subVectors(_ia, _ib).setY(0).normalize();
+    _ga.copy(fwd).setY(0).normalize(); _gq.setFromUnitVectors(_gf, _ga); boneWorldTurn(hand, _gq);
+  }
+  hand.updateWorldMatrix(true, true);
+  _gn.copy(C.palm[sd]).applyQuaternion(hand.getWorldQuaternion(_gq)).normalize();
+  for (const f of ['Index', 'Middle', 'Ring', 'Pinky', 'Thumb']) for (let j = 1; j <= 3; j++) {
+    const b = C.obj.getObjectByName(`mixamorig${S}Hand${f}${j}`), c = C.obj.getObjectByName(`mixamorig${S}Hand${f}${j + 1}`); if (!b || !c) continue;
+    b.getWorldPosition(_ia); c.getWorldPosition(_ib); _gf.subVectors(_ib, _ia).normalize();
+    _ga.crossVectors(_gf, _gn).normalize(); if (_ga.lengthSq() < 1e-6) continue;
+    _gq.setFromAxisAngle(_ga, f === 'Thumb' ? 0.35 : j === 1 ? 0.95 : 1.15); boneWorldTurn(b, _gq);   // each joint bends towards the palm
   }
 }
 
