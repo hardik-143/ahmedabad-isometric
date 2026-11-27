@@ -2396,6 +2396,7 @@ function applyTod(p) {
   hemi.color.set(p.skyC || p.sky); hemi.groundColor.set(p.gndC || p.gnd); hemi.intensity = p.hi;
   scene.background.set(p.bgC || p.bg);
   U.uNight.value = p.night; U.uDay.value = 1 - p.night; U.uSunCol.value.copy(sun.color);
+  for (const m of NIGHT_GLOW) m.emissiveIntensity = m.userData.glow * p.night;   // stalls lit from inside after dark
   renderer.toneMappingExposure = p.exp;
   document.body.classList.toggle('night', p.night > 0.5);
   wxApplyLight(p);
@@ -3294,6 +3295,62 @@ function buildRiverProps() {
   const lm = (META.lm3d || []).find((o) => o.kind === 'patang') || { x: 0, z: 0 };
   const q = nearWall(lm.x, lm.z), sx = q.x + q.nx * 7, sz = q.z + q.nz * 7;
   loveSign(sx, sz, q.nx, q.nz, q.ux, q.uz);
+  riverStalls(sx, sz, q.nx, q.nz);
+}
+// food stalls on the open ground in front of the sign (between it and the road), with tables and umbrellas: Blender models
+// (tools/riverfront_blender.py), each stall in its own colours with its own signboard
+const NIGHT_GLOW = [];   // materials given a warm emissive that comes up with the night
+const STALLS = [['ચા - કોફી', 'CHAI · COFFEE', '#b8322a'], ['પાણીપુરી', 'PANI PURI', '#e58a1f'], ['દાબેલી - વડાપાઉં', 'DABELI · VADA PAV', '#2f8a4c'], ['આઇસક્રીમ - ગોલા', 'ICE CREAM · GOLA', '#2a6db5']];
+function stallSign(gu, en, bg) {
+  const cv = document.createElement('canvas'); cv.width = 1024; cv.height = 200; const c = cv.getContext('2d');
+  c.fillStyle = bg; c.fillRect(0, 0, 1024, 200);
+  c.strokeStyle = 'rgba(255,255,255,.85)'; c.lineWidth = 8; c.strokeRect(10, 10, 1004, 180);
+  c.fillStyle = '#fff'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  let fs = 96; do { c.font = `800 ${fs}px "Noto Sans Gujarati", "Gujarati Sangam MN", Shruti, sans-serif`; fs -= 2; } while (c.measureText(gu).width > 900 && fs > 40);
+  c.fillText(gu, 512, 86);
+  c.font = '700 34px "Barlow Condensed", Arial, sans-serif'; c.fillText(en.split('').join(String.fromCharCode(8202)), 512, 160);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.flipY = false; return t;   // glTF UVs run top-down
+}
+async function riverStalls(x, z, nx, nz) {
+  try {
+    const [{ GLTFLoader }, { MeshoptDecoder }] = await Promise.all([import('three/addons/loaders/GLTFLoader.js'), import('three/addons/libs/meshopt_decoder.module.js')]);
+    const L = new GLTFLoader(); L.setMeshoptDecoder(MeshoptDecoder);
+    const [g] = await Promise.all([L.loadAsync('models/riverfront.glb'), document.fonts.load('800 80px "Noto Sans Gujarati"').catch(() => {})]);
+    const ax = nz, az = -nx;   // along the sign's letters (the wall); n points away from the river
+    const put = (name, s, d, face, tint) => {
+      const src = g.scene.getObjectByName(name); if (!src) return null;
+      const o = new THREE.Group(), c = src.clone(true); o.add(c);   // the quantised node keeps its own transform inside the group
+      const px = x + ax * s + nx * d, pz = z + az * s + nz * d;
+      o.position.set(px, groundAt(px, pz, 0), pz); o.rotation.y = Math.atan2(-face[1], face[0]);
+      c.traverse((m) => {
+        if (!m.isMesh) return;
+        const nm = m.material.name, col = m.material.color.clone();
+        if (nm === 'Bulb') m.material = new THREE.MeshBasicMaterial({ color: '#ffe7a8' });
+        else if (nm === 'Sign') m.material = new THREE.MeshLambertMaterial({ map: tint.sign, emissive: 0xffffff, emissiveMap: tint.sign, emissiveIntensity: 0.3 });
+        else {
+          m.material = new THREE.MeshLambertMaterial({ color: tint[nm] ? new THREE.Color(tint[nm]) : col, side: nm.startsWith('Awning') || nm === 'Canopy' || nm.startsWith('Plastic') ? THREE.DoubleSide : THREE.FrontSide });
+          const glow = name === 'Kiosk' ? (nm.startsWith('Goods') || nm === 'Steel' || nm === 'Wood' || nm === 'Glass' ? 0.2 : nm.startsWith('Awning') ? 0.07 : 0) : 0;
+          if (glow) {   // the bulbs light the stall: a warm glow on the counter, the stock and the awning (not on the outside walls)
+            m.material.emissive.set('#ffb35c'); m.material.userData.glow = glow;
+            m.material.emissiveIntensity = m.material.userData.glow * U.uNight.value; NIGHT_GLOW.push(m.material);
+          }
+        }
+        m.castShadow = true; m.receiveShadow = true; m.renderOrder = 10;
+      });
+      group.ground.add(o); RIVER_FINE.push(o);
+      return [px, pz];
+    };
+    const toRiver = [-nx, -nz];
+    [[-14.5, 0], [-8, 1], [16.5, 2], [23, 3]].forEach(([s, k]) => {
+      const [gu, en, bg] = STALLS[k], p = put('Kiosk', s, 10.5, toRiver, { Body: bg, AwningA: bg, sign: stallSign(gu, en, bg) });
+      if (p) PROP_COL.box.push([p[0] + toRiver[0] * 0.06, p[1] + toRiver[1] * 0.06, ax, az, 1.55, 0.6, 3.3]);
+    });
+    [[-11.2, 5.8, '#c0392b'], [19.7, 5.8, '#2a6db5'], [13.2, 6.2, '#f4f1ea']].forEach(([s, d, pc], i) => {
+      const p = put('Table', s, d, [ax, az], { Plastic: pc }); if (p) PROP_COL.circ.push([p[0], p[1], 0.95, 0.9]);
+      const q = put('Parasol', s + (i % 2 ? 0.25 : -0.25), d, [ax, az], { Canopy: i === 1 ? '#2a6db5' : '#e58a1f' });
+    });
+    WCOL.stale = true;
+  } catch (e) { console.warn('stalls', e); }
 }
 async function loveSign(x, z, fx, fz, ux, uz) {
   try {
