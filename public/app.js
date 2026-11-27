@@ -1866,6 +1866,13 @@ function buildDecks(decks, xy) {
     for (let j = 0; j < L - 1; j++) {
       const A = pts[j], B = pts[j + 1];
       if (A.h < 0.35 && B.h < 0.35) continue;
+      // the deck's underside, a soffit at the girders' depth: from below a flyover or bridge is solid (it used to show
+      // the sky straight through, the road surface being one-sided)
+      const ya = A.h - 1.3, yb = B.h - 1.3;
+      if (ya > 0.05 || yb > 0.05) {
+        const e = (P, w, sg) => [P.x + P.nx * w * P.ml * sg, Math.max(0.02, P.h - 1.3), P.z + P.nz * w * P.ml * sg];
+        W.quad(e(A, k.wl[j], 1), e(B, k.wl[j + 1], 1), e(B, k.wr[j + 1], -1), e(A, k.wr[j], -1), [0, -1, 0]);
+      }
       for (const sg of [1, -1]) {
         const wa = sg > 0 ? k.wl[j] : k.wr[j], wb = sg > 0 ? k.wl[j + 1] : k.wr[j + 1];
         if (wa < 0.2 && wb < 0.2) continue;
@@ -3750,11 +3757,125 @@ function buildRiverProps() {
   const q = nearWall(lm.x, lm.z), sx = q.x + q.nx * 7, sz = q.z + q.nz * 7;
   loveSign(sx, sz, q.nx, q.nz, q.ux, q.uz);
   riverStalls(sx, sz, q.nx, q.nz);
+  riverGarden(sx, sz, q.nx, q.nz, onRoad, nearWall, inst);
+}
+// ---- the riverfront flower garden: the open ground either side of the food court, from the walkway along the railing back to
+// the road. A paved walk runs through it along the river with cross paths to the road, flower beds between (each kind of flower
+// its own painted texture: marigold, yellow marigold, salvia, petunia, white periwinkle, purple verbena), lawns, clipped
+// shrubs at the corners, benches along the walk and globe lamps. Beds, lamps, benches and shrubs are solid; you walk the paths
+function flowerTex(petal, centre, n, sz) {
+  const S = 128, cv = document.createElement('canvas'); cv.width = cv.height = S; const g = cv.getContext('2d');
+  let sd = petal.length * 977 + n; const r = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  g.fillStyle = '#24451c'; g.fillRect(0, 0, S, S);
+  for (let k = 0; k < 260; k++) { g.fillStyle = `hsl(${95 + r() * 30},${45 + r() * 20}%,${16 + r() * 16}%)`; g.save(); g.translate(r() * S, r() * S); g.rotate(r() * 6.28); g.beginPath(); g.ellipse(0, 0, 5 + r() * 4, 2 + r() * 1.5, 0, 0, 6.28); g.fill(); g.restore(); }   // leaves
+  for (let k = 0; k < n; k++) {   // flower heads: five to eight petals round a centre, wrapped at the edges so beds tile seamlessly
+    const x = r() * S, y = r() * S, R = sz * (0.75 + r() * 0.5), np = 5 + Math.floor(r() * 4), col = petal[Math.floor(r() * petal.length)];
+    for (const [ox, oy] of [[0, 0], [S, 0], [-S, 0], [0, S], [0, -S]]) {
+      if (x + ox < -R || x + ox > S + R || y + oy < -R || y + oy > S + R) continue;
+      g.save(); g.translate(x + ox, y + oy);
+      for (let p2 = 0; p2 < np; p2++) { g.rotate(6.2832 / np); g.fillStyle = col; g.beginPath(); g.ellipse(R * 0.5, 0, R * 0.5, R * 0.3, 0, 0, 6.28); g.fill(); }
+      g.fillStyle = centre; g.beginPath(); g.arc(0, 0, R * 0.22, 0, 6.28); g.fill(); g.restore();
+    }
+  }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4; return t;
+}
+function pavingTex() {   // riverfront pavers: grey and terracotta bricks in a running bond, with mortar joints
+  const S = 256, cv = document.createElement('canvas'); cv.width = cv.height = S; const g = cv.getContext('2d');
+  let sd = 4321; const r = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  g.fillStyle = '#8d8478'; g.fillRect(0, 0, S, S);
+  for (let row = 0; row < 16; row++) for (let c = -1; c < 9; c++) {
+    const x = c * 32 + (row % 2) * 16, y = row * 16, red = r() < 0.3, v = (r() - 0.5) * 18;
+    g.fillStyle = red ? `rgb(${168 + v},${104 + v * 0.6},${84 + v * 0.5})` : `rgb(${196 + v},${189 + v},${176 + v})`;
+    g.fillRect(x + 1, y + 1, 30, 14);
+  }
+  for (let k = 0; k < 1500; k++) { g.fillStyle = r() < 0.5 ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.05)'; g.fillRect(r() * S, r() * S, 1 + r() * 2, 1 + r() * 2); }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; return t;
+}
+function lawnTex() {
+  const S = 256, cv = document.createElement('canvas'); cv.width = cv.height = S; const g = cv.getContext('2d');
+  let sd = 2468; const r = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  g.fillStyle = '#4f7a2c'; g.fillRect(0, 0, S, S);
+  for (let k = 0; k < 5000; k++) { const x = r() * S, y = r() * S, l = 2 + r() * 4; g.strokeStyle = `hsl(${85 + r() * 25},${40 + r() * 25}%,${22 + r() * 22}%)`; g.lineWidth = 1; g.beginPath(); g.moveTo(x, y); g.lineTo(x + (r() - 0.5) * 2, y - l); g.stroke(); }
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; return t;
+}
+function riverGarden(x, z, nx, nz, onRoad, nearWall, inst) {
+  const ax = nz, az = -nx, P = (s, d) => [x + ax * s + nx * d, z + az * s + nz * d];
+  const T = 2, kinds = [
+    [['#ff8c1a', '#ff7a00', '#ffa31a'], '#b34700', 95, 4.6], [['#ffd21a', '#ffc400', '#ffe066'], '#c98a00', 95, 4.6], [['#d7192b', '#e8243a', '#b5101f'], '#5a0a10', 120, 3.4],
+    [['#e94fa4', '#f06cb6', '#c2368a'], '#fff2a8', 85, 4.8], [['#ffffff', '#f4f1ff', '#fde8f0'], '#e0457b', 105, 4], [['#7b3fc4', '#9157d8', '#6a2fb0'], '#f2e9ff', 115, 3.4]];
+  const tiles = [], beds = kinds.map(() => []), lamps = [], benches = [], shrubs = [];
+  for (const [s0, s1] of [[-78, -26], [35, 86]]) {
+    // the walk: along the river at d = 6 (swinging gently), cross paths every 16 m back to the road
+    const walk = (s) => 6 + Math.sin(s / 11) * 1.5, cross = []; for (let s = s0 + 8; s < s1 - 4; s += 16) cross.push(s);
+    const onPath = (s, d) => Math.abs(d - walk(s)) < 1.4 || (d > walk(s) && cross.some((c) => Math.abs(s - c) < 1.1));
+    for (let s = s0; s < s1; s += T) for (let d = -3; d < 46; d += T) {
+      const cs = s + T / 2, cd = d + T / 2, [px, pz] = P(cs, cd);
+      if (onRoad(px, pz)) break;                                                       // the garden ends at the road
+      if (waterAt(px, pz) || nearWall(px, pz).d < 3.6) continue;                      // the railing walkway stays clear
+      const near = PROP_COL.circ.some(([qx, qz, r]) => Math.hypot(qx - px, qz - pz) < r + 1.3) || PROP_COL.box.some(([qx, qz, , , a]) => Math.hypot(qx - px, qz - pz) < a + 1.5);
+      const path = onPath(cs, cd);
+      tiles.push([cs, cd, path || near ? 0 : 1]);
+      if (path || near) continue;
+      const band = Math.floor((cs * 0.7 + cd) / 7), lawn = ((Math.floor(cs / 12) + Math.floor(cd / 10) * 2) % 4) === 0;
+      if (lawn) continue;
+      beds[((band % kinds.length) + kinds.length) % kinds.length].push([px, pz]);
+    }
+    for (let s = s0 + 4; s < s1 - 2; s += 14) {   // lamps and benches along the walk, shrubs at the cross paths
+      const w = walk(s);
+      for (const [sd2, k] of [[-1, 0], [1, 1]]) { const [lx, lz] = P(s, w + sd2 * 1.9); if (!onRoad(lx, lz) && nearWall(lx, lz).d > 3.6) { if (k === 0) lamps.push([lx, lz]); else benches.push([lx, lz]); } }
+    }
+    for (const c of cross) for (const sd2 of [-1, 1]) { const [bx, bz] = P(c + sd2 * 2.4, walk(c) + 3.2); if (!onRoad(bx, bz)) shrubs.push([bx, bz]); }
+  }
+  if (!tiles.length) return;
+  // ground: paths in pavers, the rest lawn, 4 cm up so it reads over the land; one mesh each, UVs in metres
+  const mk = (sel, map, rep) => {
+    const pos = [], uv = [], idx = [];
+    for (const [cs, cd, k] of tiles) {
+      if (k !== sel) continue;
+      const b = pos.length / 3;
+      for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const [px, pz] = P(cs + u * T / 2, cd + v * T / 2); pos.push(px, 0.04, pz); uv.push(px / rep, pz / rep); }
+      idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
+    }
+    if (!pos.length) return;
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(pos.length).fill(0).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3)); g.setIndex(idx); g.computeBoundingSphere();
+    const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ map, side: THREE.DoubleSide })); m.receiveShadow = true; m.renderOrder = 10; group.ground.add(m); RIVER_FINE.push(m);
+  };
+  mk(0, pavingTex(), 2.2); mk(1, lawnTex(), 3);
+  // flower beds: a 2 x 2 m block of plants per tile, flowers on top, leaves down the sides; heights vary by kind
+  const side = new THREE.MeshLambertMaterial({ map: flowerTex(['#2f5a22'], '#2f5a22', 0, 1) });
+  kinds.forEach(([petal, centre, n, sz], k) => {
+    const L = beds[k]; if (!L.length) return;
+    const h = 0.26 + (k % 3) * 0.06, geo = new THREE.BoxGeometry(T, h, T); geo.translate(0, h / 2, 0);
+    const top = new THREE.MeshLambertMaterial({ map: flowerTex(petal, centre, n, sz) });
+    const im = new THREE.InstancedMesh(geo, [side, side, top, side, side, side], L.length), m4 = new THREE.Matrix4(), q = new THREE.Quaternion().setFromAxisAngle(_vy, Math.atan2(ax, az));
+    L.forEach(([px, pz], i) => { m4.compose(new THREE.Vector3(px, 0.02, pz), q, new THREE.Vector3(1, 0.85 + hash1(i * 7 + k) * 0.3, 1)); im.setMatrixAt(i, m4); });
+    im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; im.computeBoundingSphere(); group.ground.add(im); RIVER_FINE.push(im);
+  });
+  // the beds are solid round their outside edge (0.6 m): you walk the paths and lawns
+  const K = new Set(); beds.forEach((L) => L.forEach(([px, pz]) => K.add(Math.round(px * 2) + ',' + Math.round(pz * 2))));
+  beds.forEach((L) => L.forEach(([px, pz]) => {
+    for (const [ds, dd] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ox = (ax * ds + nx * dd) * T, oz = (az * ds + nz * dd) * T;
+      if (K.has(Math.round((px + ox) * 2) + ',' + Math.round((pz + oz) * 2))) continue;
+      const ex = px + ox / 2, ez = pz + oz / 2, tx = (ax * dd - nx * ds) * T / 2, tz = (az * dd - nz * ds) * T / 2;
+      FP_COL.push([ex - tx, ez - tz, ex + tx, ez + tz, 0, 0.6]);
+    }
+  }));
+  if (lamps.length) { const g = globeLampGeo(), im = new THREE.InstancedMesh(g, VEHMAT, lamps.length), m4 = new THREE.Matrix4(); lamps.forEach(([lx, lz], i) => { m4.makeTranslation(lx, 0, lz); im.setMatrixAt(i, m4); PROP_COL.circ.push([lx, lz, 0.14, 5]); }); im.computeBoundingSphere(); im.castShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im); }
+  if (benches.length) { inst(benchGeo(), benches.map(([bx, bz]) => [bx, bz, -nx, -nz])); for (const [bx, bz] of benches) PROP_COL.box.push([bx, bz, ax, az, 0.92, 0.3, 0.95]); }
+  if (shrubs.length) {
+    const im = new THREE.InstancedMesh(treeGeo, treeMat, shrubs.length), m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc = new THREE.Vector3(0.3, 0.24, 0.3);
+    shrubs.forEach(([bx, bz], i) => { qq.setFromAxisAngle(_vy, hash1(i * 13) * 6.28); m4.compose(new THREE.Vector3(bx, -0.35, bz), qq, sc); im.setMatrixAt(i, m4); im.setColorAt(i, TREE_COLS[i % 2 ? 1 : 0]); PROP_COL.circ.push([bx, bz, 0.9, 1.5]); });
+    im.computeBoundingSphere(); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im);
+  }
+  PLACES.push({ name: 'Riverfront Flower Garden', test: (px, pz, y) => Math.abs(y || 0) < 1 && tiles.some(([cs, cd]) => { const [tx, tz] = P(cs, cd); return Math.abs(tx - px) < 1.4 && Math.abs(tz - pz) < 1.4; }) });
+  WCOL.stale = true;
 }
 // food stalls on the open ground in front of the sign (between it and the road), with tables and umbrellas: Blender models
 // (tools/riverfront_blender.py), each stall in its own colours with its own signboard
 const NIGHT_GLOW = [];   // materials given a warm emissive that comes up with the night
-const STALLS = [['ચા - કોફી', 'CHAI · COFFEE', '#b8322a'], ['પાણીપુરી', 'PANI PURI', '#e58a1f'], ['દાબેલી - વડાપાઉં', 'DABELI · VADA PAV', '#2f8a4c'], ['આઇસક્રીમ - ગોલા', 'ICE CREAM · GOLA', '#2a6db5']];
+const STALLS = [['ચા - કોફી', 'CHAI · COFFEE', '#b8322a'], ['પાણીપુરી', 'PANI PURI', '#e58a1f'], ['દાબેલી - વડાપાઉં', 'DABELI · VADA PAV', '#2f8a4c'], ['આઇસક્રીમ - ગોલા', 'ICE CREAM · GOLA', '#2a6db5'], ['ભેળ - સેવપુરી', 'BHEL · SEV PURI', '#8a3fa0'], ['શેરડીનો રસ', 'SUGARCANE JUICE', '#5d8a1c']];
 function stallSign(gu, en, bg) {
   const cv = document.createElement('canvas'); cv.width = 1024; cv.height = 200; const c = cv.getContext('2d');
   c.fillStyle = bg; c.fillRect(0, 0, 1024, 200);
@@ -3795,14 +3916,14 @@ async function riverStalls(x, z, nx, nz) {
       return [px, pz];
     };
     const toRiver = [-nx, -nz];
-    [[-14.5, 0], [-8, 1], [16.5, 2], [23, 3]].forEach(([s, k]) => {
+    [[-21, 4], [-14.5, 0], [-8, 1], [16.5, 2], [23, 3], [29.5, 5]].forEach(([s, k]) => {
       const [gu, en, bg] = STALLS[k], p = put('Kiosk', s, 10.5, toRiver, { Body: bg, AwningA: bg, sign: stallSign(gu, en, bg) });
       if (p) PROP_COL.box.push([p[0] + toRiver[0] * 0.06, p[1] + toRiver[1] * 0.06, ax, az, 1.55, 0.6, 3.3]);
     });
     // tables and chairs out in front of the stalls, a little askew as people leave them; an umbrella over every other one
     const PLASTIC = ['#c0392b', '#f4f1ea', '#2a6db5', '#2f8a4c', '#e5b62a'], CANOPY = ['#e58a1f', '#2a6db5', '#c0392b', '#f4f1ea'];
     [[-15.4, 6.4], [-11.2, 5.8], [-7.4, 6.6], [-13.4, 3.6], [-9.3, 3.4], [-17.2, 3.8],
-     [13.2, 6.2], [16.8, 6.5], [19.7, 5.8], [23.4, 6.6], [26.6, 5.2], [15.2, 3.5], [21.4, 3.4], [25.0, 2.6]].forEach(([s, d], i) => {
+     [13.2, 6.2], [16.8, 6.5], [19.7, 5.8], [23.4, 6.6], [26.6, 5.2], [15.2, 3.5], [21.4, 3.4], [25.0, 2.6], [-21.6, 5.9], [-19.6, 2.9], [29.4, 6.0], [31.6, 3.1]].forEach(([s, d], i) => {
       const a = hash1(i * 977 + 13) * Math.PI;
       const p = put('Table', s, d, [Math.cos(a), Math.sin(a)], { Plastic: PLASTIC[i % PLASTIC.length] }); if (p) PROP_COL.circ.push([p[0], p[1], 0.95, 0.9]);
       if (i % 2 === 0) put('Parasol', s + 0.2, d, [Math.cos(a), Math.sin(a)], { Canopy: CANOPY[(i / 2) % CANOPY.length] });
@@ -7593,6 +7714,7 @@ function stepWalk(dt) {
   // --- avatar / vehicle transform, animation, the people around you
   if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; if (W.mode === 'walk') { W.holder.rotation.x = 0; W.lean = 0; } }
   if (W.av && W.av.mixer) W.av.mixer.update(dt);
+  if (W.mode === 'walk' && W.inJump && W.av && W.av.mixer && !W.ride) airPose(W.av, clamp((P.y - groundAt(P.x, P.z, P.y)) / 0.45, 0, 1), Math.abs(P.v) > 3);
   if (W.av && W.av.mixer && W.mode !== 'walk' && !W.ride && (W.mode === 'cycle' || (W.rideMesh && W.rideMesh.userData.own))) ridePose(W.av, W.mode, W.crank || 0);
   stepPedPool(dt);
   // --- camera
@@ -7670,9 +7792,11 @@ function stepFoot(dt, spec) {
   W.jumpQ = false;
   if (!onGround || P.vy > 0) { P.vy -= 12 * dt; P.y = Math.max(gy, P.y + P.vy * dt); if (P.y === gy && P.vy < 0) { P.vy = 0; landed = true; } }
   if (sk) {
-    if (jumped) { chPlay(A, P.v > 3 ? 'RunningJump' : 'Jump', 0.08, 1.3); W.inJump = true; }
-    else if (W.inJump) { if (landed) { W.inJump = false; chMove(A, P.v, dt, 0.15); } }
-    else chMove(A, P.v, dt);
+    // a jump keeps your own stride (slowed right down while you're off the ground) and tucks the legs up with the height
+    // (airPose, after the mixer): the retargeted jump clips threw the body about and fought the jump's own rise
+    if (jumped) { W.inJump = true; if (A.mixer) A.mixer.timeScale = P.v > 3 ? 0.45 : 0.3; }
+    else if (W.inJump && landed) { W.inJump = false; if (A.mixer) A.mixer.timeScale = 1; }
+    chMove(A, P.v, dt);
     return;
   }
   P.ph += dt * (P.v < 2.5 ? P.v * 3.9 : P.v * 2.35);
@@ -7749,6 +7873,20 @@ function carPush(P, r) {   // traffic is solid too, and so is anything you left 
 // on the grips. A bone is turned in world space so its child joint lands where wanted.
 const _ia = new THREE.Vector3(), _ib = new THREE.Vector3(), _ic = new THREE.Vector3(), _it = new THREE.Vector3(), _ik = new THREE.Vector3(),
   _iq = new THREE.Quaternion(), _ip = new THREE.Quaternion(), _iu = new THREE.Vector3(), _iv = new THREE.Vector3(), _ir = new THREE.Quaternion();
+// in the air: thighs forward and knees bent with the height off the ground (k 0..1), a little lean; less of a tuck at a run
+function airPose(C, k, run) {
+  if (k <= 0.001) return;
+  if (!C.rig) C.rig = {};
+  const g = (n) => { if (!(n in C.rig)) { const bn = chBone(C.model, n); C.rig[n] = bn ? C.obj.getObjectByName(bn) : null; } return C.rig[n]; };
+  const H = WALK.holder; H.updateMatrixWorld(true); _pl.set(0, 0, 1).transformDirection(H.matrixWorld);
+  const e = k * k * (3 - 2 * k), t = run ? 0.55 : 1;
+  const ab = g('Abdomen'); if (ab) { _iq.setFromAxisAngle(_pl, -0.12 * e); boneWorldTurn(ab, _iq); }
+  for (const sd of ['L', 'R']) {
+    const up = g('UpperLeg' + sd), lo = g('LowerLeg' + sd); if (!up || !lo) continue;
+    _iq.setFromAxisAngle(_pl, 0.62 * e * t * (sd === 'L' ? 1 : 0.8)); boneWorldTurn(up, _iq);
+    _iq.setFromAxisAngle(_pl, -1.15 * e * t * (sd === 'L' ? 1 : 0.85)); boneWorldTurn(lo, _iq);
+  }
+}
 function boneWorldTurn(b, q) {   // apply world-space rotation q to bone b
   b.parent.getWorldQuaternion(_ip);
   _ir.copy(_ip).invert().multiply(q).multiply(_ip);
