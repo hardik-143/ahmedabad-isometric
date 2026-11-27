@@ -7883,8 +7883,53 @@ function pedBump(p) {
   const C = p.skin; if (C.say) sayDrop(C);
   const host = $('npcSay'); if (!host) return;
   const e = document.createElement('div'); e.className = 'say';
-  e.textContent = SAY_LINES[(Math.random() * SAY_LINES.length) | 0]; host.appendChild(e);
+  const li = (Math.random() * SAY_LINES.length) | 0;
+  e.textContent = SAY_LINES[li]; host.appendChild(e);
   C.say = { e, t: 2.4 };
+  sayVoice(C, p, li);
+}
+// ---- and they say it out loud: each person keeps one of three voices for their gender (audio/say/<voice>_<line>.mp3)
+const SAY_VO = { m: ['m1', 'm2', 'm3'], f: ['f1', 'f2', 'f3'] };
+const SND = { ctx: null, buf: new Map(), last: null };
+function sndCtx() {
+  if (!SND.ctx) { const A = window.AudioContext || window.webkitAudioContext; if (!A) return null; try { SND.ctx = new A(); } catch (_) { return null; } }
+  if (SND.ctx.state === 'suspended') SND.ctx.resume().catch(() => {});
+  return SND.ctx;
+}
+function sndClip(name) {
+  let b = SND.buf.get(name);
+  if (!b) {
+    b = fetch(`audio/say/${name}.mp3`).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(r.status)))
+      .then((a) => new Promise((ok, no) => sndCtx().decodeAudioData(a, ok, no))).catch(() => null);
+    SND.buf.set(name, b);
+  }
+  return b;
+}
+// browsers only let a page make sound after a tap or key press: the first one starts the audio and fetches the clips (~370 KB)
+function sndUnlock() {
+  const c = sndCtx(); if (!c) return;
+  const s = c.createBufferSource(); s.buffer = c.createBuffer(1, 1, 22050); s.connect(c.destination); s.start();   // iOS wants a sound inside the gesture
+  for (const ev of ['pointerdown', 'keydown', 'touchend']) removeEventListener(ev, sndUnlock, true);
+  setTimeout(() => { for (const g in SAY_VO) for (const v of SAY_VO[g]) SAY_LINES.forEach((_, i) => sndClip(`${v}_${i}`)); }, 1500);
+}
+for (const ev of ['pointerdown', 'keydown', 'touchend']) addEventListener(ev, sndUnlock, true);
+function sayVoice(C, p, li) {
+  const V = SAY_VO[CH_FEM[C.model] ? 'f' : 'm'];
+  if (p.vo == null) p.vo = (Math.random() * V.length) | 0;   // the same person always sounds the same
+  const name = `${V[p.vo % V.length]}_${li}`;
+  SND.last = { name, line: li };
+  const ctx = sndCtx(); if (!ctx) return;
+  sndClip(name).then((buf) => {
+    if (!buf || C.say == null || ctx.state !== 'running') return;
+    const s = ctx.createBufferSource(), g = ctx.createGain(); s.buffer = buf; g.gain.value = 0.9;
+    s.playbackRate.value = 0.97 + ((p.vo * 7 + li) % 5) * 0.015;   // a touch of variety between people sharing a voice
+    s.connect(g); let out = g;
+    if (ctx.createStereoPanner) {   // from the side of the screen they are on
+      _sv.set(p.x, (p.y || 0) + 1.6, p.z).project(pcam);
+      const pn = ctx.createStereoPanner(); pn.pan.value = clamp(_sv.x * 0.6, -0.6, 0.6); g.connect(pn); out = pn;
+    }
+    out.connect(ctx.destination); s.start();
+  });
 }
 function sayPlace(C, p, dt) {
   const S = C.say; S.t -= dt; if (S.t <= 0 || !WALK.on) { sayDrop(C); return; }
@@ -8101,7 +8146,7 @@ function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn
   } });
   return out;
 }
-window.AMD = { get FLOWER() { return FLOWER; }, get ATAL() { return ATAL; }, busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { get FLOWER() { return FLOWER; }, SND, get ATAL() { return ATAL; }, busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
