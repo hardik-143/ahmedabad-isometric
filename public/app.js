@@ -6030,6 +6030,7 @@ function frame(now) {
 const AV_SKIN = ['#5e3a24', '#8d5a3b', '#a8704a', '#c99a6e'];
 const AV_TOP = ['#c0392b', '#e67e22', '#f1c40f', '#27ae60', '#16a085', '#2980b9', '#8e44ad', '#f4f1ea', '#2c3e50', '#e84393'];
 const AV_BOT = ['#2c3e50', '#1f3a5f', '#3b5b8c', '#7f6a4f', '#f4f1ea', '#5d4037', '#151515'];
+const AV_BOT2 = [...AV_BOT, ...AV_TOP.filter((c) => !AV_BOT.includes(c))];   // bottoms, then brighter colours for blouses, salwars and dupattas
 const AV_OUTFIT = { shirt: 'Shirt', tshirt: 'T-shirt', kurta: 'Kurta', office: 'Shirt & tie', suit: 'Suit', saree: 'Saree', salwar: 'Salwar kameez', western: 'Jacket & jeans' };
 const AV_HAIR = { short: 'Short', long: 'Long', bun: 'Bun', cap: 'Cap', none: 'Bald' };
 const AV_DEFAULT = { name: '', outfit: 'shirt', top: 5, bot: 0, skin: 1, hair: 'short', hairc: 0, scoot: 0 };
@@ -6057,6 +6058,8 @@ const AV_LOOK = { shirt: ['ch12', 'Shirt & trousers'], tshirt: ['ch01', 'T-shirt
 const AV_LOOK_M = ['shirt', 'tshirt', 'hoodie', 'suit'], AV_LOOK_F = ['tee', 'shirtf', 'blazer', 'trousersuit'];
 const LOOK_OF_OUTFIT = { shirt: 'shirt', tshirt: 'tshirt', kurta: 'shirt', office: 'suit', suit: 'suit', saree: 'tee', salwar: 'shirtf', western: 'tee' };   // profiles saved before looks
 const avLook = (pf) => (AV_LOOK[pf.look] ? pf.look : LOOK_OF_OUTFIT[pf.outfit] || 'shirt');
+const AV_WEAR_M = { own: 'Own clothes', kurta: 'Kurta' }, AV_WEAR_F = { own: 'Own clothes', saree: 'Saree', salwar: 'Salwar kameez' };
+const avWear = (pf) => { const w = pf.wear || ({ kurta: 'kurta', saree: 'saree', salwar: 'salwar' }[pf.outfit] || 'own'); return (AV_LOOK_F.includes(avLook(pf)) ? AV_WEAR_F : AV_WEAR_M)[w] ? w : 'own'; };
 const OUTFIT_OF_LOOK = { shirt: 'shirt', tshirt: 'tshirt', hoodie: 'tshirt', suit: 'suit', tee: 'western', shirtf: 'western', blazer: 'western', trousersuit: 'western' };
 const MIXAMO_WALK = 1.6956, MIXAMO_RUN = 4.2954, MIXAMO_HIP = 0.983;   // the Soldier's ground speeds (m/s) at its hip height (m)
 const MIXAMO_BONE = { Hips: 'mixamorigHips', Abdomen: 'mixamorigSpine', Neck: 'mixamorigNeck', Head: 'mixamorigHead' };
@@ -6078,7 +6081,8 @@ const CH_HAIR = ['#14100d', '#3b2a20', '#6b4a2e', '#8f8a85'];
 function mxParts(sc) {
   const names = []; sc.traverse((n) => { if (n.isMesh) names.push(n.name); });
   const jacket = names.some((n) => /_(Suit|Hoody)$/.test(n));   // a jacket is the top; the shirt peeping out under it stays as it is
-  const role = (n) => /_Body$/.test(n) ? 'skin' : /_(Hair|Eyelas+hes)$/.test(n) ? 'hair' : /_(Suit|Hoody)$/.test(n) || (!jacket && /_Shirt$/.test(n)) ? 'top' : /_Pants$/.test(n) ? 'bot' : null;
+  const role = (n0) => { const n = n0.replace(/_L1$/, ''); return /_Body$/.test(n) ? 'skin' : /_(Hair|Eyelas+hes)$/.test(n) ? 'hair' : /_(Suit|Hoody)$/.test(n) || (!jacket && /_Shirt$/.test(n)) ? 'top'
+    : /_Shirt$/.test(n) ? 'inner' : /_Pants$/.test(n) ? 'bot' : null; };
   const cv = document.createElement('canvas'), cx = cv.getContext('2d', { willReadFrequently: true }), px = new Map();
   const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
   const out = {};
@@ -6110,6 +6114,56 @@ const MX_FRAG = `#ifdef USE_MAP
   #endif
   diffuseColor *= sampledDiffuseColor;
 #endif`;
+// ---- Indian clothes on the Mixamo bodies (tools/mixamo_garb.py): skirts, pallu, dupatta and a bun, drawn with small
+// pattern textures made here: red = border (in the border colour), green = weave and motifs (brightness)
+const GARB = { tex: null, kind: (n) => (n.match(/_G(Knee|Saree|Pallu|Dupatta|Bun)$/) || [])[1] };
+function garbTex() {
+  if (GARB.tex) return GARB.tex;
+  const mk = (draw) => {
+    const N = 256, cv = document.createElement('canvas'); cv.width = cv.height = N;
+    const cx = cv.getContext('2d'), im = cx.createImageData(N, N);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {   // u across, v up from the hem (the bottom row)
+      const [r, g] = draw(x / N, 1 - (y + 0.5) / N), o = (y * N + x) * 4;
+      im.data[o] = r * 255; im.data[o + 1] = g * 255; im.data[o + 3] = 255;
+    }
+    cx.putImageData(im, 0, 0);
+    const t = new THREE.CanvasTexture(cv); t.flipY = false; t.anisotropy = 4; return t;
+  };
+  const fr = (x) => x - Math.floor(x), weave = (u, v) => 0.47 + 0.06 * ((Math.floor(u * 256) + Math.floor(v * 256)) & 1);
+  const buta = (u, v, nu, nv) => { const a = fr(u * nu + (Math.floor(v * nv) & 1) * 0.5) - 0.5, b = fr(v * nv) - 0.5; return a * a + b * b < 0.045; };
+  GARB.tex = {
+    Saree: mk((u, v) => {   // a deep border at the hem with a zigzag, a fine line above it, small butis all over
+      if (v < 0.085) return [1, 0.5 + 0.35 * (fr(u * 90 + Math.abs(fr(v * 24) - 0.5) * 2) < 0.5 ? 1 : -0.3)];
+      if (v > 0.1 && v < 0.115) return [1, 0.6];
+      return [0, buta(u, v, 40, 15) ? 0.85 : weave(u, v)];
+    }),
+    Strip: mk((u, v) => {   // borders along both edges; the loose end (u towards 1) is a broad patterned band
+      if (u > 0.84) return [1, fr(u * 60) < 0.5 ? 0.75 : 0.42];
+      if (v < 0.14 || v > 0.86) return [1, 0.55 + 0.25 * (fr(u * 120) < 0.5 ? 1 : 0)];
+      return [0, buta(u, v, 24, 6) ? 0.85 : weave(u, v)];
+    }),
+    Dupatta: mk((u, v) => {   // edged, with a patterned band at both ends
+      if (u < 0.1 || u > 0.9) return [1, fr(u * 60) < 0.5 ? 0.75 : 0.42];
+      if (v < 0.14 || v > 0.86) return [1, 0.55 + 0.25 * (fr(u * 120) < 0.5 ? 1 : 0)];
+      return [0, buta(u, v, 32, 5) ? 0.8 : weave(u, v)];
+    }),
+    Knee: mk((u, v) => [v < 0.05 ? 1 : 0, weave(u, v)]),
+  };
+  GARB.tex.Pallu = GARB.tex.Strip;
+  return GARB.tex;
+}
+function garbMaterial(kind) {
+  if (kind === 'Bun') { const L = new THREE.MeshLambertMaterial({ color: 0x1a1410 }); L.name = 'bun'; return L; }
+  const L = new THREE.MeshLambertMaterial({ map: garbTex()[kind], side: THREE.DoubleSide });
+  const U = L.userData.mx = { uTint: { value: new THREE.Color(0.8, 0.2, 0.2) }, uTint2: { value: new THREE.Color(0.8, 0.6, 0.1) } };
+  L.name = 'garb'; L.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, U);
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nuniform vec3 uTint; uniform vec3 uTint2;')
+      .replace('#include <map_fragment>', '#ifdef USE_MAP\n  vec4 gT = texture2D( map, vMapUv );\n  diffuseColor.rgb *= mix( uTint, uTint2, gT.r ) * ( 0.7 + 0.6 * gT.g );\n#endif');
+  };
+  L.customProgramCacheKey = () => 'mxg';
+  return L;
+}
 function mxMaterial(src, part) {
   const L = new THREE.MeshLambertMaterial({ map: src.map, transparent: src.transparent, opacity: src.opacity, alphaTest: src.alphaTest, side: src.side });
   const U = L.userData.mx = { uTint: { value: new THREE.Color(1, 1, 1) }, uMix: { value: 0 }, uK: { value: part.k }, uRef: { value: new THREE.Color().fromArray(part.ref) } };
@@ -6167,7 +6221,12 @@ function makeChar(pf) {
     n.renderOrder = 12;                                   // after the ground layers, which draw without a depth test
     if (!n.isMesh) return;
     n.frustumCulled = false; n.castShadow = true; n.receiveShadow = true;
-    const x = n.material, part = I.mx && I.mx[n.name];
+    n.userData.lod = /_L1$/.test(n.name) ? 1 : GARB.kind(n.name) ? -1 : 0; C.lod = 0;
+    const x = n.material, part = I.mx && I.mx[n.name], gk = GARB.kind(n.name), sx = (n.name.replace(/_L1$/, '').match(/_(Tie|Belt|Pants)$/) || [])[1];
+    if (sx) (C.sfx = C.sfx || {})[sx] = [...((C.sfx && C.sfx[sx]) || []), n];
+    if (gk) {     // a kurta / saree / dupatta piece: hidden until the person wears it (chLook)
+      const L = garbMaterial(gk); (C.gb = C.gb || {})[gk] = [...((C.gb && C.gb[gk]) || []), { mesh: n, mat: L }]; n.material = L; n.userData.on = false; return;
+    }
     if (part) {   // a Mixamo body's top, bottom, skin or hair: its own recolourable material
       const L = mxMaterial(x, part); (C.mx = C.mx || {})[part.role] = [...((C.mx && C.mx[part.role]) || []), L]; n.material = L; return;
     }
@@ -6181,7 +6240,7 @@ function makeChar(pf) {
   obj.scale.setScalar(I.S); obj.rotation.y = CH_MIXAMO[m] ? CH_MIXAMO[m].rotY : Math.PI / 2;   // the models face +z; people in this city face +x
   C.root.add(obj);
   C.neck = obj.getObjectByName(chBone(m, 'Neck')); C.head = obj.getObjectByName(chBone(m, 'Head')); C.look = 0;
-  chLook(C, pf);
+  chLook(C, pf); chVis(C);
   return C;
 }
 // turn the head by yaw (radians, + = to the person's left) on top of whatever the animation did this frame:
@@ -6198,14 +6257,35 @@ function chTurnHead(C, yaw) {
     b.updateMatrixWorld(true);
   }
 }
+// show a body's meshes for what it wears (userData.on) at its level of detail (C.lod: 0 near, 1 far; clothes serve both)
+function chVis(C) { const L = C.lod || 0; C.obj.traverse((n) => { if (n.isMesh) n.visible = n.userData.on !== false && (n.userData.lod === -1 || (n.userData.lod || 0) === L); }); }
 function chLook(C, pf) {
   if (C.mx) {   // a Mixamo body: recolour its parts; an index of -1 (or a colour of null) keeps the part as the body was made
     const pick = (v, list, k) => (v == null || v === -1 ? null : chCol(v, list, k));
-    const top = pick(pf.topC !== undefined ? pf.topC : pf.top, AV_TOP, '#2980b9'), bot = pick(pf.botC !== undefined ? pf.botC : pf.bot, AV_BOT, '#2c3e50');
+    const top = pick(pf.topC !== undefined ? pf.topC : pf.top, AV_TOP, '#2980b9'), bot = pick(pf.botC !== undefined ? pf.botC : pf.bot, AV_BOT2, '#2c3e50');
     const skin = pick(pf.skinC !== undefined ? pf.skinC : pf.skin, AV_SKIN, '#8d5a3b'), hair = pf.hairc === -1 ? null : new THREE.Color(CH_HAIR[pf.hairc | 0] || CH_HAIR[0]);
-    for (const [role, c] of [['top', top], ['bot', bot], ['skin', skin], ['hair', hair]]) for (const L of C.mx[role] || []) {
+    // what they wear: their own clothes, or (bodies with Indian clothes) a kurta / saree / salwar kameez
+    const W = C.gb && (CH_FEM[C.model] ? ['saree', 'salwar'] : ['kurta']).includes(pf.wear) ? pf.wear : 'own';
+    const show = (k, on) => { for (const g of (C.gb && C.gb[k]) || []) g.mesh.userData.on = on; };
+    show('Knee', W === 'kurta' || W === 'salwar'); show('Saree', W === 'saree'); show('Pallu', W === 'saree'); show('Dupatta', W === 'salwar'); show('Bun', W === 'saree' || W === 'salwar');
+    for (const n of (C.sfx && C.sfx.Tie) || []) n.userData.on = W === 'own';
+    for (const n of (C.sfx && C.sfx.Belt) || []) n.userData.on = W === 'own';
+    for (const n of (C.sfx && C.sfx.Pants) || []) n.userData.on = W !== 'saree';
+    chVis(C);
+    const own = (r) => (C.mx[r] && C.mx[r][0] ? C.mx[r][0].userData.mx.uRef.value.clone() : new THREE.Color(0.5, 0.5, 0.5));   // a part's own mean colour
+    const setG = (k, a, b) => { for (const g of (C.gb && C.gb[k]) || []) if (g.mat.userData.mx) { g.mat.userData.mx.uTint.value.copy(a); g.mat.userData.mx.uTint2.value.copy(b); } };
+    const gold = new THREE.Color(pf.borderC || '#c9a227');
+    let topC = top, innerC = null, botC = bot;
+    if (W === 'saree') {             // Top: the saree; Bottom: the blouse (the body's own top)
+      const S = top || new THREE.Color('#b0306a'); topC = innerC = bot || new THREE.Color('#f1c40f'); setG('Saree', S, gold); setG('Pallu', S, gold);
+    } else if (W !== 'own') {        // Top: the kurta / kameez, top and skirt alike; Bottom: pyjama / salwar (and the dupatta)
+      const T = top || own('top'); topC = innerC = T; setG('Knee', T, T.clone().lerp(new THREE.Color(1, 1, 1), 0.35));
+      if (W === 'salwar') setG('Dupatta', new THREE.Color(pf.dupC || (bot ? '#' + bot.getHexString() : '#f4f1ea')), gold);
+    }
+    for (const [role, c] of [['top', topC], ['inner', innerC], ['bot', botC], ['skin', skin], ['hair', hair]]) for (const L of C.mx[role] || []) {
       L.userData.mx.uMix.value = c ? 1 : 0; if (c) L.userData.mx.uTint.value.copy(c);
     }
+    for (const g of (C.gb && C.gb.Bun) || []) g.mat.color.copy(hair || new THREE.Color('#1a1410'));
     return;
   }
   const o = CH_OUTFIT[pf.outfit] || CH_OUTFIT.shirt, I = CHAR.info[C.model];
@@ -6805,7 +6885,7 @@ function rebuildAvatar() {
   const W = WALK;
   if (W.av) { if (W.av.mixer) chDispose(W.av); else W.holder.remove(W.av.root); }
   const lm = AV_LOOK[avLook(ACC.pf)][0];
-  W.av = CHAR.state === 2 ? makeChar({ ...ACC.pf, model: CHAR.info[lm] ? lm : CH_PLAYER }) : buildAvatar(ACC.pf);   // the box person stands in while the models load
+  W.av = CHAR.state === 2 ? makeChar({ ...ACC.pf, wear: avWear(ACC.pf), model: CHAR.info[lm] ? lm : CH_PLAYER }) : buildAvatar(ACC.pf);   // the box person stands in while the models load
   W.av.root.traverse((o) => { o.renderOrder = 12; });
   W.holder.add(W.av.root);
   if (W.rideMesh) { W.holder.remove(W.rideMesh); if (W.rideMesh.userData.own) W.rideMesh.geometry.dispose(); W.rideMesh = null; }
@@ -7364,7 +7444,7 @@ function ridePose(C, mode, crank) {
 }
 
 // ---- the people around you: in walk mode the nearest pedestrians become animated people (the rest stay figures)
-const PEDPOOL = { list: [], men: 14, women: 10 };   // up to 24 people at a time; idle ones are reused
+const PEDPOOL = { list: [], men: 24, women: 18 };   // up to 42 people at a time (beyond ~20 m in their light copies); idle ones are reused
 function pedPoolRelease() { for (const C of PEDPOOL.list) { if (C.ped) C.ped.skin = null; C.ped = null; C.root.visible = false; sayDrop(C); } }
 function stepPedPool(dt) {
   if (!PEDS || !PEDS.shown || CHAR.state !== 2) { pedPoolRelease(); return; }
@@ -7378,14 +7458,23 @@ function stepPedPool(dt) {
     if (p.skin) continue;
     if (p.hh == null) p.hh = Math.random();
     const h = p.hh, outfit = p.pants ? (h < 0.32 ? 'shirt' : h < 0.6 ? 'tshirt' : h < 0.78 ? 'kurta' : h < 0.92 ? 'office' : 'suit') : (h < 0.55 ? 'saree' : h < 0.85 ? 'salwar' : 'western');
-    const crowd = p.pants ? CROWD.men : CROWD.women, model = CHAR.info[crowd[0]] ? crowd[Math.floor(h * 7919) % crowd.length] : CH_OUTFIT[outfit].m;
+    // which body: the man in a suit only for suits; shirts, T-shirts and kurtas on the other men; any body for the women
+    const crowd = !p.pants ? CROWD.women : outfit === 'suit' ? ['ch33'] : outfit === 'kurta' ? CROWD.men : CROWD.men.filter((m) => m !== 'ch33');
+    const model = CHAR.info[crowd[0]] ? crowd[Math.floor(h * 7919) % crowd.length] : CH_OUTFIT[outfit].m;
     let C = PEDPOOL.list.find((c) => !c.ped && c.model === model);
-    if (!C) { if (PEDPOOL.list.length >= 40) continue; C = makeChar({ outfit, model }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
+    if (!C) { if (PEDPOOL.list.length >= 60) continue; C = makeChar({ outfit, model }); C.root.visible = false; scene.add(C.root); PEDPOOL.list.push(C); }
     // a Mixamo body keeps its own top for about a third of the people and its own trousers for about a quarter: the rest
     // are recoloured, so seven bodies make a varied crowd
     const own = C.mx ? [(h * 31) % 1 < 0.33, (h * 17) % 1 < 0.25] : [false, false];
-    chLook(C, { outfit, topC: own[0] ? null : p.shirt, botC: own[1] ? null : p.pants ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length],
-      skin: (h * 97 | 0) % 4, hairc: (h * 13) % 1 < 0.12 ? 3 : (h * 7) % 1 < 0.2 ? 1 : 0 });
+    const look = { outfit, topC: own[0] ? null : p.shirt, botC: own[1] ? null : p.pants ? (outfit === 'kurta' ? '#ece6d8' : p.pants) : AV_BOT[(h * 53 | 0) % AV_BOT.length],
+      skin: (h * 97 | 0) % 4, hairc: (h * 13) % 1 < 0.12 ? 3 : (h * 7) % 1 < 0.2 ? 1 : 0 };
+    // Indian clothes on the Mixamo bodies: white or coloured kurtas over pyjama or jeans; sarees with a contrasting blouse
+    // and a gold or coloured border; kameez with salwar and dupatta
+    const tone = (k) => AV_TOP[(h * k | 0) % AV_TOP.length];
+    if (outfit === 'kurta') Object.assign(look, { wear: 'kurta', topC: (h * 23) % 1 < 0.45 ? '#f1ece0' : p.shirt, botC: (h * 29) % 1 < 0.5 ? '#ece6d8' : null });
+    else if (outfit === 'saree') Object.assign(look, { wear: 'saree', topC: p.shirt, botC: tone(41), borderC: (h * 43) % 1 < 0.6 ? '#c9a227' : tone(59) });
+    else if (outfit === 'salwar') Object.assign(look, { wear: 'salwar', topC: p.shirt, botC: (h * 47) % 1 < 0.5 ? '#ece6d8' : tone(53), dupC: tone(61) });
+    chLook(C, look);
     C.ped = p; p.skin = C; C.root.visible = true; C.idleT = 0; C.face = undefined; C.look = 0;
   }
   const W = WALK, P = W.P, onFoot = W.on && !W.ride && W.mode === 'walk';
@@ -7398,7 +7487,10 @@ function stepPedPool(dt) {
     if (p.bumpT > 0) fy = Math.atan2(rz, rx);
     C.face = C.face === undefined ? fy : lerpAng(C.face, fy, Math.min(1, dt * (p.bumpT > 0 ? 6 : 12)));
     C.root.position.set(p.x, p.y, p.z); C.root.rotation.y = -C.face; C.root.scale.setScalar(0.94 + (sc - 1) * 0.5);
-    chMove(C, p.mode === 2 || p.bumpT > 0 ? 0 : p.cv, dt, 0.25); C.mixer.update(dt);
+    // beyond ~20 m: the light copy, its animation stepped every other frame (with hysteresis, so nobody flickers)
+    const lod = C.lod === 1 ? (d < 18 ? 0 : 1) : d > 22 ? 1 : 0; if (lod !== C.lod) { C.lod = lod; chVis(C); }
+    chMove(C, p.mode === 2 || p.bumpT > 0 ? 0 : p.cv, dt, 0.25);
+    if (C.lod === 1) { C.acc = (C.acc || 0) + dt; if ((C.tick = !C.tick)) { C.mixer.update(C.acc); C.acc = 0; } } else C.mixer.update(dt);
     // passers-by glance at you: the head follows you while you are close and not behind them
     let want = 0;
     if (onFoot && d < 6.5 && Math.abs(P.y - p.y) < 2) {
@@ -7461,13 +7553,14 @@ function renderAvatarPanel() {
   // the first swatch on a row (a slash) keeps that part as the body was made
   const sw = (key, list, own) => (own ? `<button class="sw own${pf[key] === -1 ? ' on' : ''}" data-k="${key}" data-i="-1" title="As it comes"></button>` : '')
     + list.map((c, i) => `<button class="sw${pf[key] === i ? ' on' : ''}" data-k="${key}" data-i="${i}" style="background:${c}"></button>`).join('');
-  const lk = avLook(pf), looks = (ks) => ks.map((k) => `<button class="opt${lk === k ? ' on' : ''}" data-k="look" data-v="${k}">${AV_LOOK[k][1]}</button>`).join('');
+  const lk = avLook(pf), wr = avWear(pf), looks = (ks) => ks.map((k) => `<button class="opt${lk === k ? ' on' : ''}" data-k="look" data-v="${k}">${AV_LOOK[k][1]}</button>`).join('');
   el.innerHTML = `<div class="hd">Who's out in Amdavad today?</div>
     <label>Name<input id="avName" maxlength="20" placeholder="Your name" value="${(pf.name || '').replace(/"/g, '&quot;')}"></label>
     <div class="row"><span>Him</span><div>${looks(AV_LOOK_M)}</div></div>
     <div class="row"><span>Her</span><div>${looks(AV_LOOK_F)}</div></div>
-    <div class="row"><span>Top</span><div>${sw('top', AV_TOP, true)}</div></div>
-    <div class="row"><span>Bottom</span><div>${sw('bot', AV_BOT, true)}</div></div>
+    <div class="row"><span>Wear</span><div>${Object.entries(AV_LOOK_F.includes(lk) ? AV_WEAR_F : AV_WEAR_M).map(([k, v]) => `<button class="opt${wr === k ? ' on' : ''}" data-k="wear" data-v="${k}">${v}</button>`).join('')}</div></div>
+    <div class="row"><span>${{ saree: 'Saree', kurta: 'Kurta', salwar: 'Kameez' }[wr] || 'Top'}</span><div>${sw('top', AV_TOP, true)}</div></div>
+    <div class="row"><span>${{ saree: 'Blouse', kurta: 'Pyjama', salwar: 'Salwar & dupatta' }[wr] || 'Bottom'}</span><div>${sw('bot', AV_BOT2, true)}</div></div>
     <div class="row"><span>Skin</span><div>${sw('skin', AV_SKIN, true)}</div></div>
     <div class="row"><span>Hair</span><div>${sw('hairc', CH_HAIR, true)}</div></div>
     <div class="row"><span>Scooter</span><div>${sw('scoot', ['#c0392b', '#2980b9', '#f4f1ea', '#151515', '#f1c40f'])}</div></div>
