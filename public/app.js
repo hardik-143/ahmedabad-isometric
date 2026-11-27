@@ -595,8 +595,8 @@ function decodeBld(buf, off) {
   const r = new Reader(buf, off);
   const n = r.u32(), nR = r.u32(), nP = r.u32();
   const floors = r.arr(Uint8Array, n), style = r.arr(Uint8Array, n), kind = r.arr(Uint8Array, n), rc = r.arr(Uint8Array, n);
-  const polT = r.arr(Uint8Array, n), face = r.arr(Uint8Array, n), face2 = r.arr(Uint8Array, n);
-  const rA = r.arr(Uint8Array, n), rB = r.arr(Uint8Array, n), rise = r.arr(Uint8Array, n);
+  const polT = r.arr(Uint8Array, n), face = r.arr(Uint8Array, n).slice(), face2 = r.arr(Uint8Array, n).slice();
+  const rA = r.arr(Uint8Array, n).slice(), rB = r.arr(Uint8Array, n).slice(), rise = r.arr(Uint8Array, n);
   const rl = r.arr(Uint16Array, nR); const co = r.arr(Int16Array, nP * 2);
   // absolute coords per ring
   const abs = new Int16Array(nP * 2);
@@ -604,6 +604,30 @@ function decodeBld(buf, off) {
   for (let k = 0; k < nR; k++) {
     let x = 0, z = 0;
     for (let j = 0; j < rl[k]; j++, p++) { x += co[p * 2]; z += co[p * 2 + 1]; abs[p * 2] = x; abs[p * 2 + 1] = z; }
+  }
+  // every outline is wound one way round (negative signed area); one cut by a geometry operation can come out the other way,
+  // and then its walls face inwards and the building looks hollow (Chinubhai Centre, trimmed round the Patang shaft).
+  // Turn any such outline (and its courtyards) round, and the edge / corner indices that point into it.
+  let rr = 0, pp = 0;
+  for (let b = 0; b < n; b++) {
+    const m0 = rl[rr]; let A = 0;
+    for (let j = 0; j < m0; j++) { const a = (pp + j) * 2, c = (pp + (j + 1) % m0) * 2; A += abs[a] * abs[c + 1] - abs[c] * abs[a + 1]; }
+    let q = pp;
+    for (let k = 0; k < rc[b]; k++) {
+      const m = rl[rr + k];
+      if (A > 0) for (let i = 0, j = m - 1; i < j; i++, j--) {
+        const a = (q + i) * 2, c = (q + j) * 2, x = abs[a], z = abs[a + 1];
+        abs[a] = abs[c]; abs[a + 1] = abs[c + 1]; abs[c] = x; abs[c + 1] = z;
+      }
+      q += m;
+    }
+    if (A > 0) {
+      if (face[b] < m0) face[b] = (2 * m0 - 2 - face[b]) % m0;      // edge e (corner e to e+1) is now edge m-2-e
+      if (face2[b] < m0) face2[b] = (2 * m0 - 2 - face2[b]) % m0;
+      if (rA[b] < m0) rA[b] = m0 - 1 - rA[b];                         // corner v is now corner m-1-v
+      if (rB[b] < m0) rB[b] = m0 - 1 - rB[b];
+    }
+    pp = q; rr += rc[b];
   }
   return { n, nR, nP, floors, style, kind, rc, rl, abs, polT, face, face2, rA, rB, rise };
 }
@@ -3258,16 +3282,17 @@ async function loveSign(x, z, fx, fz, ux, uz) {
     const KC = ['#e63946', '#f4a261', '#2a9d8f', '#e9c46a', '#7b5ce0', '#f06292', '#3fb6e8'], H = 1.7, D = 0.55, parts = [];
     const paint = (g, hex) => { const c = new THREE.Color(hex), n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set([c.r, c.g, c.b], i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
     let cx = 0;
-    const put = (g, hex, w) => { g.computeBoundingBox(); const b = g.boundingBox; g.translate(cx - b.min.x, 0.45, 0); parts.push(paint(g.index ? g.toNonIndexed() : g, hex)); cx += w ?? (b.max.x - b.min.x); cx += 0.22; };
+    const put = (g, hex, w) => { g.computeBoundingBox(); const b = g.boundingBox; g.translate(cx - b.min.x, 0.45, 0); parts.push(paint(g.index ? g.toNonIndexed() : g, hex)); cx += w ?? (b.max.x - b.min.x); cx += 0.14; };
     const txt = (t) => new TextGeometry(t, { font, size: H, height: D, depth: D, curveSegments: 3, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.03, bevelSegments: 1 });
     put(txt('I'), '#ffffff');
     const hs = new THREE.Shape(), k = H / 2;   // heart
     hs.moveTo(k, 0); hs.bezierCurveTo(k * 0.2, k * 0.55, -k * 0.1, k * 1.25, k * 0.45, k * 1.75); hs.bezierCurveTo(k * 0.8, k * 2.05, k, k * 1.75, k, k * 1.5);
     hs.bezierCurveTo(k, k * 1.75, k * 1.2, k * 2.05, k * 1.55, k * 1.75); hs.bezierCurveTo(k * 2.1, k * 1.25, k * 1.8, k * 0.55, k, 0);
     put(new THREE.ExtrudeGeometry(hs, { depth: D, bevelEnabled: false, curveSegments: 8 }), '#e01e3c');
-    [...'AMDAVAD'].forEach((ch, i) => put(txt(ch), KC[i % KC.length]));
+    const KERN = { AV: -0.28, VA: -0.28 };   // A and V lean into each other's space: without kerning the word reads "AMDA VAD"
+    [...'AMDAVAD'].forEach((ch, i, a) => { if (i) cx += KERN[a[i - 1] + ch] || 0; put(txt(ch), KC[i % KC.length]); });
     for (const g of parts) for (const key of Object.keys(g.attributes)) if (!['position', 'normal', 'color'].includes(key)) g.deleteAttribute(key);
-    const geo = mergeGeometries(parts); const W = cx - 0.22;
+    const geo = mergeGeometries(parts); const W = cx - 0.14;
     geo.translate(-W / 2, 0, -D / 2);
     const base = new THREE.BoxGeometry(W + 1.2, 0.45, 1.3).toNonIndexed(); base.translate(0, 0.225, 0); base.deleteAttribute('uv'); paint(base, '#d8d2c6');
     const all = mergeGeometries([geo, base]);
@@ -6883,7 +6908,11 @@ function stepFoot(dt, spec) {
   if (W.panel) { if (sk) chPlay(A, 'Idle', 0.25); else poseAvatar(A, 'walk', 0, 0, 0); return; }
   // W runs, Shift sprints, Caps Lock walks; a light push on the touch stick walks
   const [f, s] = moveInput(), sprint = keys.has('shift') || W.runT;
-  const fx = -Math.sin(W.yaw), fz = -Math.cos(W.yaw), rx = -fz, rz = fx;   // camera forward / right on the ground
+  // the direction is taken from the camera when you press a key (or move the stick, or look round) and then held: otherwise the
+  // camera swinging in behind you turns "back" / "left" / "right" with it and you run in circles
+  const mk = Math.hypot(f, s) > 0.05 ? Math.round(Math.atan2(s, f) / (Math.PI / 12)) : 'idle';
+  if (!W.mv || W.mv.k !== mk || W.mv.look !== W.lookT) W.mv = { k: mk, yaw: W.yaw, look: W.lookT };
+  const fx = -Math.sin(W.mv.yaw), fz = -Math.cos(W.mv.yaw), rx = -fz, rz = fx;   // camera forward / right on the ground (as it was when you pressed)
   let mx = fx * f + rx * s, mz = fz * f + rz * s; const ml = Math.hypot(mx, mz);
   const target = ml > 0.05 ? (sprint ? 5.4 : W.walkT || (W.joy && ml < 0.6) ? 1.55 : 4.0) : 0;
   P.v += clamp(target - P.v, -11 * dt, 8 * dt);
