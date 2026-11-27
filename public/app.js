@@ -27,7 +27,7 @@ const CFG = {
   vehicles: ['hatch', 'sedan', 'suv', 'auto', 'scooter', 'bike', 'tempo', 'truck'],        // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
   start: null,               // open straight on foot at the foot of this landmark, with no map view to go back to (null: the map)
   ride: true,                // C: your own cycle / scooter / rickshaw (F also gets on traffic autos and scooters, when there is traffic)
-  zone: { x: -110, z: 930, r: 420 },   // on foot, the playable area: Patang Hotel, the I love Amdavad sign and Nehru Bridge; haze and a soft wall at its edge (null: the whole city)
+  zone: null,                // on foot, the playable area (main: Patang Hotel, I love Amdavad, Nehru Bridge); null: the whole city. Was: Patang Hotel, the I love Amdavad sign and Nehru Bridge; haze and a soft wall at its edge (null: the whole city)
 };
 // on foot, everything outside the playable zone fades into the sky colour, however close you stand to the edge:
 // a fog measured from the zone centre (world space), added to the ordinary distance fog (and only while the distance fog is on)
