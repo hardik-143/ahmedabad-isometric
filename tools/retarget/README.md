@@ -16,3 +16,10 @@ Ground speed is measured from the planted foot so the app can play the clips wit
 
 Then round the values to 3 decimals and shift the run's stride by 2 frames so its left foot leads at the same phase
 as the walk's. `run.py` drives headless Chrome with Playwright and serves three.js from a local node_modules.
+
+## Mixamo bodies (mixamo.js)
+
+The player is a Mixamo character: `tools/mixamo_char.py in.fbx out.glb` (Blender) renames its bones to
+`mixamorig:*` and keeps only a 1024 px colour texture. `mixamo.js` then retargets the three.js Soldier's Walk / Run /
+Idle onto it (world-space turn from each bone's rest pose, so feet stay planted whatever the bones' local axes); the
+clips go into `public/models/people/mixamo_anims.json` under the model's name, and the model into `CH_MIXAMO` in app.js.
