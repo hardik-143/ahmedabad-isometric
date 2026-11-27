@@ -27,18 +27,38 @@ const CFG = {
   vehicles: [],              // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
   start: 'patang',           // open straight on foot at the foot of this landmark, with no map view to go back to (null: the map)
   ride: true,                // C: your own cycle / scooter / rickshaw (F also gets on traffic autos and scooters, when there is traffic)
-  zone: { x: -110, z: 930, r: 420 },   // on foot, the playable area: Patang Hotel, the I love Amdavad sign and Nehru Bridge; haze and a soft wall at its edge (null: the whole city)
+  // on foot, the playable area, in parts (circles, or capsules from x,z to x1,z1): Patang Hotel, I love Amdavad and Nehru
+  // Bridge; the west riverfront south past Ellis Bridge; Atal Bridge and the Flower Park. Haze and a soft wall at its edge (null: the whole city)
+  zone: [{ x: -110, z: 930, r: 420 }, { x: -165, z: 1300, x1: -140, z1: 1780, r: 110 }, { x: 60, z: 2000, r: 330 }],
 };
+// the zone's parts as capsules a-b with a radius, and how far a point is outside them (negative inside), with the
+// nearest point on the nearest part's spine
+const ZONE = CFG.zone ? [].concat(CFG.zone).map((p) => ({ ax: p.x, az: p.z, bx: p.x1 ?? p.x, bz: p.z1 ?? p.z, r: p.r })) : null;
+function zoneDist(x, z) {
+  let best = [Infinity, 0, 0, null];
+  for (const Q of ZONE) {
+    const dx = Q.bx - Q.ax, dz = Q.bz - Q.az, l2 = dx * dx + dz * dz, t = l2 ? Math.max(0, Math.min(1, ((x - Q.ax) * dx + (z - Q.az) * dz) / l2)) : 0;
+    const qx = Q.ax + dx * t, qz = Q.az + dz * t, d = Math.hypot(x - qx, z - qz) - Q.r;
+    if (d < best[0]) best = [d, qx, qz, Q];
+  }
+  return best;
+}
 // on foot, everything outside the playable zone fades into the sky colour, however close you stand to the edge:
-// a fog measured from the zone centre (world space), added to the ordinary distance fog (and only while the distance fog is on)
-if (CFG.zone) {
-  const Z = CFG.zone, SC = THREE.ShaderChunk, f = (v) => v.toFixed(1);
-  SC.fog_pars_vertex = SC.fog_pars_vertex.replace('varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying vec2 vZoneP;');
+// a fog measured from the zone's parts (world space), added to the ordinary distance fog (and only while the distance fog is on)
+if (ZONE) {
+  const SC = THREE.ShaderChunk, f = (v) => v.toFixed(1);
+  const parts = ZONE.map((Q) => `{ vec2 a = vec2( ${f(Q.ax)}, ${f(Q.az)} ), ab = vec2( ${f(Q.bx - Q.ax)}, ${f(Q.bz - Q.az)} );
+			float t = clamp( dot( vZoneW - a, ab ) / max( dot( ab, ab ), 1e-3 ), 0.0, 1.0 ); zd = min( zd, length( vZoneW - a - ab * t ) - ${f(Q.r)} ); }`).join('\n\t\t\t');
+  SC.fog_pars_vertex = SC.fog_pars_vertex.replace('varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying vec2 vZoneW;');
   SC.fog_vertex = SC.fog_vertex.replace('vFogDepth = - mvPosition.z;', `vFogDepth = - mvPosition.z;
-	vZoneP = ( inverse( viewMatrix ) * vec4( mvPosition.xyz, 1.0 ) ).xz - vec2( ${f(Z.x)}, ${f(Z.z)} );`);   // the position, not its distance: a distance would be interpolated wrongly across big ground triangles
-  SC.fog_pars_fragment = SC.fog_pars_fragment.replace('varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying vec2 vZoneP;');
+	vZoneW = ( inverse( viewMatrix ) * vec4( mvPosition.xyz, 1.0 ) ).xz;`);   // the position, not its distance: a distance would be interpolated wrongly across big ground triangles
+  SC.fog_pars_fragment = SC.fog_pars_fragment.replace('varying float vFogDepth;', 'varying float vFogDepth;\n\tvarying vec2 vZoneW;');
   SC.fog_fragment = SC.fog_fragment.replace('gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );', `#ifndef FOG_EXP2
-		if ( fogNear < 1e6 ) fogFactor = max( fogFactor, 0.94 * smoothstep( ${f(Z.r - 20)}, ${f(Z.r + 180)}, length( vZoneP ) ) );
+		if ( fogNear < 1e6 ) {
+			float zd = 1e9;
+			${parts}
+			fogFactor = max( fogFactor, 0.94 * smoothstep( -20.0, 180.0, zd ) );
+		}
 	#endif
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );`);
 }
@@ -959,7 +979,7 @@ function buildGround() {
   for (const [mat, order, color] of [[WATER, 2, '#2c5f87'], [PARK, 1, '#3f5a3a']]) {
     const nv = r.u32(), ni = r.u32();
     const V = r.arr(Int16Array, nv * 2); const I = r.arr(Uint32Array, ni);
-    if (mat === WATER) WATER_GEO = { V, I };
+    if (mat === WATER) WATER_GEO = { V, I }; else PARK_GEO = { V, I };   // the parkland is kept for the Flower Park
     out.push(...triMeshes(V, I, mat, order));
     // map canvas
     mapCtx.fillStyle = color; mapCtx.beginPath();
@@ -1856,57 +1876,334 @@ function buildDecks(decks, xy) {
   buildAtal();
 }
 
-// Atal Bridge: 300 m pedestrian bridge with a kite-coloured canopy (Uttarayan inspired)
+// Atal Bridge: a 300 m footbridge across the Sabarmati, a tubular steel truss whose cross-section is a rhombus like a kite,
+// wider and deeper in the middle (10 m wide at the ends, 14 m mid-river: from above it looks like a fish), its upper half
+// hung with kite-coloured fabric. Glass railings, glass floor panels, seating planters, two food kiosks, a kite sculpture
+// for selfies, and colour-changing LEDs along the steel after dark. You walk onto it from the upper promenade up a short
+// ramp at each end; its deck is a surface you can walk on (ATAL_COL, added to the walk collision in colBuild).
+const ATAL_COL = { decks: [], walls: [] };
+let ATAL = null;
 function buildAtal() {
   const A = META.atal; if (!A) return;
-  const dx = A.x1 - A.x0, dz = A.z1 - A.z0, Lb = Math.hypot(dx, dz), ux = dx / Lb, uz = dz / Lb, vx = -uz, vz = ux, hw = A.w / 2;
-  const S = new Geo(false), K = new Geo(false);
-  const at = (s, c, y) => [A.x0 + ux * s + vx * c, y, A.z0 + uz * s + vz * c];
-  // deck is level over the river (plus 8 m), then ramps down to a paved landing on each bank
-  const w0 = A.ws0 != null ? A.ws0 : 18, w1 = A.ws1 != null ? A.ws1 : Lb - 18;
-  const f0 = Math.max(4, w0 - 8), f1 = Math.min(Lb - 4, w1 + 8);
-  const yAt = (s) => s < f0 ? 0.25 + (A.deck - 0.25) * (s / f0) : s > f1 ? 0.25 + (A.deck - 0.25) * ((Lb - s) / (Lb - f1)) : A.deck;
-  const marks = [0, f0, f1, Lb]; for (let s = 6; s < Lb; s += 6) marks.push(s);
-  marks.sort((a, b) => a - b);
-  for (let i = 0; i < marks.length - 1; i++) {
-    const s = marks[i], e = marks[i + 1]; if (e - s < 0.01) continue;
-    const y0 = yAt(s), y1 = yAt(e), solid = s < f0 || e > f1;   // ramps sit on solid abutments
-    const inCh = TR && TR.river && s > w0 - 13 && e < w1 + 13;     // abutment toes reach down to the lower promenade
-    const sb = inCh ? TR.river.py : 0;
-    const b0 = solid ? sb : y0 - 1.4, b1 = solid ? sb : y1 - 1.4;
-    S.quad(at(s, -hw, y0), at(e, -hw, y1), at(e, hw, y1), at(s, hw, y0), [0, 1, 0]);
-    S.quad(at(s, -hw, b0), at(e, -hw, b1), at(e, -hw, y1 + 1.1), at(s, -hw, y0 + 1.1), [-vx, 0, -vz]);
-    S.quad(at(e, hw, b1), at(s, hw, b0), at(s, hw, y0 + 1.1), at(e, hw, y1 + 1.1), [vx, 0, vz]);
-  }
-  // piers: one at each bank, two in the river
-  const RV = TR && TR.river;
-  for (const sp of [w0, w0 + (w1 - w0) / 3, w0 + 2 * (w1 - w0) / 3, w1]) {
-    const bank = sp === w0 || sp === w1, base = RV ? (bank ? RV.py : RV.wy - 0.6) : 0;
-    S.box(A.x0 + ux * sp, A.z0 + uz * sp, ux, uz, 1.6, hw * 0.7, base, A.deck - 1.4);
-  }
-  // paved landings where the bridge meets each riverfront promenade
-  for (const [sc, dir] of [[0, -1], [Lb, 1]]) {
-    const a0 = sc, a1 = sc + dir * 16;
-    S.quad(at(Math.min(a0, a1), -hw * 1.8, 0.08), at(Math.max(a0, a1), -hw * 1.8, 0.08), at(Math.max(a0, a1), hw * 1.8, 0.08), at(Math.min(a0, a1), hw * 1.8, 0.08), [0, 1, 0]);
-  }
-  // canopy: arched kite panels with gaps, posts at each panel edge
-  const KC = ['#e63946', '#f4a261', '#2a9d8f', '#e9c46a', '#7b5ce0', '#f06292', '#3fb6e8', '#ff7b25'].map((h) => new THREE.Color(h));
-  const prof = [[-1, 3.0], [-0.55, 4.6], [0, 5.4], [0.55, 4.6], [1, 3.0]];
-  let k = 0;
-  for (let s = f0 - 2; s < f1 - 4; s += 8, k++) {
-    const e = s + 6.2, col = KC[k % KC.length], cc = [col.r, col.g, col.b];
-    const ys = yAt(s), ye = yAt(e);
-    for (let t = 0; t < prof.length - 1; t++) {
-      const [c0, h0] = prof[t], [c1, h1] = prof[t + 1];
-      const tilt = (t % 2 ? 0.35 : -0.35);
-      const sl = (h1 - h0) / ((c1 - c0) * hw), nl = Math.hypot(sl, 1);
-      K.quad(at(s, c0 * hw, ys + h0 + tilt), at(e, c0 * hw, ye + h0 - tilt), at(e, c1 * hw, ye + h1 - tilt), at(s, c1 * hw, ys + h1 + tilt), [-vx * sl / nl, 1 / nl, -vz * sl / nl], cc);
+  const dx = A.x1 - A.x0, dz = A.z1 - A.z0, Lb = Math.hypot(dx, dz), ux = dx / Lb, uz = dz / Lb, vx = -uz, vz = ux;
+  const P = (s, c, y) => [A.x0 + ux * s + vx * c, y, A.z0 + uz * s + vz * c];
+  const RV = TR && TR.river, wy = RV ? RV.wy : -5.6;
+  // where the upper promenade ends on each bank (the lower promenade or the water begins): the truss spans between,
+  // landing 5 m onto the upper promenade; the deck sits 2.2 m up (clear of the promenade railing), reached by 1:7 ramps
+  const low = (s) => { const [x, , z] = P(s, 0, 0); return promAt(x, z) || waterAt(x, z); };
+  let e0 = 0; while (e0 < Lb / 2 && !low(e0)) e0 += 0.5;
+  let e1 = Lb; while (e1 > Lb / 2 && !low(e1)) e1 -= 0.5;
+  const DY = 2.2, sA = Math.max(16, e0 - 5), sB = Math.min(Lb - 16, e1 + 5), r0 = sA - 15.4, r1 = sB + 15.4;
+  const deckY = (s) => (s < sA ? DY * clamp((s - r0) / (sA - r0), 0, 1) : s > sB ? DY * clamp((r1 - s) / (r1 - sB), 0, 1) : DY) + 0.05;
+  const uOf = (s) => clamp((s - sA) / (sB - sA), 0, 1), bulge = (s) => Math.pow(Math.sin(Math.PI * uOf(s)), 0.7);
+  const HW = (s) => (s < sA || s > sB ? 2.6 : 5 + 2 * bulge(s));      // half the walkway: 10 m at the ends, 14 m mid-river; the ramps 5.2 m
+  const Ht = (s) => 5.2 + 2.4 * bulge(s), Hb = (s) => 0.9 + 2.6 * bulge(s);
+  // the rhombus, rounded: eight points round each station (deck edge, upper shoulder, ridge, ..., keel)
+  const prof = (s) => {
+    const w = HW(s) + 0.45, t = Ht(s), b = Hb(s), y = DY;
+    return [[-w, y + 0.15], [-0.56 * w, y + 0.64 * t], [0, y + t], [0.56 * w, y + 0.64 * t], [w, y + 0.15], [0.5 * w, y - 0.58 * b], [0, y - b], [-0.5 * w, y - 0.58 * b]];
+  };
+  const ST = []; for (let s = sA; s < sB + 0.01; s += (sB - sA) / Math.round((sB - sA) / 5.2)) ST.push(s);
+  const steel = new Geo(false), fab = new Geo(false), deck = new Geo(false), glass = new Geo(false), conc = new Geo(false), green = new Geo(false);
+  // a steel tube between two points: a six-sided prism
+  const tube = (G, a, b, r, col) => {
+    const ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2], l = Math.hypot(ax, ay, az) || 1, d = [ax / l, ay / l, az / l];
+    const t0 = Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+    let p = [d[1] * t0[2] - d[2] * t0[1], d[2] * t0[0] - d[0] * t0[2], d[0] * t0[1] - d[1] * t0[0]]; const pl = Math.hypot(...p); p = p.map((v) => v / pl);
+    const q = [d[1] * p[2] - d[2] * p[1], d[2] * p[0] - d[0] * p[2], d[0] * p[1] - d[1] * p[0]];
+    const ring = [0, 1, 2, 3, 4, 5].map((k) => { const an = (k / 6) * Math.PI * 2, c = Math.cos(an), s = Math.sin(an); return [p[0] * c + q[0] * s, p[1] * c + q[1] * s, p[2] * c + q[2] * s]; });
+    for (let k = 0; k < 6; k++) {
+      const n0 = ring[k], n1 = ring[(k + 1) % 6], nm = [(n0[0] + n1[0]) / 2, (n0[1] + n1[1]) / 2, (n0[2] + n1[2]) / 2];
+      const o = (pt, n) => [pt[0] + n[0] * r, pt[1] + n[1] * r, pt[2] + n[2] * r];
+      G.quad(o(a, n0), o(b, n0), o(b, n1), o(a, n1), nm, col);
     }
-    for (const c of [-1, 1]) { const p = at(s, c * hw * 0.98, 0); S.box(p[0], p[2], ux, uz, 0.12, 0.12, ys, ys + 3.1); }
+  };
+  const W3 = (s, pt) => P(s, pt[0], pt[1]);
+  const KC = ['#e63946', '#f4a261', '#2a9d8f', '#e9c46a', '#7b5ce0', '#f06292', '#3fb6e8', '#ff7b25'].map((h) => { const c = new THREE.Color(h); return [c.r, c.g, c.b]; });
+  const WHITE = [0.93, 0.94, 0.95];
+  for (let i = 0; i < ST.length; i++) {
+    const s = ST[i], pr = prof(s);
+    for (let k = 0; k < 8; k++) tube(steel, W3(s, pr[k]), W3(s, pr[(k + 1) % 8]), 0.1, WHITE);   // the ring
+    if (i === ST.length - 1) break;
+    const s2 = ST[i + 1], p2 = prof(s2);
+    for (let k = 0; k < 8; k++) {
+      tube(steel, W3(s, pr[k]), W3(s2, p2[k]), k % 2 === 0 ? 0.2 : 0.14, WHITE);                      // chords
+      const kk = (k + 1) % 8, dg = (i + k) % 2;                                                        // a diagonal across each face
+      tube(steel, W3(dg ? s : s2, pr[k]), W3(dg ? s2 : s, p2[kk]), 0.07, WHITE);
+    }
+    // fabric: a kite (the face's edge midpoints joined) on each of the four upper faces, colours running in diagonal bands
+    for (let k = 0; k < 4; k++) {
+      if ((i * 3 + k * 5) % 7 === 3) continue;                                                         // a few faces left open
+      const kk = k + 1, out = 0.06, c = KC[(i + k * 2) % KC.length];
+      const m = (pa, pb) => [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
+      const a = W3(s, m(pr[k], pr[kk])), b = W3((s + s2) / 2, m(pr[kk], p2[kk])), cc = W3(s2, m(p2[k], p2[kk])), d = W3((s + s2) / 2, m(pr[k], p2[k]));
+      const ex = (pt) => { const mid = [(a[0] + cc[0]) / 2, DY - 1, (a[2] + cc[2]) / 2], l = Math.hypot(pt[0] - mid[0], pt[1] - mid[1], pt[2] - mid[2]) || 1; return [pt[0] + (pt[0] - mid[0]) / l * out, pt[1] + (pt[1] - mid[1]) / l * out, pt[2] + (pt[2] - mid[2]) / l * out]; };
+      const ctr = [(a[0] + cc[0]) / 2, (a[1] + b[1] + cc[1] + d[1]) / 4, (a[2] + cc[2]) / 2], ax0 = P((s + s2) / 2, 0, DY - 1), nn = [ctr[0] - ax0[0], ctr[1] - ax0[1], ctr[2] - ax0[2]], nl = Math.hypot(...nn);
+      fab.quad(ex(a), ex(b), ex(cc), ex(d), nn.map((v) => v / nl), c);
+    }
   }
-  group.ground.add(S.mesh(CONCRETE));
-  group.ground.add(K.mesh(KITE));
+  // the walkway: paving, cut round the four glass panels mid-river; glass railings on steel posts with a handrail
+  const mid = (sA + sB) / 2, GLS = [[mid - 34, -2.2], [mid - 12, 2.2], [mid + 12, -2.2], [mid + 34, 2.2]];   // glass floor: 6 x 4 m each
+  const inGlass = (s, c) => GLS.some(([gs, gc]) => Math.abs(s - gs) < 3 && Math.abs(c - gc) < 2);
+  const PAVE = [0.62, 0.64, 0.66], PAVE2 = [0.55, 0.57, 0.6];
+  const SS = []; for (let s = r0; s < r1 - 0.01; s += 1.5) SS.push(s); SS.push(r1);
+  for (let i = 0; i < SS.length - 1; i++) {
+    const s = SS[i], s2 = SS[i + 1], h = HW(s), h2 = HW(s2), y = deckY(s), y2 = deckY(s2);
+    for (let c = -7; c < 7; c += 1) {
+      const c0 = Math.max(c, -h), c1 = Math.min(c + 1, h), c0b = Math.max(c, -h2), c1b = Math.min(c + 1, h2);
+      if (c1 <= c0 || c1b <= c0b) continue;
+      if (inGlass(s + 0.75, c + 0.5)) continue;
+      deck.quad(P(s, c0, y), P(s2, c0b, y2), P(s2, c1b, y2), P(s, c1, y), [0, 1, 0], ((Math.floor(s / 3) + c) & 1) ? PAVE : PAVE2);
+    }
+    for (const sd of [-1, 1]) {   // the deck's edge and underside skin, and the railing
+      deck.quad(P(s, sd * h, y), P(s2, sd * h2, y2), P(s2, sd * h2, y2 - 0.5), P(s, sd * h, y - 0.5), [vx * sd, 0, vz * sd], [0.8, 0.8, 0.82]);
+      glass.quad(P(s, sd * (h - 0.05), y), P(s2, sd * (h2 - 0.05), y2), P(s2, sd * (h2 - 0.05), y2 + 1.15), P(s, sd * (h - 0.05), y + 1.15), [vx * sd, 0, vz * sd], [0.75, 0.9, 0.95]);
+      tube(steel, P(s, sd * (h - 0.05), y + 1.15), P(s2, sd * (h2 - 0.05), y2 + 1.15), 0.04, WHITE);
+      if (i % 2 === 0) tube(steel, P(s, sd * (h - 0.05), y), P(s, sd * (h - 0.05), y + 1.15), 0.035, WHITE);
+    }
+    deck.quad(P(s, -h, y - 0.5), P(s2, -h2, y2 - 0.5), P(s2, h2, y2 - 0.5), P(s, h, y - 0.5), [0, -1, 0], [0.7, 0.7, 0.72]);
+  }
+  for (const [gs, gc] of GLS) {   // glass floor panels, framed in steel
+    glass.quad(P(gs - 3, gc - 2, DY + 0.03), P(gs + 3, gc - 2, DY + 0.03), P(gs + 3, gc + 2, DY + 0.03), P(gs - 3, gc + 2, DY + 0.03), [0, 1, 0], [0.55, 0.8, 0.9]);
+    for (const [a, b] of [[[-3, -2], [3, -2]], [[3, -2], [3, 2]], [[3, 2], [-3, 2]], [[-3, 2], [-3, -2]]]) tube(steel, P(gs + a[0], gc + a[1], DY + 0.05), P(gs + b[0], gc + b[1], DY + 0.05), 0.06, WHITE);
+  }
+  // seating planters down the middle, and the two food kiosks
+  const box = (G, s, c, hl, hw, y0, y1, col) => {
+    const q = (a, b, y) => P(s + a, c + b, y);
+    G.quad(q(-hl, -hw, y1), q(hl, -hw, y1), q(hl, hw, y1), q(-hl, hw, y1), [0, 1, 0], col);
+    for (const [a0, b0, a1, b1, n] of [[-hl, -hw, hl, -hw, [-vx, 0, -vz]], [hl, hw, -hl, hw, [vx, 0, vz]], [hl, -hw, hl, hw, [ux, 0, uz]], [-hl, hw, -hl, -hw, [-ux, 0, -uz]]])
+      G.quad(q(a0, b0, y0), q(a1, b1, y0), q(a1, b1, y1), q(a0, b0, y1), n, col);
+  };
+  const plant = [];
+  for (let k = 0; k < 14; k++) {
+    const s = mid + (k - 6.5) * 11.5, c = (k % 2 ? 1 : -1) * 0.9; if (GLS.some(([gs]) => Math.abs(gs - s) < 4.5)) continue;
+    plant.push([s, c]);
+    box(conc, s, c, 1.4, 0.65, DY, DY + 0.55, [0.85, 0.83, 0.79]);
+    box(green, s, c, 1.2, 0.48, DY + 0.55, DY + 0.95, [0.24, 0.45, 0.2]);
+  }
+  const KIOSK = [[mid - 60, -HW(mid - 60) + 1.6], [mid + 60, HW(mid + 60) - 1.6]];
+  for (const [s, c] of KIOSK) {
+    box(conc, s, c, 1.6, 1.1, DY, DY + 2.5, [0.96, 0.93, 0.86]);
+    box(fab, s, c, 1.9, 1.4, DY + 2.5, DY + 2.75, KC[(Math.round(s) & 7)]);
+  }
+  // concrete: abutments under each end of the truss, two river piers carrying it, the ramps' solid sides
+  for (const se of [sA, sB]) box(conc, se, 0, 2.2, HW(se) * 0.6, -0.2, DY - 0.5, [0.8, 0.79, 0.76]);
+  for (const f of [1 / 3, 2 / 3]) { const s = sA + (sB - sA) * f; box(conc, s, 0, 1.2, 2.4, wy - 0.6, DY - Hb(s) + 0.2, [0.78, 0.77, 0.74]); }
+  for (const [a, b] of [[r0, sA], [sB, r1]]) for (const sd of [-1, 1]) {
+    const y0 = deckY(a), y1 = deckY(b), h = 2.6;
+    conc.quad(P(a, sd * h, -0.1), P(b, sd * h, -0.1), P(b, sd * h, y1 - 0.05), P(a, sd * h, y0 - 0.05), [vx * sd, 0, vz * sd], [0.82, 0.81, 0.78]);
+  }
+  // the kite sculpture mid-river (selfies): a big diamond frame with a tail, turning slowly
+  const kite = new Geo(false), kc = P(mid, 0, DY), kh = 4.2;
+  const kp = [[0, kh + 3.4], [1.4, kh + 1.6], [0, kh], [-1.4, kh + 1.6]];
+  for (let k = 0; k < 4; k++) tube(kite, [kp[k][0], kp[k][1], 0], [kp[(k + 1) % 4][0], kp[(k + 1) % 4][1], 0], 0.08, [1, 0.85, 0.2]);
+  tube(kite, [0, kh, 0], [0, kh + 3.4, 0], 0.05, [1, 0.85, 0.2]); tube(kite, [-1.4, kh + 1.6, 0], [1.4, kh + 1.6, 0], 0.05, [1, 0.85, 0.2]);
+  for (let k = 0; k < 4; k++) kite.quad([kp[k][0], kp[k][1], 0.02], [kp[(k + 1) % 4][0], kp[(k + 1) % 4][1], 0.02], [0, kh + 1.6, 0.02], [0, kh + 1.6, 0.02], [0, 0, 1], KC[k * 2]);
+  tube(kite, [0, 0, 0], [0, kh, 0], 0.09, WHITE);
+  for (let k = 0; k < 5; k++) kite.quad([-0.25 + k * 0.12, kh - 0.4 - k * 0.6, 0], [0.25 + k * 0.12, kh - 0.4 - k * 0.6, 0], [0.12 + k * 0.12, kh - 0.9 - k * 0.6, 0], [-0.12 + k * 0.12, kh - 0.9 - k * 0.6, 0], [0, 0, 1], KC[(k * 3) % 8]);
+  // materials: white steel with LED strips that cycle through the kite colours after dark; fabric glowing a little,
+  // lit from below; glass
+  const STEEL = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const UA = { uAx: { value: new THREE.Vector3(ux, 0, uz) }, uA0: { value: new THREE.Vector3(A.x0, 0, A.z0) }, uLed: { value: 0 } };   // uLed: the colours' phase, kept in double precision here
+  STEEL.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, UA, { uNight: U.uNight });
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying float vAlong;\nuniform vec3 uAx; uniform vec3 uA0;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvAlong = dot( ( modelMatrix * vec4( transformed, 1.0 ) ).xyz - uA0, uAx );');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vAlong;\nuniform float uLed; uniform float uNight;')
+      .replace('vec3 totalEmissiveRadiance = emissive;', `vec3 hue = clamp( abs( mod( fract( vAlong * 0.006 - uLed ) * 6.0 + vec3( 0.0, 4.0, 2.0 ), 6.0 ) - 3.0 ) - 1.0, 0.0, 1.0 );
+        vec3 totalEmissiveRadiance = emissive + hue * 0.95 * uNight;`);
+  };
+  STEEL.customProgramCacheKey = () => 'atalsteel';
+  const FAB = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide, emissive: 0xffffff, emissiveIntensity: 0 });
+  FAB.userData.glow = 0.22; NIGHT_GLOW.push(FAB);
+  FAB.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * vColor + vColor * 0.32;'); };
+  FAB.customProgramCacheKey = () => 'atalfab';
+  FAB.emissiveIntensity = FAB.userData.glow * (tod.night || 0);
+  const GLASS = new THREE.MeshLambertMaterial({ vertexColors: true, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false });
+  const PLAIN = new THREE.MeshLambertMaterial({ vertexColors: true });
+  for (const [G, M, ord] of [[steel, STEEL, 10], [fab, FAB, 10], [deck, PLAIN, 10], [conc, PLAIN, 10], [green, PLAIN, 10], [glass, GLASS, 13]]) {
+    const m = G.mesh(M); m.renderOrder = ord; if (G === glass) m.castShadow = false; group.ground.add(m);
+    if (G === steel) m.onBeforeRender = () => { UA.uLed.value = (U.uTime.value * 0.07) % 1; };
+  }
+  const km = kite.mesh(FAB); km.position.set(kc[0], kc[1], kc[2]); group.ground.add(km);
+  km.onBeforeRender = () => { km.rotation.y = (U.uTime.value * 0.3) % (Math.PI * 2); km.updateMatrixWorld(); };   // turning slowly in the breeze
+  ATAL = { kite: km, s0: r0, s1: r1, P, HW, deckY };
+  // walking on it: deck strips down the middle (height eased along each), the railings as walls, planters and kiosks too
+  for (let i = 0; i < SS.length - 1; i++) {
+    const s = SS[i], s2 = SS[i + 1], [ax, , az] = P(s, 0, 0), [bx, , bz] = P(s2, 0, 0);
+    ATAL_COL.decks.push([ax, az, bx, bz, deckY(s), deckY(s2), Math.min(HW(s), HW(s2)) - 0.3]);
+    for (const sd of [-1, 1]) {
+      const [cx, , cz] = P(s, sd * (HW(s) - 0.1), 0), [ex, , ez] = P(s2, sd * (HW(s2) - 0.1), 0);
+      ATAL_COL.walls.push([cx, cz, ex, ez, Math.min(deckY(s), deckY(s2)) - 0.4, Math.max(deckY(s), deckY(s2)) + 1.2]);
+    }
+  }
+  const boxWalls = (s, c, hl, hw, y0, y1) => { const q = [[-hl, -hw], [hl, -hw], [hl, hw], [-hl, hw]].map(([a, b]) => P(s + a, c + b, 0)); for (let k = 0; k < 4; k++) ATAL_COL.walls.push([q[k][0], q[k][2], q[(k + 1) % 4][0], q[(k + 1) % 4][2], y0, y1]); };
+  for (const [s, c] of plant) boxWalls(s, c, 1.4, 0.65, DY, DY + 0.95);
+  for (const [s, c] of KIOSK) boxWalls(s, c, 1.6, 1.1, DY, DY + 2.5);
+  boxWalls(mid, 0, 0.3, 0.3, DY, DY + 4);
+  PLACES.push({ name: 'Atal Bridge', test: (x, z, y) => { const rx = x - A.x0, rz = z - A.z0, s = rx * ux + rz * uz, c = rx * vx + rz * vz; return s > sA && s < sB && Math.abs(c) < HW(s) + 0.5 && (y || 0) > 1; } });
 }
+
+// Riverfront Flower Park: the parkland on the west bank at Atal Bridge's west end. A winding main walk with cross paths,
+// flower beds massed in colour bands (the "flower valley"), a lotus pond with a rose garden round it, flower arches over
+// the walk, glowing flower lamps that come on after dark (the park's glow garden), and the gate on the road side
+let PARK_GEO = null;
+function buildFlowerPark() {
+  const A = META.atal; if (!A || !PARK_GEO) return;
+  const wx = A.x1, wz = A.z1, { V, I } = PARK_GEO;
+  // the park: triangles of parkland from the bridge's west end 280 m north (towards Ellis Bridge)
+  const T = [];
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t] * 2, b = I[t + 1] * 2, c = I[t + 2] * 2, p = [V[a] * 0.5, V[a + 1] * 0.5, V[b] * 0.5, V[b + 1] * 0.5, V[c] * 0.5, V[c + 1] * 0.5];
+    const cx = (p[0] + p[2] + p[4]) / 3, cz = (p[1] + p[3] + p[5]) / 3;
+    if (cx > wx - 110 && cx < wx + 40 && cz > wz - 285 && cz < wz + 35) T.push(p);
+  }
+  if (!T.length) return;
+  const inT = (x, z) => T.some((p) => { const d1 = (x - p[2]) * (p[1] - p[3]) - (p[0] - p[2]) * (z - p[3]), d2 = (x - p[4]) * (p[3] - p[5]) - (p[2] - p[4]) * (z - p[5]), d3 = (x - p[0]) * (p[5] - p[1]) - (p[4] - p[0]) * (z - p[1]); return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0)); });
+  let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9; for (const p of T) for (let k = 0; k < 6; k += 2) { x0 = Math.min(x0, p[k]); x1 = Math.max(x1, p[k]); z0 = Math.min(z0, p[k + 1]); z1 = Math.max(z1, p[k + 1]); }
+  z0 = Math.max(z0, wz - 290); z1 = Math.min(z1, wz + 35);   // big parkland triangles reach far up the bank: the park is the 290 m by the bridge
+  const inside = (x, z) => x > x0 && x < x1 && z > z0 && z < z1 && inT(x, z) && !waterAt(x, z) && !promAt(x, z);
+  // the walk's centre line: the middle of the park at each z, swinging side to side
+  const midX = new Map(); for (let z = Math.floor(z0); z <= z1; z += 2) { let a = 1e9, b = -1e9; for (let x = x0; x <= x1; x += 1.5) if (inside(x, z)) { a = Math.min(a, x); b = Math.max(b, x); } if (b > a) midX.set(z, [a, b]); }
+  const zb = Math.floor(z0), span = (z) => midX.get(zb + Math.round((z - zb) / 2) * 2) || null;
+  const walkX = (z) => { const s = span(z); if (!s) return null; const w = s[1] - s[0]; return (s[0] + s[1]) / 2 + Math.sin(z / 23) * Math.min(9, w * 0.22); };
+  const crossZ = []; for (let z = z0 + 30; z < z1 - 20; z += 46) crossZ.push(z);
+  const pondZ = (z0 + z1) / 2 + 10, pw = walkX(pondZ), pond = pw == null ? null : { x: pw + ((span(pondZ)[1] - pw) > (pw - span(pondZ)[0]) ? 15 : -15), z: pondZ, a: 11, b: 6.5 };
+  const onPath = (x, z) => {
+    const w = walkX(z); if (w != null && Math.abs(x - w) < 1.8) return true;
+    return crossZ.some((cz) => Math.abs(z - cz) < 1.3);
+  };
+  const inPond = (x, z, g = 0) => pond && ((x - pond.x) / (pond.a + g)) ** 2 + ((z - pond.z) / (pond.b + g)) ** 2 < 1;
+  const G = new Geo(false), paving = [0.78, 0.74, 0.66], lawn = [0.3, 0.5, 0.22];
+  const cbox = (x, z, ux, uz, ha, hc, y0, y1, col) => {   // Geo.box, coloured
+    const vx = -uz, vz = ux, Q = (sa, sc, y) => [x + ux * ha * sa + vx * hc * sc, y, z + uz * ha * sa + vz * hc * sc];
+    G.quad(Q(-1, -1, y0), Q(1, -1, y0), Q(1, -1, y1), Q(-1, -1, y1), [-vx, 0, -vz], col); G.quad(Q(1, 1, y0), Q(-1, 1, y0), Q(-1, 1, y1), Q(1, 1, y1), [vx, 0, vz], col);
+    G.quad(Q(1, -1, y0), Q(1, 1, y0), Q(1, 1, y1), Q(1, -1, y1), [ux, 0, uz], col); G.quad(Q(-1, 1, y0), Q(-1, -1, y0), Q(-1, -1, y1), Q(-1, 1, y1), [-ux, 0, -uz], col);
+    G.quad(Q(-1, -1, y1), Q(1, -1, y1), Q(1, 1, y1), Q(-1, 1, y1), [0, 1, 0], col);
+  };
+  // paths and lawn: a 2 m mosaic over the park, slightly above the parkland so it reads over the ground layer
+  const beds = [];
+  for (let z = z0; z < z1; z += 2) for (let x = x0; x < x1; x += 2) {
+    const cx = x + 1, cz = z + 1; if (!inside(cx, cz)) continue;
+    const path = onPath(cx, cz);
+    if (inPond(cx, cz, 1.6)) continue;
+    G.quad([x, 0.04, z], [x + 2, 0.04, z], [x + 2, 0.04, z + 2], [x, 0.04, z + 2], [0, 1, 0], path ? paving : lawn);
+    if (!path && !onPath(cx, cz + 1.2) && !onPath(cx, cz - 1.2) && !onPath(cx + 1.2, cz) && !onPath(cx - 1.2, cz)) beds.push([cx, cz]);
+  }
+  // flower beds: bands of colour running across the park (marigold, zinnia, petunia, salvia, rose...), a rose garden by the
+  // pond, lawn left open here and there
+  const FL = ['#f7b500', '#ff6f1a', '#e6194b', '#f032a5', '#9b5de5', '#ffffff', '#ffd166', '#ff4d6d', '#c77dff', '#ff9f1c'].map((h) => new THREE.Color(h));
+  const ROSE = [new THREE.Color('#d1123f'), new THREE.Color('#ff5c8a'), new THREE.Color('#ffffff')];
+  const keep = beds.filter(([x, z]) => ((Math.floor(x / 14) + Math.floor(z / 14) * 3) % 5) !== 0);   // lawn left open in 14 m patches
+  const geo = new THREE.BoxGeometry(2, 0.24, 2); geo.translate(0, 0.12, 0);   // beds tile without gaps
+  const cv = document.createElement('canvas'); cv.width = cv.height = 128; const cx2 = cv.getContext('2d');
+  // a mass of blooms: the bed's own colour (the instance colour times white), scattered dark leaf between them, random
+  let sd = 1234567; const rnd = () => ((sd = (sd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  cx2.fillStyle = '#f2f2ee'; cx2.fillRect(0, 0, 128, 128);
+  for (let k = 0; k < 520; k++) { cx2.fillStyle = `rgba(${40 + rnd() * 30 | 0},${70 + rnd() * 40 | 0},${35 + rnd() * 20 | 0},${0.55 + rnd() * 0.4})`; cx2.beginPath(); cx2.arc(rnd() * 128, rnd() * 128, 1 + rnd() * 2.6, 0, Math.PI * 2); cx2.fill(); }
+  for (let k = 0; k < 160; k++) { cx2.fillStyle = 'rgba(255,255,255,0.9)'; cx2.beginPath(); cx2.arc(rnd() * 128, rnd() * 128, 0.8 + rnd() * 1.2, 0, Math.PI * 2); cx2.fill(); }
+  const ftex = new THREE.CanvasTexture(cv); ftex.colorSpace = THREE.SRGBColorSpace; ftex.wrapS = ftex.wrapT = THREE.RepeatWrapping; ftex.anisotropy = 4;
+  const im = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ map: ftex }), keep.length);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+  keep.forEach(([x, z], i) => {
+    const nearPond = pond && inPond(x, z, 9), band = Math.floor((x * 0.55 + z) / 8);
+    const col = nearPond ? ROSE[(Math.floor(x / 2) + Math.floor(z / 2)) % 3] : FL[((band % FL.length) + FL.length) % FL.length];
+    sc.set(1, nearPond ? 1.1 : 0.85 + (((band % 3) + 3) % 3) * 0.12, 1); m4.compose(new THREE.Vector3(x, 0.02, z), q, sc); im.setMatrixAt(i, m4); im.setColorAt(i, col);   // one height a band
+  });
+  im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im);
+  // the lotus pond: a stone rim, water, lotus leaves with pink flowers
+  if (pond) {
+    const N = 40, rim = [0.8, 0.77, 0.7];
+    for (let k = 0; k < N; k++) {
+      const a0 = (k / N) * Math.PI * 2, a1 = ((k + 1) / N) * Math.PI * 2, e = (a, g) => [pond.x + Math.cos(a) * (pond.a + g), pond.z + Math.sin(a) * (pond.b + g)];
+      const [p0, p1, p2, p3] = [e(a0, 0), e(a1, 0), e(a1, 1.2), e(a0, 1.2)];
+      G.quad([p0[0], 0.45, p0[1]], [p1[0], 0.45, p1[1]], [p2[0], 0.45, p2[1]], [p3[0], 0.45, p3[1]], [0, 1, 0], rim);
+      G.quad([p3[0], 0.02, p3[1]], [p2[0], 0.02, p2[1]], [p2[0], 0.45, p2[1]], [p3[0], 0.45, p3[1]], [Math.cos((a0 + a1) / 2), 0, Math.sin((a0 + a1) / 2)], rim);
+      G.quad([p0[0], 0.1, p0[1]], [p1[0], 0.1, p1[1]], [p1[0], 0.45, p1[1]], [p0[0], 0.45, p0[1]], [-Math.cos((a0 + a1) / 2), 0, -Math.sin((a0 + a1) / 2)], rim);
+      const c0 = [pond.x, 0.12, pond.z];
+      G.quad(c0, [p0[0], 0.12, p0[1]], [p1[0], 0.12, p1[1]], c0, [0, 1, 0], [0.16, 0.36, 0.42]);
+      FP_COL.push([p0[0], p0[1], p1[0], p1[1], 0, 0.9]);
+    }
+    for (let k = 0; k < 18; k++) {
+      const a = k * 2.4, r = 0.25 + ((k * 0.37) % 0.7), x = pond.x + Math.cos(a) * pond.a * r, z = pond.z + Math.sin(a) * pond.b * r, s = 0.55 + (k % 3) * 0.15;
+      G.quad([x - s, 0.14, z - s], [x + s, 0.14, z - s], [x + s, 0.14, z + s], [x - s, 0.14, z + s], [0, 1, 0], [0.22, 0.5, 0.2]);
+      if (k % 3 === 0) cbox(x, z, 1, 0, 0.14, 0.14, 0.14, 0.4, [0.95, 0.45, 0.65]);   // a lotus flower
+    }
+  }
+  // flower arches over the walk, and the gate on the road side with the park's name
+  const glow = new Geo(false), steel = [0.25, 0.27, 0.3];
+  const tube = (a, b, r, col, Gg = G) => { const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], l = Math.hypot(...d) || 1, n = Math.abs(d[1] / l) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const p = [d[1] * n[2] - d[2] * n[1], d[2] * n[0] - d[0] * n[2], d[0] * n[1] - d[1] * n[0]], pl = Math.hypot(...p), u = p.map((v) => v / pl * r), w = [(d[1] * u[2] - d[2] * u[1]) / l, (d[2] * u[0] - d[0] * u[2]) / l, (d[0] * u[1] - d[1] * u[0]) / l];
+    for (let k = 0; k < 4; k++) { const s0 = [[1, 0], [0, 1], [-1, 0], [0, -1]][k], s1 = [[1, 0], [0, 1], [-1, 0], [0, -1]][(k + 1) % 4], o = (pt, s) => [pt[0] + u[0] * s[0] + w[0] * s[1], pt[1] + u[1] * s[0] + w[1] * s[1], pt[2] + u[2] * s[0] + w[2] * s[1]];
+      Gg.quad(o(a, s0), o(b, s0), o(b, s1), o(a, s1), [u[0] * (s0[0] + s1[0]) + w[0] * (s0[1] + s1[1]), u[1] * (s0[0] + s1[0]) + w[1] * (s0[1] + s1[1]), u[2] * (s0[0] + s1[0]) + w[2] * (s0[1] + s1[1])], col); } };
+  const bloom = (x, y, z, r, col, Gg = glow) => { const k = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+    for (const [a, b, c] of [[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4], [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]]) { const P3 = (i) => [x + k[i][0] * r, y + k[i][1] * r, z + k[i][2] * r];
+      const n = [(k[a][0] + k[b][0] + k[c][0]), (k[a][1] + k[b][1] + k[c][1]), (k[a][2] + k[b][2] + k[c][2])]; Gg.quad(P3(a), P3(b), P3(c), P3(c), n, col); } };
+  for (const az of [z0 + 52, (z0 + z1) / 2 - 40, z1 - 55]) {
+    const w = walkX(az); if (w == null) continue;
+    for (let k = 0; k <= 12; k++) {
+      const a = (k / 12) * Math.PI, x = w + Math.cos(a) * 2.4, y = Math.sin(a) * 3.4;
+      if (k < 12) { const a2 = ((k + 1) / 12) * Math.PI; tube([x, y, az], [w + Math.cos(a2) * 2.4, Math.sin(a2) * 3.4, az], 0.06, steel); }
+      bloom(x, y, az, 0.28, FL[(k + Math.round(az)) % FL.length].toArray());
+    }
+  }
+  // glowing flower lamps along the walk: a stem and a flower head that lights up after dark
+  for (let z = z0 + 8; z < z1 - 6; z += 8) {
+    const w = walkX(z); if (w == null) continue;
+    for (const sd of [-1, 1]) { const x = w + sd * 2.4; if (!inside(x, z)) continue; tube([x, 0, z], [x, 1.5, z], 0.04, [0.2, 0.45, 0.2]); bloom(x, 1.72, z, 0.34, FL[(Math.round(z / 8) + (sd > 0 ? 3 : 0)) % FL.length].toArray()); }
+  }
+  // the walk's edges lit with a warm strip, end to end
+  for (let z = z0 + 2; z < z1 - 2; z += 2) {
+    const w0 = walkX(z), w1 = walkX(z + 2); if (w0 == null || w1 == null || !inside(w0, z) || !inside(w1, z + 2)) continue;
+    for (const sd of [-1, 1]) {
+      const a = w0 + sd * 1.85, b = w1 + sd * 1.85;
+      glow.quad([a - 0.11, 0.08, z], [b - 0.11, 0.08, z + 2], [b + 0.11, 0.08, z + 2], [a + 0.11, 0.08, z], [0, 1, 0], [1, 0.72, 0.38]);
+    }
+  }
+  // a big lotus in the middle of the pond: two rings of pink petals round a golden heart
+  if (pond) for (const [n, r, tilt, h, col] of [[8, 1.5, 0.55, 0.55, [1, 0.45, 0.7]], [8, 0.9, 0.95, 0.75, [1, 0.62, 0.82]]]) for (let k = 0; k < n; k++) {
+    const a = (k + (r < 1 ? 0.5 : 0)) / n * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a), px = -sa, pz = ca, w = r * 0.32;
+    const base = [pond.x + ca * 0.25, 0.2, pond.z + sa * 0.25], tip = [pond.x + ca * r, 0.2 + h + Math.sin(tilt) * 0.2, pond.z + sa * r];
+    const midp = [pond.x + ca * r * 0.55, 0.2 + h * 0.5, pond.z + sa * r * 0.55];
+    glow.quad(base, [midp[0] + px * w, midp[1], midp[2] + pz * w], tip, [midp[0] - px * w, midp[1], midp[2] - pz * w], [ca * 0.4, 0.9, sa * 0.4], col);
+  }
+  if (pond) bloom(pond.x, 0.45, pond.z, 0.35, [1, 0.8, 0.25]);
+  // the gate: two pillars and a lintel on the road side, the name in Gujarati and English
+  const gz = (z0 + z1) / 2 - 70, gs = span(gz);
+  let gate = null;
+  if (gs) {
+    const gx = gs[0] + 1.5;
+    for (const sd of [-1, 1]) cbox(gx, gz + sd * 3.2, 1, 0, 0.45, 0.45, 0, 4.2, [0.86, 0.8, 0.68]);
+    cbox(gx, gz, 0, 1, 3.8, 0.4, 3.5, 4.4, [0.86, 0.8, 0.68]);
+    for (const sd of [-1, 1]) FP_COL.push([gx - 0.45, gz + sd * 3.2 - 0.45, gx + 0.45, gz + sd * 3.2 - 0.45, 0, 4], [gx - 0.45, gz + sd * 3.2 + 0.45, gx + 0.45, gz + sd * 3.2 + 0.45, 0, 4]);
+    const c = document.createElement('canvas'); c.width = 1024; c.height = 160; const g2 = c.getContext('2d');
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+    const draw = () => {
+      g2.fillStyle = '#1f6b3a'; g2.fillRect(0, 0, 1024, 160); g2.fillStyle = '#ffd166'; g2.textAlign = 'center';
+      g2.font = '800 62px "Noto Sans Gujarati", sans-serif'; g2.fillText('રિવરફ્રન્ટ ફ્લાવર પાર્ક', 512, 70);
+      g2.font = '700 44px "Barlow Condensed", Arial, sans-serif'; g2.fillStyle = '#ffffff'; g2.fillText('RIVERFRONT FLOWER PARK', 512, 134);
+      t.needsUpdate = true;
+    };
+    draw(); document.fonts.load('800 62px "Noto Sans Gujarati"').then(draw).catch(() => {});
+    for (const sd of [-1, 1]) {
+      const pl = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.12), new THREE.MeshBasicMaterial({ map: t, toneMapped: false }));
+      pl.position.set(gx + sd * 0.42, 3.95, gz); pl.rotation.y = sd < 0 ? -Math.PI / 2 : Math.PI / 2; pl.renderOrder = 10; group.ground.add(pl);
+    }
+    gate = [gx, gz];
+  }
+  const GM = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const m = G.mesh(GM); m.renderOrder = 10; group.ground.add(m);
+  const LM = new THREE.MeshLambertMaterial({ vertexColors: true, emissive: 0xffffff, emissiveIntensity: 0, side: THREE.DoubleSide });
+  LM.userData.glow = 1.7; NIGHT_GLOW.push(LM);
+  LM.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * vColor;'); };
+  LM.customProgramCacheKey = () => 'parkglow';
+  LM.emissiveIntensity = LM.userData.glow * (tod.night || 0);
+  const lm = glow.mesh(LM); lm.renderOrder = 10; lm.castShadow = false; group.ground.add(lm);
+  PLACES.push({ name: 'Riverfront Flower Park', test: (x, z, y) => Math.abs(y || 0) < 1 && x > x0 && x < x1 && z > z0 && z < z1 && inT(x, z) && !promAt(x, z) });
+  FLOWER = { x0, x1, z0, z1, pond, gate, walkX };
+}
+let FLOWER = null;
+const FP_COL = [];   // walls: the pond's rim, the gate's pillars
 
 // roads
 let ROADS; // decoded road data for lookup
@@ -2664,6 +2961,7 @@ function updateLabels() {
   for (let i = used; i < LBL.road.length; i++) LBL.road[i].style.display = 'none';
 }
 const EXTRA_AREAS = [];
+const PLACES = [];   // named places you walk into (Atal Bridge, the Flower Park): { name, test(x, z, y) }, before the wards
 
 // ---------------------------------------------------------------- radar + big map
 const radar = $('radar'), rctx = radar.getContext('2d');
@@ -2679,11 +2977,19 @@ function drawRadar(Q) {
   rctx.beginPath();
   Q.forEach(([x, z], i) => { const [a, b] = mapXY(x, z); i ? rctx.lineTo(a - px, b - pz) : rctx.moveTo(a - px, b - pz); });
   rctx.closePath(); rctx.fillStyle = 'rgba(255,255,255,0.08)'; rctx.fill(); rctx.lineWidth = 1.6 / s; rctx.strokeStyle = 'rgba(255,255,255,0.75)'; rctx.stroke();
-  if (CFG.zone && WALK.on) {   // the playable zone: everything outside it dimmed, its edge in orange
-    const Z = CFG.zone, [zx, zz] = mapXY(Z.x, Z.z), zr = Math.abs(mapXY(Z.x + Z.r, Z.z)[0] - zx);
-    rctx.beginPath(); rctx.rect(-px - 2000, -pz - 2000, 4000 + mapCanvas.width, 4000 + mapCanvas.height); rctx.arc(zx - px, zz - pz, zr, 0, Math.PI * 2, true);
-    rctx.fillStyle = 'rgba(10,12,16,0.62)'; rctx.fill('evenodd');
-    rctx.beginPath(); rctx.arc(zx - px, zz - pz, zr, 0, Math.PI * 2); rctx.lineWidth = 2.4 / s; rctx.strokeStyle = '#ff9d2e'; rctx.stroke();
+  if (ZONE && WALK.on) {   // the playable zone: everything outside it dimmed, the edge of its parts' union in orange
+    // drawn on a layer of its own: dim everywhere, the parts cut out of it; an orange band = the parts widened, less the parts
+    const L = drawRadar.zl || (drawRadar.zl = [document.createElement('canvas'), document.createElement('canvas')]);
+    const caps = (c, grow) => { for (const Q of ZONE) {
+      const [ax, az] = mapXY(Q.ax, Q.az), [bx, bz] = mapXY(Q.bx, Q.bz), r = Math.abs(mapXY(Q.ax + Q.r, Q.az)[0] - ax) + grow;
+      c.beginPath(); c.arc(ax - px, az - pz, r, 0, Math.PI * 2); c.fill();
+      if (ax !== bx || az !== bz) { c.beginPath(); c.arc(bx - px, bz - pz, r, 0, Math.PI * 2); c.fill(); c.lineWidth = 2 * r; c.lineCap = 'butt'; c.beginPath(); c.moveTo(ax - px, az - pz); c.lineTo(bx - px, bz - pz); c.stroke(); }
+    } };
+    const [A, B] = L.map((cv) => { cv.width = R; cv.height = R; const c = cv.getContext('2d'); c.setTransform(rctx.getTransform()); return c; });
+    A.fillStyle = 'rgba(10,12,16,0.62)'; A.fillRect(-px - 4000, -pz - 4000, 8000 + mapCanvas.width, 8000 + mapCanvas.height);
+    A.globalCompositeOperation = 'destination-out'; A.fillStyle = A.strokeStyle = '#000'; caps(A, 0); A.globalCompositeOperation = 'source-over';
+    B.fillStyle = B.strokeStyle = '#ff9d2e'; caps(B, 2.4 / s); B.globalCompositeOperation = 'destination-out'; B.fillStyle = B.strokeStyle = '#000'; caps(B, 0);
+    rctx.save(); rctx.setTransform(1, 0, 0, 1, 0, 0); rctx.drawImage(L[0], 0, 0); rctx.drawImage(L[1], 0, 0); rctx.restore();
   }
   rctx.restore();
   // player marker
@@ -2742,7 +3048,8 @@ function pip(rings, x, z) {
 let lastWhere = '';
 function updateWhere(x, z) {
   let d = null;
-  for (const w of META.wards) { if (pip(w.rings, x, z)) { d = w.name; break; } }
+  for (const p of PLACES) if (p.test(x, z, WALK.on ? WALK.P.y : 0)) { d = p.name; break; }
+  if (!d) for (const w of META.wards) { if (pip(w.rings, x, z)) { d = w.name; break; } }
   if (!d) { let best = 1e9; for (const a of EXTRA_AREAS) { const dd = Math.hypot(a.x - x, a.z - z); if (dd < best && dd < 3500) { best = dd; d = a.name; } } }
   if (!d) d = 'Ahmedabad Outskirts';
   const ri = ROADS ? nearestRoad(x, z) : -1;
@@ -3477,10 +3784,17 @@ async function loveSign(x, z, fx, fz, ux, uz) {
     const geo = mergeGeometries(parts); const W = cx - 0.14;
     geo.translate(-W / 2, 0, -D / 2);
     const base = new THREE.BoxGeometry(W + 1.2, 0.45, 1.3).toNonIndexed(); base.translate(0, 0.225, 0); base.deleteAttribute('uv'); paint(base, '#d8d2c6');
-    const all = mergeGeometries([geo, base]);
-    const m = new THREE.Mesh(all, new THREE.MeshLambertMaterial({ vertexColors: true }));
-    m.position.set(x, 0, z); m.rotation.y = Math.atan2(fx, fz);   // letters read from the city side
-    m.castShadow = true; m.receiveShadow = true; m.renderOrder = 10; group.ground.add(m); RIVER_FINE.push(m);
+    // the letters light up after dark, each in its own colour (emissive = the vertex colour, brought up with the night)
+    const lit = new THREE.MeshLambertMaterial({ vertexColors: true, emissive: 0xffffff, emissiveIntensity: 0 });
+    lit.userData.glow = 0.85; NIGHT_GLOW.push(lit);
+    lit.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('vec3 totalEmissiveRadiance = emissive;', 'vec3 totalEmissiveRadiance = emissive * vColor;'); };
+    lit.customProgramCacheKey = () => 'signglow';
+    for (const [g, mat] of [[geo, lit], [base, new THREE.MeshLambertMaterial({ vertexColors: true })]]) {
+      const m = new THREE.Mesh(g, mat);
+      m.position.set(x, 0, z); m.rotation.y = Math.atan2(fx, fz);   // letters read from the city side
+      m.castShadow = true; m.receiveShadow = true; m.renderOrder = 10; group.ground.add(m); RIVER_FINE.push(m);
+    }
+    lit.emissiveIntensity = lit.userData.glow * (tod.night || 0);   // in case night has already fallen
     PROP_COL.box.push([x, z, ux, uz, (W + 1.2) / 2, 0.65, 2.3]); WCOL.stale = true;
   } catch (e) { console.warn('sign', e); }
 }
@@ -6624,6 +6938,10 @@ function colBuild(x, z) {
     for (let k = 0; k < 4; k++) add(P[k][0], P[k][1], P[(k + 1) % 4][0], P[(k + 1) % 4][1], y0, y1, 3);
   };
   for (const [px, pz, ux, uz, h, , , base = 0] of META.piers || []) if (Math.abs(px - x) < R && Math.abs(pz - z) < R) box(px, pz, ux, uz, 0.8, 0.9, base, h - 2.1);
+  // Atal Bridge: its deck (and ramps) to walk on, the glass railings, planters and kiosks; the Flower Park's pond rim and gate
+  for (const [ax, az, bx, bz, h0, h1, hw] of ATAL_COL.decks) { if (!near(ax, az, bx, bz)) continue; const did = D.length / 7; D.push(ax, az, bx, bz, h0, h1, hw); grid(dmap, did, ax, az, bx, bz, hw + 0.6); }
+  for (const [ax, az, bx, bz, y0, y1] of ATAL_COL.walls) add(ax, az, bx, bz, y0, y1, 2);
+  for (const [ax, az, bx, bz, y0, y1] of FP_COL) add(ax, az, bx, bz, y0, y1, 3);
   if (TR && TR.metro) for (const [px, pz, ux, uz, top, base] of TR.metro.piers) if (Math.abs(px - x) < R && Math.abs(pz - z) < R) box(px, pz, ux, uz, 0.95, 1.1, base, top - 2.1);
   // BRTS: the railings along the busway, and the stations: glass sides, a raised platform you reach up the end ramps
   for (const rn of BRTS_RAILS) {
@@ -6833,7 +7151,7 @@ function busPose(tr) {
   return { x: (fx + bx) / 2, y: (fy + by) / 2, z: (fz + bz) / 2, hx, hz, docked, k, si: docked && tr.bay[k] >= 0 ? tr.bay[k] >> 2 : -1, last: k === n - 1, left: Dp[k] - T };
 }
 function nearStation(x, z) {
-  if (!TR || CFG.zone) return null;   // a bus or train would carry you out of the playable zone
+  if (!TR || ZONE) return null;   // a bus or train would carry you out of the playable zone
   for (const s of TR.metro.stations) {
     if (s.ug) { for (const [ex, ez] of s.ent || []) if (Math.hypot(x - ex, z - ez) < 14) return { kind: 'metro', s }; continue; }
     const rx = x - s.x, rz = z - s.z, a = rx * s.ux + rz * s.uz, b = -rx * s.uz + rz * s.ux;
@@ -7258,13 +7576,14 @@ function stepWalk(dt) {
   whereDirty = true;
 }
 const lerpAng = (a, b, t) => { let d = wmod(b - a + Math.PI, Math.PI * 2) - Math.PI; return a + d * t; };
-// ---- the playable zone (CFG.zone): a soft wall at its edge, and the city beyond it fades into haze
+// ---- the playable zone (CFG.zone, ZONE): a soft wall at its edge, and the city beyond it fades into haze
 let zoneMsgT = -1e9;
 function zoneClamp() {
-  const Z = CFG.zone; if (!Z) return;
-  const P = WALK.P, dx = P.x - Z.x, dz = P.z - Z.z, d = Math.hypot(dx, dz);
-  if (d <= Z.r) return;
-  P.x = Z.x + dx / d * Z.r; P.z = Z.z + dz / d * Z.r;
+  if (!ZONE) return;
+  const P = WALK.P, [d, qx, qz, Q] = zoneDist(P.x, P.z);
+  if (d <= 0) return;   // back onto the edge of the nearest part
+  const dx = P.x - qx, dz = P.z - qz, l = Math.hypot(dx, dz) || 1;
+  P.x = qx + dx / l * Q.r; P.z = qz + dz / l * Q.r;
   if (WALK.mode !== 'walk') P.v *= 0.5;
   if (performance.now() - zoneMsgT > 6000) { zoneMsgT = performance.now(); hudPop('More of Amdavad coming soon', 'area'); }
 }
@@ -7346,7 +7665,7 @@ function moveSolid(P, dx, dz, r) {
   for (let k = 0; k < n; k++) {
     const ox = P.x, oz = P.z; P.x += dx / n; P.z += dz / n;
     colPush(P, r);
-    if (waterAt(P.x, P.z)) { P.x = ox; P.z = oz; break; }
+    if (waterAt(P.x, P.z) && groundAt(P.x, P.z, P.y || 0) < 0.3) { P.x = ox; P.z = oz; break; }   // water, unless a deck is under you
     carPush(P, r); pedPush(P, r); colPush(P, r);   // the last colPush: never shoved into a wall by a bus or a person
   }
 }
@@ -7683,7 +8002,7 @@ async function boot() {
   buildRoads();
   buildAirport(); if (CFG.buildings) { buildPolExtras(); buildDarwajas(); } buildLandmarks3D();
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
-  buildRiverfront(); buildRiverProps(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); if (CFG.buildings) buildSites(); initPlay(); if (CFG.industry) buildIndustry(); buildWeather();
+  buildRiverfront(); buildRiverProps(); buildFlowerPark(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); if (CFG.buildings) buildSites(); initPlay(); if (CFG.industry) buildIndustry(); buildWeather();
   await buildFarBuildings(0.62, 0.36);
   initLabels(); initSearch();
   if (!CFG.buildings) $('stats').innerHTML = `${META.counts.roads.toLocaleString()} road segments · ${TR && TR.brts ? TR.brts.stations.length : 0} BRTS stops<br>${META.stations ? META.stations.length : 0} rail stations` + (CFG.trees ? ` · ${(META.counts.trees / 1000).toFixed(0)}k trees` : '');
@@ -7731,7 +8050,7 @@ function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn
   } });
   return out;
 }
-window.AMD = { busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { get FLOWER() { return FLOWER; }, get ATAL() { return ATAL; }, busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
