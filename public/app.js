@@ -7096,7 +7096,9 @@ function sayPlace(C, p, dt) {
   _sv.project(pcam);
   const vis = _sv.z < 1 && Math.abs(_sv.x) < 1.2 && Math.abs(_sv.y) < 1.2;
   S.e.style.opacity = vis ? Math.min(1, S.t / 0.35, (2.4 - S.t) / 0.15 + 0.2) : 0;
-  S.e.style.transform = `translate(${((_sv.x + 1) / 2 * innerWidth).toFixed(1)}px,${((1 - _sv.y) / 2 * innerHeight).toFixed(1)}px) translate(-50%,-100%)`;
+  // kept on screen: on a narrow (portrait) screen someone at the edge would have their words cut off
+  const hw = (S.w || (S.w = S.e.offsetWidth)) / 2 + 10, sx = clamp((_sv.x + 1) / 2 * innerWidth, hw, Math.max(hw, innerWidth - hw));
+  S.e.style.transform = `translate(${sx.toFixed(1)}px,${((1 - _sv.y) / 2 * innerHeight).toFixed(1)}px) translate(-50%,-100%)`;
 }
 function sayDrop(C) { if (C.say) { C.say.e.remove(); C.say = null; } }
 // people are solid: you can't walk through them, and walking into one at more than a stroll gets a reaction
