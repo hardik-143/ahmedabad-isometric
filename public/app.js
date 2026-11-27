@@ -3443,9 +3443,13 @@ async function riverStalls(x, z, nx, nz) {
       const [gu, en, bg] = STALLS[k], p = put('Kiosk', s, 10.5, toRiver, { Body: bg, AwningA: bg, sign: stallSign(gu, en, bg) });
       if (p) PROP_COL.box.push([p[0] + toRiver[0] * 0.06, p[1] + toRiver[1] * 0.06, ax, az, 1.55, 0.6, 3.3]);
     });
-    [[-11.2, 5.8, '#c0392b'], [19.7, 5.8, '#2a6db5'], [13.2, 6.2, '#f4f1ea']].forEach(([s, d, pc], i) => {
-      const p = put('Table', s, d, [ax, az], { Plastic: pc }); if (p) PROP_COL.circ.push([p[0], p[1], 0.95, 0.9]);
-      const q = put('Parasol', s + (i % 2 ? 0.25 : -0.25), d, [ax, az], { Canopy: i === 1 ? '#2a6db5' : '#e58a1f' });
+    // tables and chairs out in front of the stalls, a little askew as people leave them; an umbrella over every other one
+    const PLASTIC = ['#c0392b', '#f4f1ea', '#2a6db5', '#2f8a4c', '#e5b62a'], CANOPY = ['#e58a1f', '#2a6db5', '#c0392b', '#f4f1ea'];
+    [[-15.4, 6.4], [-11.2, 5.8], [-7.4, 6.6], [-13.4, 3.6], [-9.3, 3.4], [-17.2, 3.8],
+     [13.2, 6.2], [16.8, 6.5], [19.7, 5.8], [23.4, 6.6], [26.6, 5.2], [15.2, 3.5], [21.4, 3.4], [25.0, 2.6]].forEach(([s, d], i) => {
+      const a = hash1(i * 977 + 13) * Math.PI;
+      const p = put('Table', s, d, [Math.cos(a), Math.sin(a)], { Plastic: PLASTIC[i % PLASTIC.length] }); if (p) PROP_COL.circ.push([p[0], p[1], 0.95, 0.9]);
+      if (i % 2 === 0) put('Parasol', s + 0.2, d, [Math.cos(a), Math.sin(a)], { Canopy: CANOPY[(i / 2) % CANOPY.length] });
     });
     WCOL.stale = true;
   } catch (e) { console.warn('stalls', e); }
