@@ -1,6 +1,8 @@
 """A Mixamo character (FBX, T-pose, with skin) -> a light GLB for the app (run headless with the bpy module):
 
-    python tools/mixamo_char.py in.fbx out.glb [texture_px=1024] [keep=0.35]   (keep: decimate to that share of the triangles)
+    python tools/mixamo_char.py in.fbx out.glb [texture_px=1024] [keep=0.35] [garb=m|f] [lod=0.03]
+      keep: decimate to that share of the triangles; garb: add Indian clothes (tools/mixamo_garb.py);
+      lod: also a far copy of every part at that share (the crowd: 512 0.2 garb=f lod=0.03)
 
 - bones renamed from Mixamo's numbered prefix (mixamorig4:Hips) to mixamorig:Hips, so every Mixamo clip drives every
   character by bone name
@@ -50,9 +52,25 @@ if len(meshes) == 1:
         if len(objs) > 1: bpy.ops.object.join()
         objs[0].name = objs[0].data.name = f'{name}_{g}'
         print('part', objs[0].name, len(objs[0].data.polygons), 'faces')
+# garb=m / garb=f: add a kurta / kameez skirt, and for women a saree, pallu, dupatta and bun (tools/mixamo_garb.py)
+garb = next((a.split('=', 1)[1] for a in args if a.startswith('garb=')), None)
+if garb:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import mixamo_garb
+    mixamo_garb.build(garb)
+# lod=0.03: a second, far lighter copy of every part (<name>_L1) on the same skeleton, which the app shows from ~20 m
+# (hair keeps a little more, eyelashes are left out; the clothes made above serve both)
+lod = float(next((a.split('=', 1)[1] for a in args if a.startswith('lod=')), '0'))
+if lod > 0:
+    for o in [o for o in bpy.data.objects if o.type == 'MESH' and '_G' not in o.name and 'Eyelas' not in o.name]:
+        c = o.copy(); c.data = o.data.copy(); bpy.context.collection.objects.link(c); c.name = c.data.name = o.name + '_L1'
+        d = c.modifiers.new('decimate', 'DECIMATE'); d.ratio = max(lod, 0.12) if o.name.endswith('_Hair') else lod
+        bpy.ops.object.select_all(action='DESELECT'); bpy.context.view_layer.objects.active = c; c.select_set(True)
+        bpy.ops.object.modifier_move_to_index(modifier='decimate', index=0); bpy.ops.object.modifier_apply(modifier='decimate')
+        print(c.name, 'far copy', len(c.data.polygons), 'faces')
 if keep < 1:
     for o in bpy.data.objects:
-        if o.type == 'MESH':
+        if o.type == 'MESH' and '_G' not in o.name and not o.name.endswith('_L1'):   # the clothes made above are light already
             d = o.modifiers.new('decimate', 'DECIMATE'); d.ratio = keep
             bpy.context.view_layer.objects.active = o
             bpy.ops.object.modifier_move_to_index(modifier='decimate', index=0)   # before the armature modifier
