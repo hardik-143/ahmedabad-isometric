@@ -62,9 +62,13 @@ if (ZONE) {
 	#endif
 	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );`);
 }
-const TIPS = [
+// the live game starts on foot (CFG.start): no city-map controls there (search, zoom, rotate, time of day), so it gets its own tips
+const TIPS = CFG.start ? [
+  'Tap <b>Ride</b> (or press <b>C</b>) for a cycle, a scooter or your own rickshaw.',
+  'Open the <b>Map</b> (<b>M</b>) to see the whole city and go straight to <b>I ❤ Amdavad</b> or <b>Manek Chowk</b>.',
+  'Bump into someone and they will tell you off. Amdavadi style.',
+] : [
   CFG.buildings && 'Every building footprint and height comes from <b>VEDAS / ISRO-SAC</b> survey data — about 137,000 of them.',
-  'Press <b>Q</b> / <b>E</b> to swing the city round 90°, or <b>right-drag</b> to rotate freely.',
   CFG.times.includes('night') && 'Try <b>Night</b> — 1.3 million lit windows and sodium street-lamps along every major road.',
   'Search <b>Ashram Road</b>, <b>Kankaria</b> or <b>SG Highway</b> to fly straight there.',
   CFG.buildings && 'Zoom in on the walled city: water tanks on the rooftops, trees in the courtyards.',
