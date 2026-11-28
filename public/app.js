@@ -3750,7 +3750,7 @@ function buildRiverProps() {
   // "I love Amdavad": on the upper promenade nearest the Patang Hotel, reading towards the city
   const lm = (META.lm3d || []).find((o) => o.kind === 'patang') || { x: 0, z: 0 };
   const q = nearWall(lm.x, lm.z), sx = q.x + q.nx * 7, sz = q.z + q.nz * 7;
-  loveSign(sx, sz, q.nx, q.nz, q.ux, q.uz);
+  loveSign(sx, sz, q.nx, q.nz, q.ux, q.uz); LOVE_AT = { x: sx, z: sz, nx: q.nx, nz: q.nz };
   riverStalls(sx, sz, q.nx, q.nz);
   riverGarden(sx, sz, q.nx, q.nz, onRoad, nearWall, inst);
 }
@@ -4159,6 +4159,7 @@ async function riverStalls(x, z, nx, nz) {
     WCOL.stale = true;
   } catch (e) { console.warn('stalls', e); }
 }
+let LOVE_AT = null;   // where the I love Amdavad sign stands and the way it reads (players start in front of it)
 async function loveSign(x, z, fx, fz, ux, uz) {
   try {
     const [{ FontLoader }, { TextGeometry }] = await Promise.all([import('three/addons/loaders/FontLoader.js'), import('three/addons/geometries/TextGeometry.js')]);
@@ -8529,11 +8530,14 @@ async function boot() {
     const lm = (META.lm3d || []).find((q) => q.kind === CFG.start) || { x: sx, z: sz };
     setProgress(0.97, 'Getting dressed…');
     await loadChars().catch(() => {});
-    view.tx = lm.x; view.tz = lm.z; view.mpp = 0.06;
-    enterWalk(lm.x, lm.z);
+    // in front of the I love Amdavad sign, 13 m back on the city side, facing it (the river and the Patang tower behind it);
+    // without the sign, at the foot of the landmark facing it
+    const L = CFG.start === 'patang' && LOVE_AT, sp = L ? { x: L.x + L.nx * 13, z: L.z + L.nz * 13 } : lm;
+    view.tx = sp.x; view.tz = sp.z; view.mpp = 0.06;
+    enterWalk(sp.x, sp.z);
     const W = WALK, P = W.P;
-    P.th = Math.atan2(lm.z - P.z, lm.x - P.x);                    // facing the tower ...
-    W.yaw = Math.atan2(-Math.cos(P.th), -Math.sin(P.th)); W.pitch = 0.12; W.dist = 5.2; W.dcur = 5.2; W.tgtS = null;   // ... from behind, looking up at it
+    P.th = L ? Math.atan2(L.z - P.z, L.x - P.x) : Math.atan2(lm.z - P.z, lm.x - P.x);
+    W.yaw = Math.atan2(-Math.cos(P.th), -Math.sin(P.th)); W.pitch = L ? 0.06 : 0.12; W.dist = 5.2; W.dcur = 5.2; W.tgtS = null;   // from behind, looking at it
     setProgress(1, 'Ready');
     $('loader').classList.add('hide');
   } else {
