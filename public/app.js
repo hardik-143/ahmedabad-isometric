@@ -8487,7 +8487,7 @@ function renderAvatarPanel() {
     <div class="row"><span>Hair</span><div>${sw('hairc', CH_HAIR, true)}</div></div>
     <div class="row"><span>Scooter</span><div>${sw('scoot', ['#c0392b', '#2980b9', '#f4f1ea', '#151515', '#f1c40f'])}</div></div>
     <button class="go" id="avGo">Start exploring</button>
-    <div class="acct">${ACC.clerk ? (ACC.user ? `Signed in as <b>${ACC.user.firstName || ACC.user.username || 'you'}</b> · saved to your account` : `<a href="#" id="avSign">Sign in</a> to keep your avatar on every device`) : 'Playing as a guest · saved on this device'}</div>`;
+    <div class="acct">${ACC.clerk ? (ACC.user ? `Signed in as <b>${ACC.user.firstName || ACC.user.username || 'you'}</b> · saved to your account` : `<a href="#" id="avSign">Sign in</a> to keep your avatar on every device`) : 'Playing as a guest · saved on this device'}<br><a href="/privacy.html" target="_blank" rel="noopener">Privacy</a></div>`;
   el.querySelectorAll('button[data-k]').forEach((b) => (b.onclick = () => {
     const k = b.dataset.k; pf[k] = b.dataset.v !== undefined ? b.dataset.v : +b.dataset.i;
     if (k === 'look') pf.outfit = OUTFIT_OF_LOOK[pf.look] || 'shirt';   // the stand-in box person (models still loading) dresses alike

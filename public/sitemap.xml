@@ -7,4 +7,5 @@
     <priority>1.0</priority>
     <image:image><image:loc>https://gta-ahmedabad.thehardik.in/og.jpg</image:loc><image:title>GTA Ahmedabad</image:title></image:image>
   </url>
+  <url><loc>https://gta-ahmedabad.thehardik.in/privacy.html</loc><changefreq>yearly</changefreq><priority>0.2</priority></url>
 </urlset>
