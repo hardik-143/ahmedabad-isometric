@@ -27,9 +27,9 @@ const CFG = {
   vehicles: [],              // road traffic kept: any of hatch, sedan, suv, auto, scooter, bike, tempo, truck (buses and metro always run)
   start: 'patang',           // open straight on foot at the foot of this landmark, with no map view to go back to (null: the map)
   ride: true,                // C: your own cycle / scooter / rickshaw (F also gets on traffic autos and scooters, when there is traffic)
-  // on foot, the playable area, in parts (circles, or capsules from x,z to x1,z1): Patang Hotel, I love Amdavad and Nehru
-  // Bridge; the west riverfront south past Ellis Bridge; Atal Bridge and the Flower Park. Haze and a soft wall at its edge (null: the whole city)
-  zone: [{ x: -110, z: 930, r: 420 }, { x: -165, z: 1300, x1: -140, z1: 1780, r: 110 }, { x: 60, z: 2000, r: 330 }],
+  // on foot, the playable area, in parts (circles, or capsules from x,z to x1,z1), with haze and a soft wall at its edge;
+  // null: the whole city, with the map (M) to jump anywhere and a soft wall at the edge of the city data
+  zone: null,
 };
 // the zone's parts as capsules a-b with a radius, and how far a point is outside them (negative inside), with the
 // nearest point on the nearest part's spine
@@ -129,13 +129,18 @@ function b64decode(src) {
 }
 
 // ---------------------------------------------------------------- renderer
+// the game's viewport: on a phone held upright the page is turned a quarter turn (index.html), so width and height swap
+const VW = () => (window.ROT && ROT.on ? window.innerHeight : window.innerWidth), VH = () => (window.ROT && ROT.on ? window.innerWidth : window.innerHeight);
+// phones and tablets: a lighter profile (smaller shadow map, shorter view, fewer people, no bloom) and a render scale that
+// follows the frame rate. ?hq forces the full profile, ?lq the light one.
+const LITE = /[?&]lq\b/.test(location.search) || (!/[?&]hq\b/.test(location.search) && (matchMedia('(pointer: coarse)').matches || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)));
 const canvas = $('gl');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', stencil: false });
-let basePR = Math.min(window.devicePixelRatio || 1, 1.6);
+let basePR = Math.min(window.devicePixelRatio || 1, LITE ? 1.3 : 1.6);
 renderer.setPixelRatio(basePR);
-renderer.setSize(innerWidth, innerHeight, false);
+renderer.setSize(VW(), VH(), false);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = LITE ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
@@ -153,19 +158,21 @@ const hemi = new THREE.HemisphereLight(0xcfe3ff, 0xb59a74, 1.0);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 2.6);
 sun.castShadow = true;
-const SHADOW_SIZE = Math.min(4096, renderer.capabilities.maxTextureSize);
+const SHADOW_SIZE = Math.min(LITE ? 1536 : 4096, renderer.capabilities.maxTextureSize);
 sun.shadow.mapSize.set(SHADOW_SIZE, SHADOW_SIZE);
 sun.shadow.bias = -0.00025;
 scene.add(sun); scene.add(sun.target);
 
 const composer = new EffectComposer(renderer);
 const RENDERPASS = new RenderPass(scene, cam); composer.addPass(RENDERPASS);
-const pcam = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.25, 1500);   // walk mode
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.85, 0.5, 0.78);
+// walk mode. Its far plane sits just past where the fog is complete, so whatever lies beyond is culled, not drawn unseen
+const WALK_FOG = LITE ? [100, 760] : [170, 1350];
+const pcam = new THREE.PerspectiveCamera(55, VW() / VH(), 0.25, WALK_FOG[1] + 40);
+const bloom = new UnrealBloomPass(new THREE.Vector2(VW(), VH()), 0.85, 0.5, 0.78);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 composer.setPixelRatio(basePR);
-composer.setSize(innerWidth, innerHeight);
+composer.setSize(VW(), VH());
 
 // shared uniforms
 const U = {
@@ -2300,7 +2307,7 @@ function buildRoads() {
 
 function deckUnder(sx, sy) {
   if (!DECKIDX) return -1;
-  ndc.set((sx / innerWidth) * 2 - 1, -(sy / innerHeight) * 2 + 1);
+  ndc.set((sx / VW()) * 2 - 1, -(sy / VH()) * 2 + 1);
   raycaster.setFromCamera(ndc, cam);
   const o = raycaster.ray.origin, d = raycaster.ray.direction; const t = (6.5 - o.y) / d.y;
   const x = o.x + d.x * t, z = o.z + d.z * t;
@@ -2365,7 +2372,7 @@ function chBuf(ch, k) {   // [buffer, offset] of a chunk's slice of a layer, or 
   if (STREAM) return ch.sd && ch.sd[k] ? [ch.sd[k], 0] : null;
   return BUF[k] ? [BUF[k], ch[o]] : null;
 }
-const STR = { busy: 0, want: 1600, drop: 2600, pend: [] };
+const STR = { busy: 0, want: LITE ? 900 : 1600, drop: LITE ? 1400 : 2600, pend: [] };
 const PERF = { blocks: 0, dress: 0, col: 0, cells: 0 };   // slowest of each (ms), for tuning
 async function loadChunk(ch) {
   ch.sdLoading = true; STR.busy++;
@@ -2541,10 +2548,10 @@ function initDetailGeos() {
   const paint = (g, c) => { const n = g.attributes.position.count; const a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set(c, i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g.index ? g.toNonIndexed() : g; };
   treeGeo = mergeGeometries([paint(canopy.toNonIndexed(), [1, 1, 1]), paint(trunk.toNonIndexed(), [0.55, 0.42, 0.33])]);
   // Sintex-style water tank: ribbed body, conical lid with a cap, on a small steel stand
-  const body = new THREE.CylinderGeometry(0.62, 0.6, 1.2, 16, 1, true); body.translate(0, 0.32 + 0.6, 0);
-  const lid = new THREE.CylinderGeometry(0.2, 0.63, 0.24, 16); lid.translate(0, 0.32 + 1.2 + 0.12, 0);
-  const cap = new THREE.CylinderGeometry(0.17, 0.17, 0.1, 10); cap.translate(0, 0.32 + 1.2 + 0.24 + 0.05, 0);
-  const bottom = new THREE.CylinderGeometry(0.6, 0.6, 0.04, 16); bottom.translate(0, 0.33, 0);
+  const body = new THREE.CylinderGeometry(0.62, 0.6, 1.2, LITE ? 8 : 16, 1, true); body.translate(0, 0.32 + 0.6, 0);
+  const TS = LITE ? 8 : 16, lid = new THREE.CylinderGeometry(0.2, 0.63, 0.24, TS); lid.translate(0, 0.32 + 1.2 + 0.12, 0);
+  const cap = new THREE.CylinderGeometry(0.17, 0.17, 0.1, LITE ? 6 : 10); cap.translate(0, 0.32 + 1.2 + 0.24 + 0.05, 0);
+  const bottom = new THREE.CylinderGeometry(0.6, 0.6, 0.04, TS); bottom.translate(0, 0.33, 0);
   const stand = new THREE.BoxGeometry(1.45, 0.3, 1.45); stand.translate(0, 0.15, 0);
   tankGeo = mergeGeometries([paint(body, [1, 1, 1]), paint(lid, [1.08, 1.08, 1.08]), paint(cap, [0.75, 0.75, 0.75]), paint(bottom, [1, 1, 1]), paint(stand, [0.45, 0.45, 0.47])]);
   // rooftop solar array: three tilted rows of panels on steel legs
@@ -2577,7 +2584,7 @@ function buildCells(ch) {   // a slice of ~400 cell houses a call, so a dense ch
     if (!cb) { ch.cellsDone = true; return true; }
     ch.cellsJob = { S: decodeBld(cb[0], cb[1]), i: 0 };
   }
-  const J = ch.cellsJob, n = J.S.n, k0 = ch.cells.length, i1 = Math.min(n, J.i + 400);
+  const J = ch.cellsJob, n = J.S.n, k0 = ch.cells.length, i1 = Math.min(n, J.i + (LITE ? 140 : 400));
   buildingMeshes(J.S, ch.ox, ch.oz, () => true, false, ch.cells, null, J.i, i1);
   for (let k = k0; k < ch.cells.length; k++) { ch.cells[k].visible = false; group.near.add(ch.cells[k]); }   // shown once complete
   J.i = i1; if (J.i < n) return false;
@@ -2756,7 +2763,7 @@ function disposeNear(ch) {
 // ---------------------------------------------------------------- camera / view math
 const raycaster = new THREE.Raycaster(); const ndc = new THREE.Vector2();
 function updateCamera() {
-  const w = innerWidth, h = innerHeight, m = view.mpp;
+  const w = VW(), h = VH(), m = view.mpp;
   cam.left = -w / 2 * m; cam.right = w / 2 * m; cam.top = h / 2 * m; cam.bottom = -h / 2 * m;
   const D = 60000, ce = Math.cos(EL), se = Math.sin(EL);
   cam.position.set(view.tx + D * ce * Math.sin(view.az), D * se, view.tz + D * ce * Math.cos(view.az));
@@ -2764,14 +2771,14 @@ function updateCamera() {
   cam.updateProjectionMatrix(); cam.updateMatrixWorld();
 }
 function screenToGround(sx, sy) {
-  ndc.set((sx / innerWidth) * 2 - 1, -(sy / innerHeight) * 2 + 1);
+  ndc.set((sx / VW()) * 2 - 1, -(sy / VH()) * 2 + 1);
   raycaster.setFromCamera(ndc, cam);
   const o = raycaster.ray.origin, d = raycaster.ray.direction; const t = -o.y / d.y;
   return [o.x + d.x * t, o.z + d.z * t];
 }
 const _v = new THREE.Vector3();
-function worldToScreen(x, y, z) { _v.set(x, y, z).project(cam); return [(_v.x + 1) / 2 * innerWidth, (1 - _v.y) / 2 * innerHeight, _v.z]; }
-function visibleQuad() { return [screenToGround(0, 0), screenToGround(innerWidth, 0), screenToGround(innerWidth, innerHeight), screenToGround(0, innerHeight)]; }
+function worldToScreen(x, y, z) { _v.set(x, y, z).project(cam); return [(_v.x + 1) / 2 * VW(), (1 - _v.y) / 2 * VH(), _v.z]; }
+function visibleQuad() { return [screenToGround(0, 0), screenToGround(VW(), 0), screenToGround(VW(), VH()), screenToGround(0, VH())]; }
 function quadContains(Q, x, z, pad) {
   let ar = 0; for (let i = 0; i < 4; i++) { const [ax, az] = Q[i], [bx, bz] = Q[(i + 1) % 4]; ar += ax * bz - bx * az; }
   const sg = ar > 0 ? 1 : -1;
@@ -2881,7 +2888,7 @@ function updateLOD(Q) {
   queue = [];
   let visibleNear = 0;
   for (const ch of chunks) {
-    const inView = quadContains(Q, ch.ox, ch.oz, 900);
+    const inView = quadContains(Q, ch.ox, ch.oz, LITE && WALK.on ? 520 : 900);   // a phone details fewer chunks round you
     const wantNear = near && inView;
     ch.near = wantNear;
     const showCells = wantNear && ch.cellsDone && ch.cells && ch.cells.length;
@@ -2940,7 +2947,7 @@ function initLabels() {
 function hideAll(arr) { for (const o of arr) o.el.style.display = 'none'; }
 function updateLabels() {
   if (!settings.labels) { hideAll(LBL.dist); hideAll(LBL.poi); for (const d of LBL.road) d.style.display = 'none'; return; }
-  const W = innerWidth, H = innerHeight, m = view.mpp;
+  const W = VW(), H = VH(), m = view.mpp;
   const placed = [];
   const free = (x0, y0, x1, y1) => { for (const r of placed) if (x0 < r[2] && x1 > r[0] && y0 < r[3] && y1 > r[1]) return false; placed.push([x0, y0, x1, y1]); return true; };
   // POIs
@@ -3029,28 +3036,63 @@ function drawRadar(Q) {
 }
 const bigmap = $('bigmap'), bmc = $('bigmapCanvas'), bml = $('bigmapLabels');
 function openBigMap() {
-  if (CFG.start) return;   // on foot only: no city map to jump around
-  const W = innerWidth * 0.86, H = innerHeight * 0.80;
+  if (CFG.start && !WALK.on) return;
+  const foot = WALK.on, W = VW() * (foot && VW() > VH() ? 0.62 : 0.86), H = VH() * (foot ? (VH() < 560 ? 0.8 : 0.74) : 0.80);
   const sc = Math.min(W / mapCanvas.width, H / mapCanvas.height);
   bmc.width = Math.round(mapCanvas.width * sc * (devicePixelRatio || 1)); bmc.height = Math.round(mapCanvas.height * sc * (devicePixelRatio || 1));
   bmc.style.width = mapCanvas.width * sc + 'px'; bmc.style.height = mapCanvas.height * sc + 'px';
   const c = bmc.getContext('2d'); c.imageSmoothingQuality = 'high';
   c.drawImage(mapCanvas, 0, 0, bmc.width, bmc.height);
   const k = bmc.width / mapCanvas.width;
-  // current view
-  const Q = visibleQuad(); c.beginPath(); Q.forEach(([x, z], i) => { const [a, b] = mapXY(x, z); i ? c.lineTo(a * k, b * k) : c.moveTo(a * k, b * k); }); c.closePath();
-  c.lineWidth = 2 * (devicePixelRatio || 1); c.strokeStyle = '#ff9d2e'; c.stroke(); c.fillStyle = 'rgba(255,157,46,.15)'; c.fill();
+  const dpr = devicePixelRatio || 1;
+  if (foot) {   // you: an arrow the way you face
+    const P = WALK.P, [a, b] = mapXY(P.x, P.z), r = 9 * dpr;
+    c.save(); c.translate(a * k, b * k); c.beginPath(); c.arc(0, 0, r * 1.9, 0, Math.PI * 2); c.fillStyle = 'rgba(255,157,46,.25)'; c.fill();
+    c.rotate(Math.atan2(Math.sin(P.th), Math.cos(P.th)) + Math.PI / 2); c.beginPath(); c.moveTo(0, -r * 1.3); c.lineTo(r, r); c.lineTo(0, r * 0.45); c.lineTo(-r, r); c.closePath();
+    c.fillStyle = '#ff9d2e'; c.fill(); c.lineWidth = 2 * dpr; c.strokeStyle = '#1b1206'; c.stroke(); c.restore();
+  } else {   // current view
+    const Q = visibleQuad(); c.beginPath(); Q.forEach(([x, z], i) => { const [a, b] = mapXY(x, z); i ? c.lineTo(a * k, b * k) : c.moveTo(a * k, b * k); }); c.closePath();
+    c.lineWidth = 2 * dpr; c.strokeStyle = '#ff9d2e'; c.stroke(); c.fillStyle = 'rgba(255,157,46,.15)'; c.fill();
+  }
   bml.innerHTML = '';
   for (const w of [...META.wards, ...EXTRA_AREAS]) {
     const [a, b] = mapXY(w.x, w.z); const d = document.createElement('div'); d.textContent = w.name;
     d.style.left = a * sc + 'px'; d.style.top = b * sc + 'px'; bml.appendChild(d);
   }
+  if (foot) for (const T of travelPlaces()) {   // the places you can go straight to
+    const [a, b] = mapXY(T.x, T.z), d = document.createElement('button'); d.className = 'pin'; d.innerHTML = `<i></i>${T.name}`;
+    d.style.left = a * sc + 'px'; d.style.top = b * sc + 'px'; d.onclick = (e) => { e.stopPropagation(); bigmap.classList.remove('show'); travelTo(T); };
+    bml.appendChild(d);
+  }
+  const G = $('bigmapGo'); G.innerHTML = '';
+  if (foot) for (const T of travelPlaces()) { const b = document.createElement('button'); b.innerHTML = `<b>${T.name}</b><small>${T.sub}</small>`; b.onclick = () => { bigmap.classList.remove('show'); travelTo(T); }; G.appendChild(b); }
+  bigmap.classList.toggle('foot', foot);
+  $('bigmapTitle').querySelector('small').textContent = foot ? 'Tap anywhere to go there · or pick a place · Esc to close' : 'Click anywhere to fly there · Esc to close';
   bmc._sc = sc; bigmap.classList.add('show');
+}
+// ---- going somewhere on foot: the places made to visit, or anywhere you tap on the map (the footpath of the nearest road)
+function travelPlaces() {
+  const out = [];
+  if (LOVE_AT) out.push({ id: 'love', name: 'I ❤ Amdavad', sub: 'Riverfront', x: LOVE_AT.x + LOVE_AT.nx * 13, z: LOVE_AT.z + LOVE_AT.nz * 13, face: [LOVE_AT.x, LOVE_AT.z] });
+  if (MANEK) out.push({ id: 'manek', name: 'Manek Chowk', sub: 'Night food market', x: MANEK.spawn[0], z: MANEK.spawn[1], face: MANEK.face });
+  return out;
+}
+function travelTo(T) {
+  const W = WALK; if (!W.on) return;
+  if (W.ride) W.ride = null;
+  if (W.panel) closeAvatar();
+  const [sx, sz] = T.face ? [T.x, T.z] : findSpawn(T.x, T.z), P = W.P;
+  Object.assign(P, { x: sx, z: sz, y: groundAt(sx, sz, 0), v: 0, vy: 0 });
+  if (T.face) P.th = Math.atan2(T.face[1] - sz, T.face[0] - sx);
+  W.yaw = Math.atan2(-Math.cos(P.th), -Math.sin(P.th)); W.pitch = 0.1; W.dist = W.mode === 'walk' ? 5.2 : 6; W.tgtS = null; W.mv = null;
+  W.holder.visible = true; W.spawnFix = T.face ? 0 : 6; WCOL.stale = true; dirty = true;
+  walkUI(); hudPop(T.name || 'Amdavad', 'area'); toast(T.name ? `Welcome to ${T.name}` : 'Loading the streets round you…');
 }
 bmc.addEventListener('click', (e) => {
   const r = bmc.getBoundingClientRect(); const sc = bmc._sc;
   const x = (e.clientX - r.left) / sc * MS + MB.minX, z = (e.clientY - r.top) / sc * MS + MB.minZ;
-  bigmap.classList.remove('show'); flyTo(x, z, 1.4);
+  bigmap.classList.remove('show');
+  if (WALK.on) { const b = META.bounds; travelTo({ x: clamp(x, b.minX + 300, b.maxX - 300), z: clamp(z, b.minZ + 300, b.maxZ - 300) }); } else flyTo(x, z, 1.4);
 });
 bigmap.addEventListener('click', (e) => { if (e.target === bigmap) bigmap.classList.remove('show'); });
 $('radarWrap').addEventListener('click', openBigMap);
@@ -3219,8 +3261,8 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'm') bigmap.classList.contains('show') ? bigmap.classList.remove('show') : openBigMap();
   else if (k === 'escape') bigmap.classList.remove('show');
   else if (k === '/') { e.preventDefault(); qEl.focus(); }
-  else if (k === '+' || k === '=') zoomAt(innerWidth / 2, innerHeight / 2, 0.7);
-  else if (k === '-' || k === '_') zoomAt(innerWidth / 2, innerHeight / 2, 1.4);
+  else if (k === '+' || k === '=') zoomAt(VW() / 2, VH() / 2, 0.7);
+  else if (k === '-' || k === '_') zoomAt(VW() / 2, VH() / 2, 1.4);
   else keys.add(k);
 });
 window.addEventListener('keyup', (e) => {
@@ -3239,18 +3281,18 @@ function stepKeys(dt) {
 }
 $('bRotL').onclick = () => rotateBy(Math.PI / 2);
 $('bRotR').onclick = () => rotateBy(-Math.PI / 2);
-$('bIn').onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 0.6);
-$('bOut').onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 1.65);
+$('bIn').onclick = () => zoomAt(VW() / 2, VH() / 2, 0.6);
+$('bOut').onclick = () => zoomAt(VW() / 2, VH() / 2, 1.65);
 const toggle = (id, key, after) => { $(id).onclick = () => { settings[key] = !settings[key]; $(id).classList.toggle('on', settings[key]); after && after(); dirty = true; }; };
 toggle('bShadow', 'shadows'); toggle('bTrees', 'trees'); toggle('bLabels', 'labels');
 toggle('bRetro', 'retro', () => {
   const pr = settings.retro ? 0.34 : basePR; renderer.setPixelRatio(pr); composer.setPixelRatio(pr);
-  renderer.setSize(innerWidth, innerHeight, false); composer.setSize(innerWidth, innerHeight); canvas.classList.toggle('retro', settings.retro);
+  renderer.setSize(VW(), VH(), false); composer.setSize(VW(), VH()); canvas.classList.toggle('retro', settings.retro);
 });
 document.querySelectorAll('#timebar button').forEach((b) => (b.onclick = () => setTime(b.dataset.t)));
 window.addEventListener('resize', () => {
-  pcam.aspect = innerWidth / innerHeight; pcam.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight, false); composer.setSize(innerWidth, innerHeight); bloom.setSize(innerWidth, innerHeight); dirty = true;
+  pcam.aspect = VW() / VH(); pcam.updateProjectionMatrix();
+  renderer.setSize(VW(), VH(), false); composer.setSize(VW(), VH()); bloom.setSize(VW(), VH()); dirty = true;
 });
 
 // ---------------------------------------------------------------- transit geometry helpers
@@ -3953,7 +3995,7 @@ function gardenFx(dt) {
     F.live = live;
     F.pts.geometry.attributes.position.needsUpdate = true; F.pts.geometry.attributes.la.needsUpdate = true;
   }
-  F.mat.uniforms.uScale.value = innerHeight * renderer.getPixelRatio() / 2; F.mat.uniforms.uLight.value = 1 - 0.72 * U.uNight.value;
+  F.mat.uniforms.uScale.value = VH() * renderer.getPixelRatio() / 2; F.mat.uniforms.uLight.value = 1 - 0.72 * U.uNight.value;
   if (W.mode !== 'walk' || W.ride || W.inJump) return;
   const sp = Math.abs(P.v), bed = sp > 0.3 ? gardenBedAt(P.x, P.z) : null; if (!bed) { GARDEN.step = 0; return; }
   const run = sp > 4.5, rate = run ? 70 : sp > 2.5 ? 44 : 20, hx = Math.cos(P.th), hz = Math.sin(P.th);
@@ -4159,7 +4201,9 @@ async function riverStalls(x, z, nx, nz) {
     WCOL.stale = true;
   } catch (e) { console.warn('stalls', e); }
 }
-let LOVE_AT = null;   // where the I love Amdavad sign stands and the way it reads (players start in front of it)
+// Manek Chowk: the old city's night food street (Manik Chowk road, south end looking up the street); a place you can go
+// straight to from the map
+let LOVE_AT = null, MANEK = { spawn: [1394.2, 1297], face: [1391.2, 1266] };   // where the I love Amdavad sign stands and the way it reads (players start in front of it)
 async function loveSign(x, z, fx, fz, ux, uz) {
   try {
     const [{ FontLoader }, { TextGeometry }] = await Promise.all([import('three/addons/loaders/FontLoader.js'), import('three/addons/geometries/TextGeometry.js')]);
@@ -6693,7 +6737,25 @@ function stepPlay() {
 }
 
 // ---------------------------------------------------------------- main loop
-let lastT = performance.now(), lastRender = 0, ready = false, simAcc = 0, liveLvl = 0;
+let lastT = performance.now(), lastRender = 0, ready = false, simAcc = 0, liveLvl = 0, SHF = false;
+// render scale that follows the frame rate on foot: down a step when frames run slow, back up when there is room
+const RES = { pr: 0, t: 0, n: 0, sum: 0, good: 0, slow: 0, sh: 0 };
+// on a phone only buildings, people and vehicles cast shadows: the street furniture, trees and rooftop tanks don't
+// (thousands of small instances, each drawn a second time into the shadow map)
+function liteShadows() { for (const g of [group.near, group.ground]) for (const c of g.children) if (c.isInstancedMesh && c.castShadow) c.castShadow = false; }
+function adaptRes(dt) {
+  if (settings.retro) return;
+  if (!RES.pr) RES.pr = renderer.getPixelRatio();
+  RES.sum += dt; RES.n++; RES.t += dt; if (RES.t < 1.5) return;
+  const ms = RES.sum / RES.n * 1000; RES.t = RES.sum = RES.n = 0;
+  const lo = LITE ? 0.6 : 0.8, hi = basePR; let pr = RES.pr;
+  if (ms > 26) { pr = Math.max(lo, pr - (ms > 40 ? 0.2 : 0.1)); RES.good = 0; }
+  else if (ms < 18 && ++RES.good >= 2) { pr = Math.min(hi, pr + 0.1); RES.good = 0; }
+  // still slow at the lowest scale on a phone: the sun stops casting shadows (one shader rebuild, then a lot cheaper)
+  if (LITE && pr <= lo + 1e-3 && ms > 34 && sun.castShadow && ++RES.slow >= 2) { sun.castShadow = false; console.info('shadows off for speed'); }
+  if (Math.abs(pr - RES.pr) < 0.01) return;
+  RES.pr = pr; renderer.setPixelRatio(pr); composer.setPixelRatio(pr); renderer.setSize(VW(), VH(), false); composer.setSize(VW(), VH());
+}
 function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
@@ -6711,7 +6773,7 @@ function frame(now) {
     whereDirty = true;
   }
   const streamed = stepStream();
-  const built = runQueue(dirty ? 6 : 12) || streamed;
+  const built = runQueue(LITE ? (WALK.on ? 3 : 5) : dirty ? 6 : 12) || streamed;
   if (whereDirty) {
     const [x, z] = WALK.on ? [WALK.P.x, WALK.P.z] : mouse.in && !drag ? screenToGround(mouse.x, mouse.y) : [view.tx, view.tz];
     updateWhere(x, z); whereDirty = false;
@@ -6722,7 +6784,8 @@ function frame(now) {
   const idle = now - lastInteract > 1500 && todT >= 1;
   const minGap = idle ? (liveLvl === 2 ? 33 : liveLvl === 1 ? 50 : U.uNight.value > 0.5 ? 66 : 80) : 0;
   simAcc += dt;
-  if (dirty || built) renderer.shadowMap.needsUpdate = true;
+  if (dirty || built) renderer.shadowMap.needsUpdate = !(LITE && WALK.on) || (SHF = !SHF) || built;
+  if (WALK.on) { adaptRes(dt); if (LITE && (RES.sh -= dt) <= 0) { RES.sh = 1; liteShadows(); } }
   if (dirty || built || now - lastRender > minGap) {
     const sdt = Math.min(0.12, simAcc); simAcc = 0;
     const t0s = performance.now(), tr = stepTrains(sdt), bs = stepBuses(sdt), st = stepStreet(sdt);
@@ -6730,7 +6793,7 @@ function frame(now) {
     liveLvl = st ? 2 : tr || bs || U.uFlow.value > 0.01 ? 1 : 0;
     if (WXD.anim) liveLvl = Math.max(liveLvl, WXD.anim);
     const CAM = WALK.on ? pcam : cam; RENDERPASS.camera = CAM;
-    if (U.uNight.value > 0.02) { bloom.strength = 0.85 * U.uNight.value; composer.render(); } else renderer.render(scene, CAM);
+    if (U.uNight.value > 0.02 && !LITE) { bloom.strength = 0.85 * U.uNight.value; composer.render(); } else renderer.render(scene, CAM);
     lastRender = now;
   }
   dirty = false;
@@ -7122,7 +7185,9 @@ function poseAvatar(A, mode, ph, amp, lean) {
 }
 // an Indian roadster bicycle (Hero / Atlas style): black frame, swept-back bars, rod brakes, carrier; wheels and cranks
 // are their own meshes so they turn. +x forward, y up, z to the right; BB at (-0.02, 0.30), wheels r 0.33
-const CYC = { R: 0.33, rear: -0.45, front: 0.62, bb: [-0.02, 0.30], crank: 0.15, seat: [-0.2, 0.8], grip: [0.3, 1.03, 0.27] };
+// (saddle and bars raised for the full-size Mixamo riders: the leg nearly straight at the bottom of the stroke, the
+// back tipped forward ~15 degrees and the arms reaching down to the grips with the elbows a little bent)
+const CYC = { R: 0.33, rear: -0.45, front: 0.62, bb: [-0.02, 0.30], crank: 0.15, seat: [-0.2, 0.98], grip: [0.29, 1.17, 0.27] };
 function buildCycle(col) {
   const G = new Geo(true), C = VCOL, F = col ? [col.r, col.g, col.b] : lin('#16181b'), chrome = lin('#b9bcc0'), saddle = lin('#2a1d16');
   const t = 0.045, B = (a, b, w = t, c = F) => beam(G, a, b, w, w, c, 0);
@@ -7131,8 +7196,8 @@ function buildCycle(col) {
   for (const z of [-0.06, 0.06]) { B([CYC.rear, CYC.R, z], [bb[0], bb[1], z * 0.5], 0.03); B([CYC.rear, CYC.R, z], [seatC[0], seatC[1], z * 0.4], 0.03); B([CYC.front, CYC.R, z], [headB[0], headB[1], z * 0.6], 0.035); }
   B(seatC, [CYC.seat[0], CYC.seat[1] - 0.04, 0], 0.03, chrome);                                            // seat post
   vbox(G, CYC.seat[0] - 0.13, CYC.seat[0] + 0.1, CYC.seat[1] - 0.05, CYC.seat[1], -0.09, 0.09, saddle);   // saddle
-  B(headT, [0.44, 1.05, 0], 0.035, chrome);                                                                // stem
-  for (const z of [-1, 1]) B([0.44, 1.05, 0], [CYC.grip[0], CYC.grip[1], z * CYC.grip[2]], 0.025, chrome); // swept-back bars
+  B(headT, [0.44, 1.19, 0], 0.035, chrome);                                                                // stem
+  for (const z of [-1, 1]) B([0.44, 1.19, 0], [CYC.grip[0], CYC.grip[1], z * CYC.grip[2]], 0.025, chrome); // swept-back bars
   for (const z of [-0.09, 0.09]) { B([CYC.rear - 0.22, 0.84, z], [CYC.rear + 0.2, 0.84, z], 0.016, chrome); B([CYC.rear - 0.02, 0.84, z], [CYC.rear, CYC.R, z], 0.014, chrome); }   // carrier
   for (const x of [-0.2, 0, 0.18]) B([CYC.rear + x, 0.84, -0.09], [CYC.rear + x, 0.84, 0.09], 0.014, chrome);
   B([CYC.rear + 0.2, 0.84, 0], [seatC[0], seatC[1] - 0.02, 0], 0.016, chrome);
@@ -7627,7 +7692,7 @@ function enterWalk(x, z) {
   W.holder.visible = true; rebuildAvatar();
   if (CHAR.state < 2) loadChars().then(() => { if (WALK.on && CHAR.state === 2) rebuildAvatar(); });
   W.area = null; W.walkT = false;
-  scene.fog.near = 170; scene.fog.far = 1350;
+  scene.fog.near = WALK_FOG[0]; scene.fog.far = WALK_FOG[1];
   view.mpp = 0.06; fly = null; rot = null;
   document.body.classList.add('walking'); bigmap.classList.remove('show');
   walkUI();
@@ -7638,7 +7703,7 @@ function exitWalk() {
   const W = WALK; if (!W.on || CFG.start) return;   // on foot only: there is no map to go back to
   if (document.pointerLockElement) document.exitPointerLock();
   ACC.pf.last = [Math.round(W.P.x), Math.round(W.P.z)]; saveProfile(true);
-  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); pedPoolRelease(); $('wkPop').classList.remove('show'); stepDress();
+  W.on = false; W.ride = null; W.holder.visible = false; closeAvatar(); bigmap.classList.remove('show'); pedPoolRelease(); $('wkPop').classList.remove('show'); stepDress();
   scene.fog.near = 1e7; scene.fog.far = 2e7;
   view.tx = W.P.x; view.tz = W.P.z; view.az = W.prevAz; view.mpp = 0.3;
   document.body.classList.remove('walking'); dirty = true; updateSunDir();
@@ -7939,6 +8004,10 @@ function stepWalk(dt) {
   // --- keep the collision set around the player
   const F = walkFocus();
   if (!W.ride && (WCOL.stale || Math.hypot(F.x - WCOL.cx, F.z - WCOL.cz) > 70)) { const t0 = performance.now(); colBuild(F.x, F.z); PERF.col = Math.max(PERF.col, performance.now() - t0); }
+  if (W.spawnFix > 0) {   // a map jump: once the buildings round you have loaded, make sure you are not standing inside one
+    W.spawnFix -= dt;
+    if (!STR.busy && !STR.pend.length && insideBuilding(P.x, P.z)) { const [x, z] = findSpawn(P.x, P.z); P.x = x; P.z = z; P.y = groundAt(x, z, 0); }
+  }
   stepDress();
   // --- avatar / vehicle transform, animation, the people around you
   if (!W.ride || W.ride.phase === 'wait') { W.holder.position.set(P.x, P.y, P.z); W.holder.rotation.y = -P.th; if (W.mode === 'walk') { W.holder.rotation.x = 0; W.lean = 0; } }
@@ -7955,7 +8024,7 @@ function stepWalk(dt) {
   const kT = Math.min(1, dt * 16); for (let i = 0; i < 3; i++) W.tgtS[i] += (tgt0[i] - W.tgtS[i]) * kT;
   const tgt = W.tgtS;
   // a wall right behind you: rather than pushing the camera into your head, look down from higher up
-  const dist = W.panel ? 3.0 : W.dist; let pitch = W.pitch, cp, ox, oy, oz, d;
+  const dist = W.panel ? (VH() < 560 ? 2.5 : 3.0) : W.dist; let pitch = W.pitch, cp, ox, oy, oz, d;
   for (;;) {
     cp = Math.cos(pitch); ox = Math.sin(W.yaw) * cp; oy = Math.sin(pitch); oz = Math.cos(W.yaw) * cp;
     d = W.ride ? dist : camClip(tgt[0], tgt[1], tgt[2], ox, oy, oz, dist);
@@ -7970,6 +8039,10 @@ function stepWalk(dt) {
   if (!W.ride) cy = Math.max(cy, groundAt(cx, cz, cy) + 0.4);   // never inside a stair landing or the ground of a higher level
   pcam.position.set(cx, cy, cz);
   pcam.lookAt(tgt[0], tgt[1], tgt[2]);
+  // with the avatar panel open, the picture slides left so you stand in the middle of the space the panel leaves free
+  const pw = W.panel ? $('avPanel').offsetWidth + 16 : 0;
+  if (pw && pw < VW() * 0.75) { const sh = Math.round(pw / 2); if (!pcam.view || !pcam.view.enabled || pcam.view.offsetX !== sh || pcam.view.fullWidth !== VW() || pcam.view.fullHeight !== VH()) pcam.setViewOffset(VW(), VH(), sh, 0, VW(), VH()); }
+  else if (pcam.view && pcam.view.enabled) pcam.clearViewOffset();
   view.tx = F.x; view.tz = F.z; view.mpp = 0.06; view.az = W.yaw;
   scene.fog.color.copy(scene.background);
   if (performance.now() - (W.saveT || 0) > 30000) { W.saveT = performance.now(); ACC.pf.last = [Math.round(P.x), Math.round(P.z)]; saveProfile(); }
@@ -7979,7 +8052,13 @@ const lerpAng = (a, b, t) => { let d = wmod(b - a + Math.PI, Math.PI * 2) - Math
 // ---- the playable zone (CFG.zone, ZONE): a soft wall at its edge, and the city beyond it fades into haze
 let zoneMsgT = -1e9;
 function zoneClamp() {
-  if (!ZONE) return;
+  if (!ZONE) {   // the whole city: a soft wall 250 m in from the edge of the data
+    const P = WALK.P, b = META.bounds, m = 250, x = clamp(P.x, b.minX + m, b.maxX - m), z = clamp(P.z, b.minZ + m, b.maxZ - m);
+    if (x === P.x && z === P.z) return;
+    P.x = x; P.z = z; if (WALK.mode !== 'walk') P.v *= 0.5;
+    if (performance.now() - zoneMsgT > 6000) { zoneMsgT = performance.now(); hudPop('Edge of Amdavad', 'area'); }
+    return;
+  }
   const P = WALK.P, [d, qx, qz, Q] = zoneDist(P.x, P.z);
   if (d <= 0) return;   // back onto the edge of the nearest part
   const dx = P.x - qx, dz = P.z - qz, l = Math.hypot(dx, dz) || 1;
@@ -8143,9 +8222,10 @@ const _pw = new THREE.Vector3(), _pp = new THREE.Vector3(), _pl = new THREE.Vect
 // (scooter and rickshaw, from tools/vehicles_blender.py: the scooter's seat top 0.8 m from x -0.74 to -0.1, floorboard
 // 0.33 m, grips at x 0.44, 1.04 m up, 0.33 m out; the rickshaw's driver's seat top 0.68 m from x 0.3 to 0.6, footwell
 // floor 0.36 m, grips at x 0.68, 1.04 m up, 0.27 m out.) hip: where a Mixamo body's hip joints go, feet: ankles, grip: wrists
-const RIDE_POSE = { cycle: { lean: 0.27, grip: [CYC.grip[0] - 0.03, CYC.grip[1] + 0.02, CYC.grip[2]], feet: null },
-  scooter: { lean: 0.3, grip: [0.36, 1.04, 0.3], feet: [0.12, 0.37, 0.12], hip: [-0.27, 0.9], mx: { grip: [0.41, 0.995, 0.31], feet: [0.12, 0.42, 0.13], lean: [0.06, 0.3] } },
-  auto: { lean: 0.06, grip: [0.67, 1.05, 0.27], feet: [0.8, 0.39, 0.13], hip: [0.43, 0.8], mx: { grip: [0.64, 0.985, 0.26], feet: [0.8, 0.45, 0.15], lean: [0.04, 0.25] } } };
+const RIDE_POSE = { cycle: { lean: 0.27, grip: [CYC.grip[0] - 0.03, CYC.grip[1] + 0.02, CYC.grip[2]], feet: null, hip: [-0.21, CYC.seat[1] + 0.09],
+    mx: { grip: [CYC.grip[0] - 0.05, CYC.grip[1] + 0.03, CYC.grip[2] - 0.01], feet: null, lean: [0.26, 0.45] } },
+  scooter: { lean: 0.3, grip: [0.36, 1.04, 0.3], feet: [0.12, 0.37, 0.12], hip: [-0.27, 0.9], mx: { grip: [0.41, 0.995, 0.31], feet: [0.21, 0.42, 0.14], lean: [0.1, 0.3] } },
+  auto: { lean: 0.06, grip: [0.67, 1.05, 0.27], feet: [0.8, 0.39, 0.13], hip: [0.43, 0.8], mx: { grip: [0.64, 0.985, 0.26], feet: [0.97, 0.44, 0.16], lean: [0.04, 0.25] } } };
 function ridePose(C, mode, crank) {
   const RP = RIDE_POSE[mode]; if (!RP) return;
   const g = (n) => { if (!(n in C.rig)) { const b = chBone(C.model, n); C.rig[n] = b ? C.obj.getObjectByName(b) : null; } return C.rig[n]; };
@@ -8196,7 +8276,9 @@ function ridePose(C, mode, crank) {
     const zs = sd === 'L' ? -1 : 1;
     const GR = MX ? MX.grip : RP.grip;
     toW(GR[0], GR[1], zs * GR[2], _pp);
-    _iu.copy(_pl).multiplyScalar(zs).addScaledVector(_pw, -0.6).addScaledVector(_by, -0.3).normalize();
+    // elbows: a Mixamo rider's point down and back, a little out (not winged out sideways)
+    if (mx) _iu.copy(_pl).multiplyScalar(zs * 0.45).addScaledVector(_pw, -0.55).addScaledVector(_by, -0.8).normalize();
+    else _iu.copy(_pl).multiplyScalar(zs).addScaledVector(_pw, -0.6).addScaledVector(_by, -0.3).normalize();
     ik2(up, lo, end, _pp, _iu);
     if (MX) gripHand(C, sd, _pw);
   }
@@ -8229,7 +8311,8 @@ function gripHand(C, sd, fwd) {
 }
 
 // ---- the people around you: in walk mode the nearest pedestrians become animated people (the rest stay figures)
-const PEDPOOL = { list: [], men: 24, women: 18 };   // up to 42 people at a time (beyond ~20 m in their light copies); idle ones are reused
+const _pfr = new THREE.Frustum(), _pfm = new THREE.Matrix4(), _pfs = new THREE.Sphere(new THREE.Vector3(), 1.3);
+const PEDPOOL = { list: [], men: LITE ? 11 : 24, women: LITE ? 8 : 18 };   // up to 42 people at a time (beyond ~20 m in their light copies); idle ones are reused
 function pedPoolRelease() { for (const C of PEDPOOL.list) { if (C.ped) C.ped.skin = null; C.ped = null; C.root.visible = false; sayDrop(C); } }
 function stepPedPool(dt) {
   if (!PEDS || !PEDS.shown || CHAR.state !== 2) { pedPoolRelease(); return; }
@@ -8263,6 +8346,7 @@ function stepPedPool(dt) {
     C.ped = p; p.skin = C; C.root.visible = true; C.idleT = 0; C.face = undefined; C.look = 0;
   }
   const W = WALK, P = W.P, onFoot = W.on && !W.ride && W.mode === 'walk';
+  pcam.updateMatrixWorld(); _pfm.multiplyMatrices(pcam.projectionMatrix, pcam.matrixWorldInverse); _pfr.setFromProjectionMatrix(_pfm);
   for (const C of PEDPOOL.list) {
     if (!C.ped) { if (C.say) sayDrop(C); continue; }
     const p = C.ped, f = p.fa, sc = p.sc * (f >= 1 ? 1 : 0.2 + 0.8 * f * f * (3 - 2 * f));
@@ -8272,10 +8356,14 @@ function stepPedPool(dt) {
     if (p.bumpT > 0) fy = Math.atan2(rz, rx);
     C.face = C.face === undefined ? fy : lerpAng(C.face, fy, Math.min(1, dt * (p.bumpT > 0 ? 6 : 12)));
     C.root.position.set(p.x, p.y, p.z); C.root.rotation.y = -C.face; C.root.scale.setScalar(0.94 + (sc - 1) * 0.5);
+    // off screen: not drawn, and its animation waits (the time it missed is caught up in one step when it comes back)
+    _pfs.center.set(p.x, p.y + 0.9, p.z); const seen = _pfr.intersectsSphere(_pfs);
+    if (C.root.visible !== seen) C.root.visible = seen;
+    if (!seen) { C.acc = (C.acc || 0) + dt; if (p.bumpT > 0) p.bumpT -= dt; if (p.bumpCd > 0) p.bumpCd -= dt; if (C.say) sayDrop(C); continue; }
     // beyond ~20 m: the light copy, its animation stepped every other frame (with hysteresis, so nobody flickers)
     const lod = C.lod === 1 ? (d < 18 ? 0 : 1) : d > 22 ? 1 : 0; if (lod !== C.lod) { C.lod = lod; chVis(C); }
     chMove(C, p.mode === 2 || p.bumpT > 0 ? 0 : p.cv, dt, 0.25);
-    if (C.lod === 1) { C.acc = (C.acc || 0) + dt; if ((C.tick = !C.tick)) { C.mixer.update(C.acc); C.acc = 0; } } else C.mixer.update(dt);
+    if (C.lod === 1) { C.acc = (C.acc || 0) + dt; if ((C.tick = !C.tick)) { C.mixer.update(Math.min(C.acc, 1)); C.acc = 0; } } else { C.mixer.update(Math.min(1, dt + (C.acc || 0))); C.acc = 0; }
     // passers-by glance at you: the head follows you while you are close and not behind them
     let want = 0;
     if (onFoot && d < 6.5 && Math.abs(P.y - p.y) < 2) {
@@ -8353,8 +8441,8 @@ function sayPlace(C, p, dt) {
   const vis = _sv.z < 1 && Math.abs(_sv.x) < 1.2 && Math.abs(_sv.y) < 1.2;
   S.e.style.opacity = vis ? Math.min(1, S.t / 0.35, (2.4 - S.t) / 0.15 + 0.2) : 0;
   // kept on screen: on a narrow (portrait) screen someone at the edge would have their words cut off
-  const hw = (S.w || (S.w = S.e.offsetWidth)) / 2 + 10, sx = clamp((_sv.x + 1) / 2 * innerWidth, hw, Math.max(hw, innerWidth - hw));
-  S.e.style.transform = `translate(${sx.toFixed(1)}px,${((1 - _sv.y) / 2 * innerHeight).toFixed(1)}px) translate(-50%,-100%)`;
+  const hw = (S.w || (S.w = S.e.offsetWidth)) / 2 + 10, sx = clamp((_sv.x + 1) / 2 * VW(), hw, Math.max(hw, VW() - hw));
+  S.e.style.transform = `translate(${sx.toFixed(1)}px,${((1 - _sv.y) / 2 * VH()).toFixed(1)}px) translate(-50%,-100%)`;
 }
 function sayDrop(C) { if (C.say) { C.say.e.remove(); C.say = null; } }
 // people are solid: you can't walk through them, and walking into one at more than a stroll gets a reaction
@@ -8420,6 +8508,7 @@ function initWalkUI() {
   $('walkBtn').onclick = () => enterWalk();
   $('wkExit').onclick = () => exitWalk();
   $('wkAvatar').onclick = () => (WALK.panel ? closeAvatar() : openAvatar());
+  $('wkMap').onclick = () => (bigmap.classList.contains('show') ? bigmap.classList.remove('show') : openBigMap());
   $('wkSign').onclick = () => {
     if (!ACC.clerk) { toast('Sign-in is coming soon. For now you play as a guest, saved on this device.'); return; }
     if (ACC.user) ACC.clerk.openUserProfile(); else ACC.clerk.openSignIn({});
@@ -8463,7 +8552,8 @@ function walkKey(e, k) {
   if (k === 'capslock') { WALK.walkT = !WALK.walkT; return true; }
   if (k === 'c') { if (CFG.ride !== false) cycleRide(); return true; }
   if (k === 'q') { skipWait(); return true; }
-  if (k === 'escape') { if (WALK.panel) closeAvatar(); else if (WALK.ride && WALK.ride.phase === 'wait') { WALK.ride = null; walkUI(); } else exitWalk(); return true; }
+  if (k === 'escape') { if (bigmap.classList.contains('show')) bigmap.classList.remove('show'); else if (WALK.panel) closeAvatar(); else if (WALK.ride && WALK.ride.phase === 'wait') { WALK.ride = null; walkUI(); } else exitWalk(); return true; }
+  if (k === 'm') { bigmap.classList.contains('show') ? bigmap.classList.remove('show') : openBigMap(); return true; }
   if (k === ' ') {   // jump; and a button clicked a moment ago (the avatar button, a ride) must not take Space as a click
     e.preventDefault(); const a = document.activeElement; if (a && a !== document.body && a.tagName !== 'INPUT') a.blur();
     keys.add(' '); return true;
@@ -8565,7 +8655,7 @@ function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn
   } });
   return out;
 }
-window.AMD = { get FLOWER() { return FLOWER; }, GARDEN, gardenBedAt, underDeck, nearPier, SND, get ATAL() { return ATAL; }, busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { get FLOWER() { return FLOWER; }, rebuildAvatar, GARDEN, gardenBedAt, underDeck, nearPier, decodeBld, chBuf, nearestRoad, travelTo, travelPlaces, openBigMap, get MANEK() { return MANEK; }, SND, get ATAL() { return ATAL; }, busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
