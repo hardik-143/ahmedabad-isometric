@@ -2126,16 +2126,9 @@ function buildFlowerPark() {
     const nearPond = pond && inPond(x, z, 9), band = Math.floor((x * 0.55 + z) / 8);
     const col = nearPond ? ROSE[(Math.floor(x / 2) + Math.floor(z / 2)) % 3] : FL[((band % FL.length) + FL.length) % FL.length];
     sc.set(1, nearPond ? 1.1 : 0.85 + (((band % 3) + 3) % 3) * 0.12, 1); m4.compose(new THREE.Vector3(x, 0.02, z), q, sc); im.setMatrixAt(i, m4); im.setColorAt(i, col);   // one height a band
+    gardenAddBed(x, z, 1, 0, 0.24 * sc.y + 0.02, col, im, i);   // you wade through them (no walls round the beds)
   });
   im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im);
-  { // the beds are solid round their outside edge (0.6 m, so not a kerb you step up): you walk the paths and lawns
-    const K = new Set(keep.map(([x, z]) => Math.round(x) + ',' + Math.round(z)));
-    for (const [x, z] of keep) for (const [dx, dz] of [[2, 0], [-2, 0], [0, 2], [0, -2]]) {
-      if (K.has(Math.round(x + dx) + ',' + Math.round(z + dz))) continue;
-      const ex = x + dx / 2, ez = z + dz / 2, tx = dz / 2, tz = dx / 2;
-      FP_COL.push([ex - tx, ez - tz, ex + tx, ez + tz, 0, 0.6]);
-    }
-  }
   // the lotus pond: a stone rim, water, lotus leaves with pink flowers
   if (pond) {
     const N = 40, rim = [0.8, 0.77, 0.7];
@@ -2914,7 +2907,7 @@ function runQueue(budget) {
   while (queue.length && performance.now() - t0 < budget) {
     const [, ch, kind] = queue.shift();
     if (!ch.near) continue;
-    if (kind === 'cells' && !ch.cellsDone) { const t0 = performance.now(); buildCells(ch); PERF.cells = Math.max(PERF.cells, performance.now() - t0); if (!ch.cellsDone) { did = true; continue; } for (const m of ch.blk) m.visible = !(ch.cells.length); }
+    if (kind === 'cells' && !ch.cellsDone) { const t0 = performance.now(); buildCells(ch); PERF.cells = Math.max(PERF.cells, performance.now() - t0); if (!ch.cellsDone) { did = true; continue; } for (const m of ch.cells) m.visible = true; for (const m of ch.blk) m.visible = !(ch.cells.length); dirty = true; }   // swap at once: the blocks must never hide before the houses show
     if (kind === 'trees' && !ch.trees) { const t0 = performance.now(); buildTrees(ch); PERF.trees = Math.max(PERF.trees || 0, performance.now() - t0); }
     if (kind === 'props' && !ch.props) { const t0 = performance.now(); buildProps(ch); PERF.props = Math.max(PERF.props || 0, performance.now() - t0); }
     did = true;
@@ -3702,9 +3695,9 @@ function buildRiverProps() {
     // a bench facing the river halfway to the next lamp, a bin beside every third lamp, now and then a corn cart
     const along = 7 + 3 * h, bx = x + q.ux * along, bz = z + q.uz * along, bq = nearWall(bx, bz);
     const px = bq.x + bq.nx * 2.2, pz = bq.z + bq.nz * 2.2;
-    if (h < 0.7 && !onRoad(px, pz) && !waterAt(px, pz)) { benches.push([px, pz, -bq.nx, -bq.nz]); PROP_COL.box.push([px, pz, bq.ux, bq.uz, 0.92, 0.3, 0.95]); }
-    if (i % 3 === 0) { const sx = x + q.ux * 0.9, sz = z + q.uz * 0.9; if (!onRoad(sx, sz)) { bins.push([sx, sz, 1, 0]); PROP_COL.circ.push([sx, sz, 0.3, 1]); } }
-    if (i % 14 === 7) { const cx = x - q.ux * 6 + q.nx * 4.5, cz = z - q.uz * 6 + q.nz * 4.5; if (!onRoad(cx, cz) && !waterAt(cx, cz) && !promAt(cx, cz)) { carts.push([cx, cz, q.ux, q.uz]); PROP_COL.box.push([cx, cz, q.ux, q.uz, 1.2, 0.65, 1.0]); } }
+    if (h < 0.7 && !onRoad(px, pz) && !waterAt(px, pz) && !nearPier(px, pz, 1.4)) { benches.push([px, pz, -bq.nx, -bq.nz]); PROP_COL.box.push([px, pz, bq.ux, bq.uz, 0.92, 0.3, 0.95]); }
+    if (i % 3 === 0) { const sx = x + q.ux * 0.9, sz = z + q.uz * 0.9; if (!onRoad(sx, sz) && !nearPier(sx, sz, 0.8)) { bins.push([sx, sz, 1, 0]); PROP_COL.circ.push([sx, sz, 0.3, 1]); } }
+    if (i % 14 === 7) { const cx = x - q.ux * 6 + q.nx * 4.5, cz = z - q.uz * 6 + q.nz * 4.5; if (!onRoad(cx, cz) && !waterAt(cx, cz) && !promAt(cx, cz) && !nearPier(cx, cz, 1.8)) { carts.push([cx, cz, q.ux, q.uz]); PROP_COL.box.push([cx, cz, q.ux, q.uz, 1.2, 0.65, 1.0]); } }
   });
   const inst = (geo, L) => {
     const im = new THREE.InstancedMesh(geo, VEHMAT, L.length), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), one = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3();
@@ -3717,7 +3710,7 @@ function buildRiverProps() {
   R.lamps.forEach(([x, z], i) => {
     if (i % 2) return; const q = nearWall(x, z); if (q.d > 25) return;
     const px = x + q.ux * 15 + q.nx * 4.2, pz = z + q.uz * 15 + q.nz * 4.2;
-    if (onRoad(px, pz) || waterAt(px, pz) || PROP_COL.box.some(([bx, bz]) => Math.hypot(bx - px, bz - pz) < 2.5)) return;
+    if (onRoad(px, pz) || waterAt(px, pz) || nearPier(px, pz, 1.2) || PROP_COL.box.some(([bx, bz]) => Math.hypot(bx - px, bz - pz) < 2.5)) return;
     pots.push([px, pz, 1, 0]); PROP_COL.circ.push([px, pz, 0.62, 1.3]);
   });
   if (pots.length) {
@@ -3798,42 +3791,265 @@ function lawnTex() {
   for (let k = 0; k < 5000; k++) { const x = r() * S, y = r() * S, l = 2 + r() * 4; g.strokeStyle = `hsl(${85 + r() * 25},${40 + r() * 25}%,${22 + r() * 22}%)`; g.lineWidth = 1; g.beginPath(); g.moveTo(x, y); g.lineTo(x + (r() - 0.5) * 2, y - l); g.stroke(); }
   const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; return t;
 }
-function riverGarden(x, z, nx, nz, onRoad, nearWall, inst) {
-  const ax = nz, az = -nx, P = (s, d) => [x + ax * s + nx * d, z + az * s + nz * d];
-  const T = 2, kinds = [
-    [['#ff8c1a', '#ff7a00', '#ffa31a'], '#b34700', 95, 4.6], [['#ffd21a', '#ffc400', '#ffe066'], '#c98a00', 95, 4.6], [['#d7192b', '#e8243a', '#b5101f'], '#5a0a10', 120, 3.4],
-    [['#e94fa4', '#f06cb6', '#c2368a'], '#fff2a8', 85, 4.8], [['#ffffff', '#f4f1ff', '#fde8f0'], '#e0457b', 105, 4], [['#7b3fc4', '#9157d8', '#6a2fb0'], '#f2e9ff', 115, 3.4]];
-  const tiles = [], beds = kinds.map(() => []), lamps = [], benches = [], shrubs = [];
-  for (const [s0, s1] of [[-78, -26], [35, 86]]) {
-    // the walk: along the river at d = 6 (swinging gently), cross paths every 16 m back to the road
-    const walk = (s) => 6 + Math.sin(s / 11) * 1.5, cross = []; for (let s = s0 + 8; s < s1 - 4; s += 16) cross.push(s);
-    const onPath = (s, d) => Math.abs(d - walk(s)) < 1.4 || (d > walk(s) && cross.some((c) => Math.abs(s - c) < 1.1));
-    for (let s = s0; s < s1; s += T) for (let d = -3; d < 46; d += T) {
-      const cs = s + T / 2, cd = d + T / 2, [px, pz] = P(cs, cd);
-      if (onRoad(px, pz)) break;                                                       // the garden ends at the road
-      if (waterAt(px, pz) || nearWall(px, pz).d < 3.6) continue;                      // the railing walkway stays clear
-      const near = PROP_COL.circ.some(([qx, qz, r]) => Math.hypot(qx - px, qz - pz) < r + 1.3) || PROP_COL.box.some(([qx, qz, , , a]) => Math.hypot(qx - px, qz - pz) < a + 1.5);
-      const path = onPath(cs, cd);
-      tiles.push([cs, cd, path || near ? 0 : 1]);
-      if (path || near) continue;
-      const band = Math.floor((cs * 0.7 + cd) / 7), lawn = ((Math.floor(cs / 12) + Math.floor(cd / 10) * 2) % 4) === 0;
-      if (lawn) continue;
-      beds[((band % kinds.length) + kinds.length) % kinds.length].push([px, pz]);
+// ---- keeping things clear of each other on the ground: bridge decks overhead, bridge and metro piers (built once, lazily)
+let CLEAR = null;
+function clearIdx() {
+  if (CLEAR) return CLEAR;
+  const C = 40, D = [], P = [], gd = new Map(), gp = new Map(), RD = ROADS;
+  const put = (M, id, x0, z0, x1, z1) => { for (let a = Math.floor(x0 / C); a <= Math.floor(x1 / C); a++) for (let b = Math.floor(z0 / C); b <= Math.floor(z1 / C); b++) { const k = colKey(a, b); let L = M.get(k); if (!L) M.set(k, (L = [])); L.push(id); } };
+  if (RD) for (let i = 0; i < RD.n; i++) {
+    if (!RD.br[i]) continue;
+    const p0 = RD.start[i], L = RD.lens[i], hw = RD.hw[i] / 10;
+    for (let j = 0; j < L - 1; j++) {
+      if (Math.max(RD.zp[p0 + j], RD.zp[p0 + j + 1]) < 0.25) continue;   // at grade: that is road, not a deck over you
+      const ax = RD.xy[(p0 + j) * 2] * 0.5, az = RD.xy[(p0 + j) * 2 + 1] * 0.5, bx = RD.xy[(p0 + j + 1) * 2] * 0.5, bz = RD.xy[(p0 + j + 1) * 2 + 1] * 0.5, m = hw + 4;
+      put(gd, D.length / 5, Math.min(ax, bx) - m, Math.min(az, bz) - m, Math.max(ax, bx) + m, Math.max(az, bz) + m); D.push(ax, az, bx, bz, hw);
     }
-    for (let s = s0 + 4; s < s1 - 2; s += 14) {   // lamps and benches along the walk, shrubs at the cross paths
-      const w = walk(s);
-      for (const [sd2, k] of [[-1, 0], [1, 1]]) { const [lx, lz] = P(s, w + sd2 * 1.9); if (!onRoad(lx, lz) && nearWall(lx, lz).d > 3.6) { if (k === 0) lamps.push([lx, lz]); else benches.push([lx, lz]); } }
-    }
-    for (const c of cross) for (const sd2 of [-1, 1]) { const [bx, bz] = P(c + sd2 * 2.4, walk(c) + 3.2); if (!onRoad(bx, bz)) shrubs.push([bx, bz]); }
   }
+  for (const [px, pz] of META.piers || []) { put(gp, P.length / 3, px - 6, pz - 6, px + 6, pz + 6); P.push(px, pz, 1.25); }
+  if (TR && TR.metro) for (const [px, pz] of TR.metro.piers) { put(gp, P.length / 3, px - 6, pz - 6, px + 6, pz + 6); P.push(px, pz, 1.45); }
+  return (CLEAR = { C, D, P, gd, gp });
+}
+function underDeck(x, z, pad = 0) {   // under a bridge or flyover deck (within pad metres of its edge)
+  const Q = clearIdx(), L = Q.gd.get(colKey(Math.floor(x / Q.C), Math.floor(z / Q.C))); if (!L) return false;
+  for (const id of L) {
+    const o = id * 5, ax = Q.D[o], az = Q.D[o + 1], dx = Q.D[o + 2] - ax, dz = Q.D[o + 3] - az, l2 = dx * dx + dz * dz || 1e-6;
+    const t = clamp(((x - ax) * dx + (z - az) * dz) / l2, 0, 1);
+    if (Math.hypot(x - ax - dx * t, z - az - dz * t) < Q.D[o + 4] + pad) return true;
+  }
+  return false;
+}
+function nearPier(x, z, r = 0) {
+  const Q = clearIdx(), L = Q.gp.get(colKey(Math.floor(x / Q.C), Math.floor(z / Q.C))); if (!L) return false;
+  for (const id of L) if (Math.hypot(x - Q.P[id * 3], z - Q.P[id * 3 + 1]) < Q.P[id * 3 + 2] + r) return true;
+  return false;
+}
+function nearProp(x, z, r = 0) {   // any placed prop (round or boxed) within r of its edge
+  for (const [qx, qz, rr] of PROP_COL.circ) if (Math.abs(qx - x) < rr + r + 0.5 && Math.hypot(qx - x, qz - z) < rr + r) return true;
+  for (const [qx, qz, ux, uz, a, b] of PROP_COL.box) {
+    const dx = x - qx, dz = z - qz; if (Math.abs(dx) > a + b + r + 1 || Math.abs(dz) > a + b + r + 1) continue;
+    if (Math.abs(dx * ux + dz * uz) < a + r && Math.abs(-dx * uz + dz * ux) < b + r) return true;
+  }
+  return false;
+}
+
+// ---- flower beds you walk through: every bed by 2 m cell, a rustle of leaves and petals round your feet and a swish
+// with each stride while you wade through them; beds and garden things that land inside a building are hidden once the
+// building's outline has loaded
+const GARDEN = { cells: new Map(), items: [], tiles: new Set(), fx: null, step: 0, cullT: 0, rings: new Map() };
+function gardenAddBed(x, z, ux, uz, h, col, im, i) {
+  const k = colKey(Math.floor(x / 2), Math.floor(z / 2)); let L = GARDEN.cells.get(k); if (!L) GARDEN.cells.set(k, (L = []));
+  const e = { x, z, ux, uz, h, col, im, i, off: false }; L.push(e); GARDEN.items.push(e); return e;
+}
+function gardenBedAt(x, z) {
+  const a0 = Math.floor(x / 2), b0 = Math.floor(z / 2);
+  for (let a = a0 - 1; a <= a0 + 1; a++) for (let b = b0 - 1; b <= b0 + 1; b++) {
+    const L = GARDEN.cells.get(colKey(a, b)); if (!L) continue;
+    for (const e of L) { if (e.off) continue; const dx = x - e.x, dz = z - e.z; if (Math.abs(dx * e.ux + dz * e.uz) < 1.02 && Math.abs(-dx * e.uz + dz * e.ux) < 1.02) return e; }
+  }
+  return null;
+}
+const _g0 = new THREE.Matrix4().makeScale(0, 0, 0);
+function gardenHide(e) { if (e.off) return; e.off = true; if (e.im) { e.im.setMatrixAt(e.i, _g0); e.im.instanceMatrix.needsUpdate = true; } }
+// a bed under a bench, a lamp or any other prop goes, so nothing stands in the flowers (run once everything is placed)
+function gardenClearProps() {
+  const hit = (x, z, r) => {
+    for (let a = Math.floor((x - r - 1.5) / 2); a <= Math.floor((x + r + 1.5) / 2); a++) for (let b = Math.floor((z - r - 1.5) / 2); b <= Math.floor((z + r + 1.5) / 2); b++) {
+      const L = GARDEN.cells.get(colKey(a, b)); if (!L) continue;
+      for (const e of L) {
+        if (e.off) continue;
+        const dx = x - e.x, dz = z - e.z, u = Math.max(0, Math.abs(dx * e.ux + dz * e.uz) - 1), v = Math.max(0, Math.abs(-dx * e.uz + dz * e.ux) - 1);
+        if (Math.hypot(u, v) < r - 0.02) gardenHide(e);
+      }
+    }
+  };
+  for (const [x, z, r] of PROP_COL.circ) hit(x, z, r + 0.1);
+  for (const [x, z, ux, uz, a, b] of PROP_COL.box) { const l = Math.max(0, a - b); for (const f of [-1, 0, 1]) hit(x + ux * l * f, z + uz * l * f, b + 0.1); }
+}
+// what a chunk has standing on the ground, for the garden: building outlines as edges in 4 m bands of z (an inside test
+// by ray parity) and tree trunks in 4 m cells; null until the chunk's layers have loaded
+function chunkRings(ch) {
+  let R = GARDEN.rings.get(ch); if (R) return R;
+  const bb = ch.bl ? chBuf(ch, 'bld') : null, tb = ch.tl ? chBuf(ch, 'trees') : null;
+  if ((ch.bl && !bb) || (ch.tl && !tb)) return null;
+  const B = new Map(), TG = new Map(); B.trees = TG;
+  if (tb) {
+    const r = new Reader(tb[0], tb[1]), n = r.u32(), X = r.arr(Int16Array, n), Z = r.arr(Int16Array, n), SC = r.arr(Uint8Array, n);
+    for (let i = 0; i < n; i++) { const x = ch.ox + X[i] * 0.1, z = ch.oz + Z[i] * 0.1, k = colKey(Math.floor(x / 4), Math.floor(z / 4)); let L = TG.get(k); if (!L) TG.set(k, (L = [])); L.push(x, z, 0.3 * SC[i] / 64 + 0.04); }
+  }
+  if (!bb) { GARDEN.rings.set(ch, B); return B; }
+  const S = decodeBld(bb[0], bb[1]), { n, floors, rc, rl, abs } = S; let rr = 0, pp = 0;
+  for (let b = 0; b < n; b++) for (let k = 0; k < rc[b]; k++) {
+    const m = rl[rr++];
+    if (floors[b] * 3.1 + 0.5 > 1.5) for (let e = 0; e < m; e++) {
+      const a = (pp + e) * 2, c = (pp + (e + 1) % m) * 2, ax = ch.ox + abs[a] * 0.1, az = ch.oz + abs[a + 1] * 0.1, bx = ch.ox + abs[c] * 0.1, bz = ch.oz + abs[c + 1] * 0.1;
+      for (let q = Math.floor(Math.min(az, bz) / 4); q <= Math.floor(Math.max(az, bz) / 4); q++) { let L = B.get(q); if (!L) B.set(q, (L = [])); L.push(ax, az, bx, bz); }
+    }
+    pp += m;
+  }
+  GARDEN.rings.set(ch, B); return B;
+}
+let CHUNK_AT = null;
+function gardenCull() {   // hide what stands inside a building or on a tree trunk, chunk by chunk as their data arrives
+  if (!GARDEN.items.length || !chunks.length) return;
+  if (!CHUNK_AT) { CHUNK_AT = new Map(); for (const ch of chunks) CHUNK_AT.set(colKey(ch.cx, ch.cy), ch); }
+  const S = META.chunk; let left = 0;
+  for (const e of GARDEN.items) {
+    if (e.off || e.chk) continue;
+    const cx = Math.floor(e.x / S), cy = Math.floor(-e.z / S); let ready = true, inside = 0, trunk = false;
+    for (let a = cx - 1; a <= cx + 1 && ready; a++) for (let b = cy - 1; b <= cy + 1; b++) {
+      const ch = CHUNK_AT.get(colKey(a, b)); if (!ch || !(ch.bl || ch.tl)) continue;
+      const [ox, oz] = [ch.ox, ch.oz]; if (Math.abs(e.x - ox) > S / 2 + 80 || Math.abs(e.z - oz) > S / 2 + 80) continue;
+      const B = chunkRings(ch); if (!B) { ready = false; break; }
+      for (let a2 = Math.floor(e.x / 4) - 1; a2 <= Math.floor(e.x / 4) + 1; a2++) for (let b2 = Math.floor(e.z / 4) - 1; b2 <= Math.floor(e.z / 4) + 1; b2++) {   // a trunk in a bed, or at a bench or lamp
+        const TL = B.trees.get(colKey(a2, b2)); if (!TL) continue;
+        for (let o = 0; o < TL.length; o += 3) {
+          const dx = TL[o] - e.x, dz = TL[o + 1] - e.z, r = TL[o + 2] + 0.15;
+          if (e.ux != null ? Math.hypot(Math.max(0, Math.abs(dx * e.ux + dz * e.uz) - 1), Math.max(0, Math.abs(-dx * e.uz + dz * e.ux) - 1)) < r : Math.hypot(dx, dz) < r + 1.1) trunk = true;
+        }
+      }
+      const L = B.get(Math.floor(e.z / 4)); if (!L) continue;
+      for (let o = 0; o < L.length; o += 4) { const az = L[o + 1], bz = L[o + 3]; if ((az > e.z) !== (bz > e.z) && e.x < L[o] + (e.z - az) * (L[o + 2] - L[o]) / (bz - az)) inside++; }
+    }
+    if (!ready) { left++; continue; }
+    e.chk = true; if (trunk || inside % 2 === 1) gardenHide(e);
+  }
+  GARDEN.cullDone = left === 0;
+}
+function gardenFx(dt) {
+  const W = WALK, P = W.P;
+  let F = GARDEN.fx;
+  if (!F) {
+    const N = 420, g = new THREE.BufferGeometry();
+    F = GARDEN.fx = { N, p: new Float32Array(N * 3), v: new Float32Array(N * 3), c: new Float32Array(N * 3), la: new Float32Array(N * 2), life: new Float32Array(N), k: 0, live: 0, acc: 0 };
+    g.setAttribute('position', new THREE.BufferAttribute(F.p, 3)); g.setAttribute('color', new THREE.BufferAttribute(F.c, 3)); g.setAttribute('la', new THREE.BufferAttribute(F.la, 2));
+    F.mat = new THREE.ShaderMaterial({
+      uniforms: { uScale: { value: 500 }, uLight: { value: 1 } },
+      vertexShader: `attribute vec3 color; attribute vec2 la; uniform float uScale; varying vec3 vC; varying float vA;
+        void main() { vC = color; vA = la.x; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = la.x > 0.0 ? la.y * uScale * projectionMatrix[1][1] / -mv.z : 0.0; gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `uniform float uLight; varying vec3 vC; varying float vA;
+        void main() { vec2 q = gl_PointCoord - 0.5; if (dot(q, q) > 0.25 || vA <= 0.0) discard; gl_FragColor = vec4(vC * uLight, min(1.0, vA * 2.5));
+        #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false,
+    });
+    F.pts = new THREE.Points(g, F.mat); F.pts.frustumCulled = false; F.pts.renderOrder = 12; scene.add(F.pts);
+    F.leaf = ['#2f6b25', '#3f8a2e', '#5aa13a', '#27531d'].map((h) => new THREE.Color(h));
+  }
+  // the bits already in the air: a light toss, air drag, settle back into the bed
+  if (F.live > 0) {
+    let live = 0;
+    for (let i = 0; i < F.N; i++) {
+      if (F.life[i] <= 0) continue;
+      F.life[i] -= dt; const o = i * 3;
+      if (F.life[i] <= 0) { F.la[i * 2] = 0; continue; }
+      live++;
+      F.v[o + 1] -= 5.5 * dt; const dr = Math.exp(-2.2 * dt); F.v[o] *= dr; F.v[o + 2] *= dr;
+      F.p[o] += F.v[o] * dt; F.p[o + 1] = Math.max(F.p[o + 1] + F.v[o + 1] * dt, 0.02); F.p[o + 2] += F.v[o + 2] * dt;
+      F.la[i * 2] = Math.min(1, F.life[i] / 0.35);
+    }
+    F.live = live;
+    F.pts.geometry.attributes.position.needsUpdate = true; F.pts.geometry.attributes.la.needsUpdate = true;
+  }
+  F.mat.uniforms.uScale.value = innerHeight * renderer.getPixelRatio() / 2; F.mat.uniforms.uLight.value = 1 - 0.72 * U.uNight.value;
+  if (W.mode !== 'walk' || W.ride || W.inJump) return;
+  const sp = Math.abs(P.v), bed = sp > 0.3 ? gardenBedAt(P.x, P.z) : null; if (!bed) { GARDEN.step = 0; return; }
+  const run = sp > 4.5, rate = run ? 70 : sp > 2.5 ? 44 : 20, hx = Math.cos(P.th), hz = Math.sin(P.th);
+  F.acc += rate * dt;
+  while (F.acc >= 1) {
+    F.acc -= 1;
+    const i = F.k; F.k = (F.k + 1) % F.N; const o = i * 3, side = Math.random() < 0.5 ? -1 : 1;
+    F.p[o] = P.x - hz * side * 0.14 + (Math.random() - 0.5) * 0.35; F.p[o + 1] = bed.h * (0.75 + Math.random() * 0.3); F.p[o + 2] = P.z + hx * side * 0.14 + (Math.random() - 0.5) * 0.35;
+    const up = (run ? 1.9 : 1.1) + Math.random() * (run ? 1.8 : 1.2), sw = 0.6 + sp * 0.14;
+    F.v[o] = (Math.random() - 0.5) * sw - hx * sp * 0.12; F.v[o + 1] = up; F.v[o + 2] = (Math.random() - 0.5) * sw - hz * sp * 0.12;
+    const c = Math.random() < 0.55 ? F.leaf[(Math.random() * 4) | 0] : bed.col; const j = 0.85 + Math.random() * 0.3;
+    F.c[o] = c.r * j; F.c[o + 1] = c.g * j; F.c[o + 2] = c.b * j;
+    F.life[i] = 0.6 + Math.random() * (run ? 0.7 : 0.5); F.la[i * 2] = 1; F.la[i * 2 + 1] = 0.06 + Math.random() * 0.07;
+    F.live = Math.max(F.live, 1);
+  }
+  F.pts.geometry.attributes.color.needsUpdate = true;
+  // a swish of leaves at every stride
+  GARDEN.step += sp * dt;
+  if (GARDEN.step > (run ? 1.5 : 0.85)) { GARDEN.step = 0; gardenSwish(run ? 1 : sp > 2.5 ? 0.75 : 0.45); }
+}
+function gardenSwish(k) {
+  const c = SND.ctx; if (!c || c.state !== 'running') return;
+  if (!SND.noise) {   // half a second of soft (one-pole filtered) noise, made once
+    const n = c.sampleRate >> 1, b = c.createBuffer(1, n, c.sampleRate), d = b.getChannelData(0); let l = 0;
+    for (let i = 0; i < n; i++) { l = l * 0.55 + (Math.random() * 2 - 1) * 0.45; d[i] = l; }
+    SND.noise = b;
+  }
+  const s = c.createBufferSource(), f = c.createBiquadFilter(), h = c.createBiquadFilter(), g = c.createGain(), t = c.currentTime, dur = 0.16 + 0.12 * (1 - k);
+  s.buffer = SND.noise; s.playbackRate.value = 0.8 + Math.random() * 0.5;
+  f.type = 'bandpass'; f.frequency.value = 1900 + Math.random() * 1700; f.Q.value = 0.8; h.type = 'highpass'; h.frequency.value = 700;
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05 + 0.13 * k, t + 0.025); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  s.connect(f); f.connect(h); h.connect(g); g.connect(c.destination); s.start(t, Math.random() * 0.3, dur + 0.05);
+}
+
+// The riverfront flower garden: beds, lawn and a paved walk on the land between the railing walkway and the road, along the
+// whole bank inside the playable area (on a map build with no zone, the same stretch), through the tree parks too. A 2 m grid in the frame of the sign
+// (s along the bank, d inland), the walk at a set distance from the railing so it follows the river round its bends.
+const GARDEN_AREA = [{ x: -110, z: 930, r: 420 }, { x: -165, z: 1300, x1: -140, z1: 1780, r: 110 }, { x: 60, z: 2000, r: 330 }];
+function riverGarden(x, z, nx, nz, onRoad, nearWall, inst) {
+  const ax = nz, az = -nx, P = (s, d) => [x + ax * s + nx * d, z + az * s + nz * d], T = 2;
+  const parts = ZONE || GARDEN_AREA.map((p) => ({ ax: p.x, az: p.z, bx: p.x1 ?? p.x, bz: p.z1 ?? p.z, r: p.r }));
+  const inArea = (px, pz) => parts.some((Q) => { const dx = Q.bx - Q.ax, dz = Q.bz - Q.az, l2 = dx * dx + dz * dz, t = l2 ? clamp(((px - Q.ax) * dx + (pz - Q.az) * dz) / l2, 0, 1) : 0; return Math.hypot(px - Q.ax - dx * t, pz - Q.az - dz * t) < Q.r - 6; });
+  const A = META.atal, inAtal = (px, pz) => {
+    if (!A) return false;
+    if (px > A.x1 - 116 && px < A.x1 + 46 && pz > A.z1 - 296 && pz < A.z1 + 41) return true;   // the Flower Park has its own beds
+    const dx = A.x1 - A.x0, dz = A.z1 - A.z0, l2 = dx * dx + dz * dz || 1, t = clamp(((px - A.x0) * dx + (pz - A.z0) * dz) / l2, 0, 1.15);
+    return Math.hypot(px - A.x0 - dx * t, pz - A.z0 - dz * t) < 14;
+  };
+  // the stretch of the area's bank: s from the sign, scanned 2 m at a time
+  let s0 = Infinity, s1 = -Infinity;
+  for (const Q of parts) for (const [qx, qz] of [[Q.ax, Q.az], [Q.bx, Q.bz]]) { const s = (qx - x) * ax + (qz - z) * az; s0 = Math.min(s0, s - Q.r); s1 = Math.max(s1, s + Q.r); }
+  s0 = Math.floor(s0 / T) * T; s1 = Math.ceil(s1 / T) * T;
+  const walkD = (s) => 9.6 + Math.sin(s / 11) * 1.5, isCross = (cs) => { const m = ((cs - 8) % 16 + 16) % 16; return m < 1.1 || m > 14.9; };
+  const cols = [];
+  for (let s = s0; s < s1; s += T) {
+    const cs = s + T / 2, col = []; let land = false;
+    for (let d = -90; d < 270; d += T) {
+      const cd = d + T / 2, [px, pz] = P(cs, cd);
+      if (!inArea(px, pz)) { if (land) break; continue; }
+      if (cs > -17 && cs < 44 && cd < 17) continue;                                   // the sign and the food court
+      if (waterAt(px, pz) || promAt(px, pz)) continue;
+      const q = nearWall(px, pz);
+      if (q.nx * nx + q.nz * nz < 0.5 || (px - q.x) * q.nx + (pz - q.z) * q.nz < 0) continue;   // this bank, the land side
+      if (q.d < 6.2) continue;                                                         // the railing walkway stays clear
+      if (onRoad(px, pz)) { if (land) break; continue; }                               // the garden ends at the road
+      land = true;
+      if (underDeck(px, pz, 1.5) || nearPier(px, pz, 1.6) || inAtal(px, pz)) continue;
+      col.push({ cs, cd, px, pz, dw: q.d, qnx: q.nx, qnz: q.nz, k: 1 });
+    }
+    cols.push(col);
+  }
+  // paths: the walk along the river at walkD from the railing, cross paths every 16 m back to the road; tiles round any
+  // prop already standing there are paved
+  for (const col of cols) for (const t of col) {
+    const w = walkD(t.cs);
+    if (Math.abs(t.dw - w) < 1.4 || (t.dw > w && isCross(t.cs)) || nearProp(t.px, t.pz, 1.1)) t.k = 0;
+  }
+  // lamps and benches beside the walk every 14 m (a paved bay each), clipped shrubs on lawn at the cross paths
+  const lamps = [], benches = [], shrubs = [];
+  const pick = (col, want, cond) => { let b = null, bd = 1.3; for (const t of col) if (cond(t) && Math.abs(t.dw - want) < bd) { bd = Math.abs(t.dw - want); b = t; } return b; };
+  cols.forEach((col, ci) => {
+    if (!col.length) return;
+    const cs = col[0].cs, w = walkD(cs);
+    if (ci % 7 === 3) {
+      const b = pick(col, w + 2.6, (t) => t.k === 1 && !isCross(t.cs)); if (b) { b.k = 0; b.f = 1; benches.push([b.px, b.pz, -b.qnx, -b.qnz]); }
+      const l = pick(col, w - 2.6, (t) => t.k === 1); if (l) { l.k = 0; l.f = 1; lamps.push([l.px, l.pz]); }
+    }
+    if (isCross(cs)) for (const dc of [-2, 2]) { const c2 = cols[ci + dc]; if (!c2) continue; const t = pick(c2, w + 3.6, (q) => q.k === 1); if (t) { t.k = 2; shrubs.push([t.px, t.pz]); } }
+  });
+  const tiles = []; for (const col of cols) for (const t of col) tiles.push(t);
   if (!tiles.length) return;
   // ground: paths in pavers, the rest lawn, 4 cm up so it reads over the land; one mesh each, UVs in metres
   const mk = (sel, map, rep) => {
     const pos = [], uv = [], idx = [];
-    for (const [cs, cd, k] of tiles) {
-      if (k !== sel) continue;
+    for (const t of tiles) {
+      if ((t.k === 0) !== sel) continue;
       const b = pos.length / 3;
-      for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const [px, pz] = P(cs + u * T / 2, cd + v * T / 2); pos.push(px, 0.04, pz); uv.push(px / rep, pz / rep); }
+      for (const [u, v] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { const [px, pz] = P(t.cs + u * T / 2, t.cd + v * T / 2); pos.push(px, 0.04, pz); uv.push(px / rep, pz / rep); }
       idx.push(b, b + 2, b + 1, b, b + 3, b + 2);
     }
     if (!pos.length) return;
@@ -3841,35 +4057,43 @@ function riverGarden(x, z, nx, nz, onRoad, nearWall, inst) {
     g.setAttribute('normal', new THREE.Float32BufferAttribute(new Array(pos.length).fill(0).map((_, i) => (i % 3 === 1 ? 1 : 0)), 3)); g.setIndex(idx); g.computeBoundingSphere();
     const m = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ map, side: THREE.DoubleSide })); m.receiveShadow = true; m.renderOrder = 10; group.ground.add(m); RIVER_FINE.push(m);
   };
-  mk(0, pavingTex(), 2.2); mk(1, lawnTex(), 3);
-  // flower beds: a 2 x 2 m block of plants per tile, flowers on top, leaves down the sides; heights vary by kind
+  mk(true, pavingTex(), 2.2); mk(false, lawnTex(), 3);
+  for (const t of tiles) GARDEN.tiles.add(colKey(Math.floor(t.px / 2), Math.floor(t.pz / 2)));
+  // flower beds: a 2 x 2 m block of plants per tile, flowers on top, leaves down the sides; heights vary by kind. You walk
+  // straight in: they come up to your shins and rustle round your feet
+  const kinds = [
+    [['#ff8c1a', '#ff7a00', '#ffa31a'], '#b34700', 95, 4.6], [['#ffd21a', '#ffc400', '#ffe066'], '#c98a00', 95, 4.6], [['#d7192b', '#e8243a', '#b5101f'], '#5a0a10', 120, 3.4],
+    [['#e94fa4', '#f06cb6', '#c2368a'], '#fff2a8', 85, 4.8], [['#ffffff', '#f4f1ff', '#fde8f0'], '#e0457b', 105, 4], [['#7b3fc4', '#9157d8', '#6a2fb0'], '#f2e9ff', 115, 3.4]];
+  const beds = kinds.map(() => []);
+  for (const t of tiles) {
+    if (t.k !== 1) continue;
+    const lawn = ((Math.floor(t.cs / 12) + Math.floor(t.dw / 10) * 2) % 4 + 4) % 4 === 0; if (lawn) continue;
+    const band = Math.floor((t.cs * 0.7 + t.dw) / 7); beds[((band % kinds.length) + kinds.length) % kinds.length].push(t);
+  }
   const side = new THREE.MeshLambertMaterial({ map: flowerTex(['#2f5a22'], '#2f5a22', 0, 1) });
   kinds.forEach(([petal, centre, n, sz], k) => {
     const L = beds[k]; if (!L.length) return;
     const h = 0.26 + (k % 3) * 0.06, geo = new THREE.BoxGeometry(T, h, T); geo.translate(0, h / 2, 0);
-    const top = new THREE.MeshLambertMaterial({ map: flowerTex(petal, centre, n, sz) });
+    const top = new THREE.MeshLambertMaterial({ map: flowerTex(petal, centre, n, sz) }), col = new THREE.Color(petal[0]);
     const im = new THREE.InstancedMesh(geo, [side, side, top, side, side, side], L.length), m4 = new THREE.Matrix4(), q = new THREE.Quaternion().setFromAxisAngle(_vy, Math.atan2(ax, az));
-    L.forEach(([px, pz], i) => { m4.compose(new THREE.Vector3(px, 0.02, pz), q, new THREE.Vector3(1, 0.85 + hash1(i * 7 + k) * 0.3, 1)); im.setMatrixAt(i, m4); });
+    L.forEach((t, i) => { const sy = 0.85 + hash1(i * 7 + k) * 0.3; m4.compose(new THREE.Vector3(t.px, 0.02, t.pz), q, new THREE.Vector3(1, sy, 1)); im.setMatrixAt(i, m4); gardenAddBed(t.px, t.pz, ax, az, h * sy + 0.02, col, im, i); });
     im.castShadow = false; im.receiveShadow = true; im.renderOrder = 10; im.computeBoundingSphere(); group.ground.add(im); RIVER_FINE.push(im);
   });
-  // the beds are solid round their outside edge (0.6 m): you walk the paths and lawns
-  const K = new Set(); beds.forEach((L) => L.forEach(([px, pz]) => K.add(Math.round(px * 2) + ',' + Math.round(pz * 2))));
-  beds.forEach((L) => L.forEach(([px, pz]) => {
-    for (const [ds, dd] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const ox = (ax * ds + nx * dd) * T, oz = (az * ds + nz * dd) * T;
-      if (K.has(Math.round((px + ox) * 2) + ',' + Math.round((pz + oz) * 2))) continue;
-      const ex = px + ox / 2, ez = pz + oz / 2, tx = (ax * dd - nx * ds) * T / 2, tz = (az * dd - nz * ds) * T / 2;
-      FP_COL.push([ex - tx, ez - tz, ex + tx, ez + tz, 0, 0.6]);
-    }
-  }));
-  if (lamps.length) { const g = globeLampGeo(), im = new THREE.InstancedMesh(g, VEHMAT, lamps.length), m4 = new THREE.Matrix4(); lamps.forEach(([lx, lz], i) => { m4.makeTranslation(lx, 0, lz); im.setMatrixAt(i, m4); PROP_COL.circ.push([lx, lz, 0.14, 5]); }); im.computeBoundingSphere(); im.castShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im); }
-  if (benches.length) { inst(benchGeo(), benches.map(([bx, bz]) => [bx, bz, -nx, -nz])); for (const [bx, bz] of benches) PROP_COL.box.push([bx, bz, ax, az, 0.92, 0.3, 0.95]); }
+  if (lamps.length) {
+    const g = globeLampGeo(), im = new THREE.InstancedMesh(g, VEHMAT, lamps.length), m4 = new THREE.Matrix4();
+    lamps.forEach(([lx, lz], i) => { m4.makeTranslation(lx, 0, lz); im.setMatrixAt(i, m4); PROP_COL.circ.push([lx, lz, 0.14, 5]); GARDEN.items.push({ x: lx, z: lz, im, i }); });
+    im.computeBoundingSphere(); im.castShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im);
+  }
+  if (benches.length) {
+    const im = inst(benchGeo(), benches);
+    benches.forEach(([bx, bz, fx, fz], i) => { PROP_COL.box.push([bx, bz, -fz, fx, 0.92, 0.3, 0.95]); GARDEN.items.push({ x: bx, z: bz, im, i }); });
+  }
   if (shrubs.length) {
     const im = new THREE.InstancedMesh(treeGeo, treeMat, shrubs.length), m4 = new THREE.Matrix4(), qq = new THREE.Quaternion(), sc = new THREE.Vector3(0.3, 0.24, 0.3);
-    shrubs.forEach(([bx, bz], i) => { qq.setFromAxisAngle(_vy, hash1(i * 13) * 6.28); m4.compose(new THREE.Vector3(bx, -0.35, bz), qq, sc); im.setMatrixAt(i, m4); im.setColorAt(i, TREE_COLS[i % 2 ? 1 : 0]); PROP_COL.circ.push([bx, bz, 0.9, 1.5]); });
+    shrubs.forEach(([bx, bz], i) => { qq.setFromAxisAngle(_vy, hash1(i * 13) * 6.28); m4.compose(new THREE.Vector3(bx, -0.35, bz), qq, sc); im.setMatrixAt(i, m4); im.setColorAt(i, TREE_COLS[i % 2 ? 1 : 0]); PROP_COL.circ.push([bx, bz, 0.9, 1.5]); GARDEN.items.push({ x: bx, z: bz, im, i }); });
     im.computeBoundingSphere(); im.castShadow = true; im.receiveShadow = true; im.renderOrder = 10; group.ground.add(im); RIVER_FINE.push(im);
   }
-  PLACES.push({ name: 'Riverfront Flower Garden', test: (px, pz, y) => Math.abs(y || 0) < 1 && tiles.some(([cs, cd]) => { const [tx, tz] = P(cs, cd); return Math.abs(tx - px) < 1.4 && Math.abs(tz - pz) < 1.4; }) });
+  PLACES.push({ name: 'Riverfront Flower Garden', test: (px, pz, y) => Math.abs(y || 0) < 1 && GARDEN.tiles.has(colKey(Math.floor(px / 2), Math.floor(pz / 2))) });
   WCOL.stale = true;
 }
 // food stalls on the open ground in front of the sign (between it and the road), with tables and umbrellas: Blender models
@@ -3916,14 +4140,16 @@ async function riverStalls(x, z, nx, nz) {
       return [px, pz];
     };
     const toRiver = [-nx, -nz];
-    [[-21, 4], [-14.5, 0], [-8, 1], [16.5, 2], [23, 3], [29.5, 5]].forEach(([s, k]) => {
+    [[36, 4], [-14.5, 0], [-8, 1], [16.5, 2], [23, 3], [29.5, 5]].forEach(([s, k]) => {
+      { const px = x + ax * s + nx * 10.5, pz = z + az * s + nz * 10.5; if (underDeck(px, pz, 2) || nearPier(px, pz, 3)) return; }
       const [gu, en, bg] = STALLS[k], p = put('Kiosk', s, 10.5, toRiver, { Body: bg, AwningA: bg, sign: stallSign(gu, en, bg) });
       if (p) PROP_COL.box.push([p[0] + toRiver[0] * 0.06, p[1] + toRiver[1] * 0.06, ax, az, 1.55, 0.6, 3.3]);
     });
     // tables and chairs out in front of the stalls, a little askew as people leave them; an umbrella over every other one
     const PLASTIC = ['#c0392b', '#f4f1ea', '#2a6db5', '#2f8a4c', '#e5b62a'], CANOPY = ['#e58a1f', '#2a6db5', '#c0392b', '#f4f1ea'];
-    [[-15.4, 6.4], [-11.2, 5.8], [-7.4, 6.6], [-13.4, 3.6], [-9.3, 3.4], [-17.2, 3.8],
-     [13.2, 6.2], [16.8, 6.5], [19.7, 5.8], [23.4, 6.6], [26.6, 5.2], [15.2, 3.5], [21.4, 3.4], [25.0, 2.6], [-21.6, 5.9], [-19.6, 2.9], [29.4, 6.0], [31.6, 3.1]].forEach(([s, d], i) => {
+    [[-15.4, 6.4], [-11.2, 5.8], [-7.4, 6.6], [-13.4, 3.6], [-9.3, 3.4], [40.4, 3.2],
+     [13.2, 6.2], [16.8, 6.5], [19.7, 5.8], [23.4, 6.6], [26.6, 5.2], [15.2, 3.5], [21.4, 3.4], [25.0, 2.6], [34.2, 6.3], [36.6, 3.2], [29.4, 6.0], [31.6, 3.1]].forEach(([s, d], i) => {
+      { const px = x + ax * s + nx * d, pz = z + az * s + nz * d; if (underDeck(px, pz, 1.2) || nearPier(px, pz, 2.2)) return; }
       const a = hash1(i * 977 + 13) * Math.PI;
       const p = put('Table', s, d, [Math.cos(a), Math.sin(a)], { Plastic: PLASTIC[i % PLASTIC.length] }); if (p) PROP_COL.circ.push([p[0], p[1], 0.95, 0.9]);
       if (i % 2 === 0) put('Parasol', s + 0.2, d, [Math.cos(a), Math.sin(a)], { Canopy: CANOPY[(i / 2) % CANOPY.length] });
@@ -7717,6 +7943,7 @@ function stepWalk(dt) {
   if (W.mode === 'walk' && W.inJump && W.av && W.av.mixer && !W.ride) airPose(W.av, clamp((P.y - groundAt(P.x, P.z, P.y)) / 0.45, 0, 1), Math.abs(P.v) > 3);
   if (W.av && W.av.mixer && W.mode !== 'walk' && !W.ride && (W.mode === 'cycle' || (W.rideMesh && W.rideMesh.userData.own))) ridePose(W.av, W.mode, W.crank || 0);
   stepPedPool(dt);
+  gardenFx(dt); if (!GARDEN.cullDone && (GARDEN.cullT -= dt) <= 0) { GARDEN.cullT = 1; gardenCull(); }
   // --- camera
   if (W.panel) { W.yaw = lerpAng(W.yaw, Math.atan2(Math.cos(P.th), Math.sin(P.th)), Math.min(1, dt * 4)); W.pitch = lerp(W.pitch, 0.1, Math.min(1, dt * 4)); }
   else if (!W.ride && performance.now() - W.lookT > (W.mode === 'walk' ? 2500 : 1500) && Math.abs(P.v) > 1.5) W.yaw = lerpAng(W.yaw, Math.atan2(-Math.cos(P.th), -Math.sin(P.th)), Math.min(1, dt * (W.mode === 'walk' ? 1.2 : 2.2)));   // swing in behind, GTA style
@@ -8285,6 +8512,7 @@ async function boot() {
   setProgress(0.61, 'Building the riverfront and the metro…'); await tick();
   buildRiverfront(); buildRiverProps(); buildFlowerPark(); buildMetro(); buildBRTS(); buildSignals(); initTraffic(); initPeds(); if (CFG.buildings) buildSites(); initPlay(); if (CFG.industry) buildIndustry(); buildWeather();
   await buildFarBuildings(0.62, 0.36);
+  gardenClearProps(); gardenCull();   // no flower bed under a prop; garden things inside a building hidden (now or as outlines stream in)
   initLabels(); initSearch();
   if (!CFG.buildings) $('stats').innerHTML = `${META.counts.roads.toLocaleString()} road segments · ${TR && TR.brts ? TR.brts.stations.length : 0} BRTS stops<br>${META.stations ? META.stations.length : 0} rail stations` + (CFG.trees ? ` · ${(META.counts.trees / 1000).toFixed(0)}k trees` : '');
   else $('stats').innerHTML = `${META.counts.buildings.toLocaleString()} buildings · ${META.counts.roads.toLocaleString()} road segments<br>${(META.counts.trees / 1000).toFixed(0)}k trees · ${(META.counts.props / 1000).toFixed(0)}k rooftop tanks &amp; stair-rooms`;
@@ -8331,7 +8559,7 @@ function busCheck() {   // debug: every leg both ways - fallbacks, tightest turn
   } });
   return out;
 }
-window.AMD = { get FLOWER() { return FLOWER; }, SND, get ATAL() { return ATAL; }, busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
+window.AMD = { get FLOWER() { return FLOWER; }, GARDEN, gardenBedAt, underDeck, nearPier, SND, get ATAL() { return ATAL; }, busPose, DRESS, PERF, STR, enterWalk, exitWalk, WALK, colBuild, groundAt, promAt, WCOL, PEDPOOL, busCheck, busTurn, makeChar, chPlay, CHAR, cycleRide, RIDE_SPEC, ACC, act, cycleRide, setWeather, setWeatherNow: (n) => { setWeather(n); wxTt = 0.9999; }, get WX() { return { name: wxName, C: WXC, D: WXD }; }, get IND() { return IND; }, U, STATS, view, flyTo, setTime, settings, sun, renderer, TIMES, group, get TR() { return TR; }, get TRAINS() { return TRAINS; }, get TRAF() { return TRAF; }, get PEDS() { return PEDS; }, get META() { return META; }, get WORKS() { return WORKS; }, get ROADS() { return ROADS; }, get BUSES() { return BUSES; }, get tod() { return tod; }, stopFly: () => { fly = null; }, poke: () => { dirty = true; }, chunks, get queue() { return queue.length; } };
 requestAnimationFrame(frame);
 boot().catch((e) => {
   console.error(e);
